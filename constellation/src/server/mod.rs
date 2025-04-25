@@ -11,7 +11,7 @@ use axum_metrics::{ExtraMetricLabels, MetricLayer};
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::block_in_place;
@@ -238,6 +238,7 @@ struct GetLinkItemsQuery {
     collection: String,
     path: String,
     cursor: Option<OpaqueApiCursor>,
+    did: Vec<String>,
     limit: Option<u64>,
     // TODO: allow reverse (er, forward) order as well
 }
@@ -270,6 +271,19 @@ fn get_links(
         return Err(http::StatusCode::BAD_REQUEST);
     }
 
+    // ugh could have just passed the zero-len hashmap through, same check in the impl
+    // but now i feel lazy
+    let empty = query.did.is_empty();
+    let dids = if !empty {
+        None
+    } else {
+        let mut out = HashSet::new();
+        for d in &query.did {
+            out.insert(Did(d.clone()));
+        }
+        Some(out)
+    };
+
     let paged = store
         .get_links(
             &query.target,
@@ -277,7 +291,7 @@ fn get_links(
             &query.path,
             limit,
             until,
-            None,
+            dids.as_ref(),
         )
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
