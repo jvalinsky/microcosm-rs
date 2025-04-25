@@ -303,6 +303,12 @@ impl LinkReader for MemStorage {
             });
         };
 
+        let did_rkeys: Vec<_> = did_rkeys
+            .into_iter()
+            .flatten()
+            .filter(|(did, _)| dids.contains(did))
+            .collect();
+
         let total = did_rkeys.len();
         let end = until
             .map(|u| std::cmp::min(u as usize, total))
@@ -310,13 +316,12 @@ impl LinkReader for MemStorage {
         let begin = end.saturating_sub(limit as usize);
         let next = if begin == 0 { None } else { Some(begin as u64) };
 
-        let alive = did_rkeys.iter().flatten().count();
+        let alive = did_rkeys.iter().count();
         let gone = total - alive;
 
         let items: Vec<_> = did_rkeys[begin..end]
             .iter()
             .rev()
-            .flatten()
             .filter(|(did, _)| *data.dids.get(did).expect("did must be in dids"))
             .map(|(did, rkey)| RecordId {
                 did: did.clone(),

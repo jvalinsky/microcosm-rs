@@ -860,12 +860,12 @@ mod tests {
                     RecordId {
                         did: "did:plc:linker".into(),
                         collection: "app.t.c".into(),
-                        rkey: "asdf".into(),
+                        rkey: "asdf-2".into(),
                     },
                     RecordId {
                         did: "did:plc:linker".into(),
                         collection: "app.t.c".into(),
-                        rkey: "asdf-2".into(),
+                        rkey: "asdf".into(),
                     },
                 ],
                 next: None,
@@ -893,6 +893,18 @@ mod tests {
                     },
                 ],
                 next: Some(1),
+            }
+        );
+
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::from([
+            Did("did:plc:someone-unknown".to_string()),
+        ]))?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (0, 0),
+                items: vec![],
+                next: None,
             }
         );
     });
