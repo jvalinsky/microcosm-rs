@@ -271,7 +271,14 @@ fn get_links(
     }
 
     let paged = store
-        .get_links(&query.target, &query.collection, &query.path, limit, until)
+        .get_links(
+            &query.target,
+            &query.collection,
+            &query.path,
+            limit,
+            until,
+            None,
+        )
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let cursor = paged.next.map(|next| {

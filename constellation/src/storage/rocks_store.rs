@@ -860,6 +860,7 @@ impl LinkReader for RocksStorage {
         path: &str,
         limit: u64,
         until: Option<u64>,
+        filter_dids: Option<&HashSet<Did>>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
         let target_key = TargetKey(
             Target(target.to_string()),
@@ -965,71 +966,6 @@ impl LinkReader for RocksStorage {
                     continue;
                 }
                 items.push(did);
-            } else {
-                eprintln!("failed to look up did from did_id {did_id:?}");
-            }
-        }
-
-        Ok(PagedAppendingCollection {
-            version: (total, gone),
-            items,
-            next,
-        })
-    }
-
-    fn get_links_from_dids(
-        &self,
-        target: &str,
-        collection: &str,
-        path: &str,
-        limit: u64,
-        until: Option<u64>,
-        dids: &HashSet<Did>,
-    ) -> Result<PagedAppendingCollection<RecordId>> {
-        let target_key = TargetKey(
-            Target(target.to_string()),
-            Collection(collection.to_string()),
-            RPath(path.to_string()),
-        );
-
-        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
-            return Ok(PagedAppendingCollection {
-                version: (0, 0),
-                items: Vec::new(),
-                next: None,
-            });
-        };
-
-        let linkers = self.get_target_linkers(&target_id)?;
-
-        let (alive, gone) = linkers.count();
-        let total = alive + gone;
-        let end = until.map(|u| std::cmp::min(u, total)).unwrap_or(total) as usize;
-        let begin = end.saturating_sub(limit as usize);
-        let next = if begin == 0 { None } else { Some(begin as u64) };
-
-        let did_id_rkeys = linkers.0[begin..end].iter().rev().collect::<Vec<_>>();
-
-        let mut items = Vec::with_capacity(did_id_rkeys.len());
-        // TODO: use get-many (or multi-get or whatever it's called)
-        for (did_id, rkey) in did_id_rkeys {
-            if did_id.is_empty() {
-                continue;
-            }
-            if let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? {
-                let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)?
-                else {
-                    eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
-                    continue;
-                };
-                if !active {
-                    continue;
-                }
-                items.push(RecordId {
-                    did,
-                    collection: collection.to_string(),
-                    rkey: rkey.0.clone(),
-                });
             } else {
                 eprintln!("failed to look up did from did_id {did_id:?}");
             }
