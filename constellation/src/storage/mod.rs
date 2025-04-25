@@ -69,6 +69,16 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         until: Option<u64>,
     ) -> Result<PagedAppendingCollection<Did>>; // TODO: reflect dedups in cursor
 
+    fn get_links_from_dids(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        limit: u64,
+        until: Option<u64>,
+        dids: &[Did],
+    ) -> Result<PagedAppendingCollection<RecordId>>;
+
     fn get_all_record_counts(&self, _target: &str)
         -> Result<HashMap<String, HashMap<String, u64>>>;
 
@@ -758,6 +768,109 @@ mod tests {
             }
         );
         assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
+    });
+
+    test_each_storage!(get_filtered_links, |storage| {
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &[Did("did:plc:linker".to_string())])?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (0, 0),
+                items: vec![],
+                next: None,
+            }
+        );
+
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: format!("did:plc:linker").into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &[Did("did:plc:linker".to_string())])?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (1, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: None,
+            }
+        );
+
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &[Did("did:plc:someone-else".to_string())])?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (0, 0),
+                items: vec![],
+                next: None,
+            }
+        );
+
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: format!("did:plc:linker").into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf-2".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: format!("did:plc:someone-else").into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &[Did("did:plc:linker".to_string())])?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (2, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf-2".into(),
+                    },
+                ],
+                next: None,
+            }
+        );
     });
 
     test_each_storage!(get_links_exact_multiple, |storage| {

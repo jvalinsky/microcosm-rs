@@ -278,6 +278,60 @@ impl LinkReader for MemStorage {
         })
     }
 
+    fn get_links_from_dids(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        limit: u64,
+        until: Option<u64>,
+        dids: &[Did],
+    ) -> Result<PagedAppendingCollection<RecordId>> {
+        let data = self.0.lock().unwrap();
+        let Some(paths) = data.targets.get(&Target::new(target)) else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+                next: None,
+            });
+        };
+        let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
+            return Ok(PagedAppendingCollection {
+                version: (0, 0),
+                items: Vec::new(),
+                next: None,
+            });
+        };
+
+        let total = did_rkeys.len();
+        let end = until
+            .map(|u| std::cmp::min(u as usize, total))
+            .unwrap_or(total);
+        let begin = end.saturating_sub(limit as usize);
+        let next = if begin == 0 { None } else { Some(begin as u64) };
+
+        let alive = did_rkeys.iter().flatten().count();
+        let gone = total - alive;
+
+        let items: Vec<_> = did_rkeys[begin..end]
+            .iter()
+            .rev()
+            .flatten()
+            .filter(|(did, _)| *data.dids.get(did).expect("did must be in dids"))
+            .map(|(did, rkey)| RecordId {
+                did: did.clone(),
+                rkey: rkey.0.clone(),
+                collection: collection.to_string(),
+            })
+            .collect();
+
+        Ok(PagedAppendingCollection {
+            version: (total as u64, gone as u64),
+            items,
+            next,
+        })
+    }
+
     fn get_all_record_counts(&self, target: &str) -> Result<HashMap<String, HashMap<String, u64>>> {
         let data = self.0.lock().unwrap();
         let mut out: HashMap<String, HashMap<String, u64>> = HashMap::new();
