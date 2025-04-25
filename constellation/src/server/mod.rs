@@ -271,18 +271,7 @@ fn get_links(
         return Err(http::StatusCode::BAD_REQUEST);
     }
 
-    // ugh could have just passed the zero-len hashmap through, same check in the impl
-    // but now i feel lazy
-    let empty = query.did.is_empty();
-    let dids = if !empty {
-        None
-    } else {
-        let mut out = HashSet::new();
-        for d in &query.did {
-            out.insert(Did(d.clone()));
-        }
-        Some(out)
-    };
+    let filter_dids = HashSet::from_iter(query.did.iter().map(|d| Did(d.to_string())));
 
     let paged = store
         .get_links(
@@ -291,7 +280,7 @@ fn get_links(
             &query.path,
             limit,
             until,
-            dids.as_ref(),
+            &filter_dids,
         )
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 

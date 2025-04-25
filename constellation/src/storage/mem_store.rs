@@ -166,7 +166,7 @@ impl LinkReader for MemStorage {
         path: &str,
         limit: u64,
         until: Option<u64>,
-        filter_dids: Option<&HashSet<Did>>,
+        filter_dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
@@ -184,12 +184,12 @@ impl LinkReader for MemStorage {
             });
         };
 
-        let did_rkeys: Vec<_> = if let Some(dids) = filter_dids {
+        let did_rkeys: Vec<_> = if !filter_dids.is_empty() {
             did_rkeys
                 .iter()
                 .filter(|m| {
                     Option::<(Did, RKey)>::clone(m)
-                        .map(|(did, _)| dids.contains(&did))
+                        .map(|(did, _)| filter_dids.contains(&did))
                         .unwrap_or(false)
                 })
                 .cloned()

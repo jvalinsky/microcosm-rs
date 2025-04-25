@@ -860,7 +860,7 @@ impl LinkReader for RocksStorage {
         path: &str,
         limit: u64,
         until: Option<u64>,
-        filter_dids: Option<&HashSet<Did>>,
+        filter_dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
         let target_key = TargetKey(
             Target(target.to_string()),
@@ -877,9 +877,9 @@ impl LinkReader for RocksStorage {
         };
 
         let mut linkers = self.get_target_linkers(&target_id)?;
-        if let Some(dids) = filter_dids {
+        if !filter_dids.is_empty() {
             let mut did_filter = HashSet::new();
-            for did in dids {
+            for did in filter_dids {
                 let Some(DidIdValue(did_id, active)) =
                     self.did_id_table.get_id_val(&self.db, did)?
                 else {
