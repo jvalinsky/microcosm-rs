@@ -186,13 +186,13 @@ impl LinkReader for MemStorage {
 
         let did_rkeys: Vec<_> = if let Some(dids) = filter_dids {
             did_rkeys
-                .into_iter()
-                .cloned()
+                .iter()
                 .filter(|m| {
-                    m.clone()
+                    Option::<(Did, RKey)>::clone(m)
                         .map(|(did, _)| dids.contains(&did))
                         .unwrap_or(false)
                 })
+                .cloned()
                 .collect()
         } else {
             did_rkeys.to_vec()

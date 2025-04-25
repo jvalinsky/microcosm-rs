@@ -16,7 +16,7 @@
 // use rocksdb::IteratorMode;
 // use std::time;
 
-// /// Aggregate links in the at-mosphere
+// xxxx/// Aggregate links in the at-mosphere
 // #[derive(Parser, Debug)]
 // #[command(version, about, long_about = None)]
 // struct Args {
@@ -54,7 +54,7 @@
 //     262_144, 1_048_576,
 // ];
 
-// // b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b12, b16, b32, b64, b128, b256, b512, b1024, b4096, b16384, b65535, b262144, bmax
+// xxx// b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b12, b16, b32, b64, b128, b256, b512, b1024, b4096, b16384, b65535, b262144, bmax
 
 // static DID_IDS_CF: &str = "did_ids";
 // static TARGET_IDS_CF: &str = "target_ids";
@@ -270,12 +270,13 @@
 //     eprintln!("bye.");
 // }
 
-// // scan plan
+// xxx// scan plan
 
-// // buckets (backlink count)
-// // 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16, 32, 64, 128, 256, 512, 1024, 4096, 16384, 65535, 262144, 1048576+
-// // by
-// // - collection
-// // - json path
-// // - link type
-// // samples for each bucket for each variation
+// xxx// buckets (backlink count)
+// xxx// 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16, 32, 64, 128, 256, 512, 1024, 4096, 16384, 65535, 262144, 1048576+
+// xxx// by
+// xxx// - collection
+// xxx// - json path
+// xxx// - link type
+// xxx// samples for each bucket for each variation
+fn main() {}

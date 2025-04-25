@@ -782,7 +782,7 @@ mod tests {
         storage.push(
             &ActionableEvent::CreateLinks {
                 record_id: RecordId {
-                    did: format!("did:plc:linker").into(),
+                    did: "did:plc:linker".into(),
                     collection: "app.t.c".into(),
                     rkey: "asdf".into(),
                 },
@@ -835,7 +835,7 @@ mod tests {
         storage.push(
             &ActionableEvent::CreateLinks {
                 record_id: RecordId {
-                    did: format!("did:plc:linker").into(),
+                    did: "did:plc:linker".into(),
                     collection: "app.t.c".into(),
                     rkey: "asdf-2".into(),
                 },
@@ -849,7 +849,7 @@ mod tests {
         storage.push(
             &ActionableEvent::CreateLinks {
                 record_id: RecordId {
-                    did: format!("did:plc:someone-else").into(),
+                    did: "did:plc:someone-else".into(),
                     collection: "app.t.c".into(),
                     rkey: "asdf".into(),
                 },

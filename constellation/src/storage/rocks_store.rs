@@ -876,7 +876,24 @@ impl LinkReader for RocksStorage {
             });
         };
 
-        let linkers = self.get_target_linkers(&target_id)?;
+        let mut linkers = self.get_target_linkers(&target_id)?;
+        if let Some(dids) = filter_dids {
+            let mut did_filter = HashSet::new();
+            for did in dids {
+                let Some(DidIdValue(did_id, active)) =
+                    self.did_id_table.get_id_val(&self.db, did)?
+                else {
+                    eprintln!("failed to find a did_id for {did:?}");
+                    continue;
+                };
+                if !active {
+                    eprintln!("excluding inactive did from filtered results");
+                    continue;
+                }
+                did_filter.insert(did_id);
+            }
+            linkers.0.retain(|linker| did_filter.contains(&linker.0));
+        }
 
         let (alive, gone) = linkers.count();
         let total = alive + gone;
