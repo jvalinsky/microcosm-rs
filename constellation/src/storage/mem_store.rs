@@ -285,7 +285,7 @@ impl LinkReader for MemStorage {
         path: &str,
         limit: u64,
         until: Option<u64>,
-        dids: &[Did],
+        dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {

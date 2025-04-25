@@ -984,7 +984,7 @@ impl LinkReader for RocksStorage {
         path: &str,
         limit: u64,
         until: Option<u64>,
-        dids: &[Did],
+        dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
         let target_key = TargetKey(
             Target(target.to_string()),

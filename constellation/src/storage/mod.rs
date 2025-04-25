@@ -1,7 +1,7 @@
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub mod mem_store;
 pub use mem_store::MemStorage;
@@ -76,7 +76,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         path: &str,
         limit: u64,
         until: Option<u64>,
-        dids: &[Did],
+        dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>>;
 
     fn get_all_record_counts(&self, _target: &str)
@@ -771,7 +771,7 @@ mod tests {
     });
 
     test_each_storage!(get_filtered_links, |storage| {
-        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &[Did("did:plc:linker".to_string())])?;
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::from([Did("did:plc:linker".to_string())]))?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -796,7 +796,7 @@ mod tests {
             0,
         )?;
 
-        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &[Did("did:plc:linker".to_string())])?;
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::from([Did("did:plc:linker".to_string())]))?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -812,7 +812,7 @@ mod tests {
             }
         );
 
-        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &[Did("did:plc:someone-else".to_string())])?;
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::from([Did("did:plc:someone-else".to_string())]))?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -851,7 +851,7 @@ mod tests {
             0,
         )?;
 
-        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &[Did("did:plc:linker".to_string())])?;
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::from([Did("did:plc:linker".to_string())]))?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -869,6 +869,30 @@ mod tests {
                     },
                 ],
                 next: None,
+            }
+        );
+
+        let links = storage.get_links_from_dids("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::from([
+            Did("did:plc:linker".to_string()),
+            Did("did:plc:someone-else".to_string()),
+        ]))?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (3, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:someone-else".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf-2".into(),
+                    },
+                ],
+                next: Some(1),
             }
         );
     });
