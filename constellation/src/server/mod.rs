@@ -238,7 +238,7 @@ struct GetLinkItemsQuery {
     collection: String,
     path: String,
     cursor: Option<OpaqueApiCursor>,
-    did: Vec<String>,
+    from_dids: Option<String>, // comma separated: gross
     limit: Option<u64>,
     // TODO: allow reverse (er, forward) order as well
 }
@@ -271,7 +271,11 @@ fn get_links(
         return Err(http::StatusCode::BAD_REQUEST);
     }
 
-    let filter_dids = HashSet::from_iter(query.did.iter().map(|d| Did(d.to_string())));
+    let filter_dids = &query
+        .from_dids
+        .clone()
+        .map(|comma_joined| HashSet::from_iter(comma_joined.split(',').map(|d| Did(d.to_string()))))
+        .unwrap_or_default();
 
     let paged = store
         .get_links(
@@ -280,7 +284,7 @@ fn get_links(
             &query.path,
             limit,
             until,
-            &filter_dids,
+            filter_dids,
         )
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
