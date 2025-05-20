@@ -275,6 +275,16 @@ impl DbBytes for KeyRank {
         Ok((rank, 8))
     }
 }
+impl From<u64> for KeyRank {
+    fn from(n: u64) -> Self {
+        Self(n)
+    }
+}
+impl From<KeyRank> for u64 {
+    fn from(kr: KeyRank) -> Self {
+        kr.0
+    }
+}
 
 pub type BucketedRankRecordsKey<P, C> =
     DbConcat<DbConcat<DbConcat<DbStaticStr<P>, C>, KeyRank>, Nsid>;

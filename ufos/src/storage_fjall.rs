@@ -2,12 +2,13 @@ use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use crate::store_types::{
-    AllTimeRollupKey, CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal,
-    HourTruncatedCursor, HourlyRollupKey, JetstreamCursorKey, JetstreamCursorValue,
-    JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey, NewRollupCursorKey,
-    NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey,
-    RecordLocationMeta, RecordLocationVal, RecordRawValue, TakeoffKey, TakeoffValue,
-    TrimCollectionCursorKey, WeekTruncatedCursor, WeeklyRollupKey,
+    AllTimeDidsKey, AllTimeRecordsKey, AllTimeRollupKey, CountsValue, DeleteAccountQueueKey,
+    DeleteAccountQueueVal, HourTruncatedCursor, HourlyDidsKey, HourlyRecordsKey, HourlyRollupKey,
+    JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
+    LiveCountsKey, NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
+    RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, TakeoffKey,
+    TakeoffValue, TrimCollectionCursorKey, WeekTruncatedCursor, WeeklyDidsKey, WeeklyRecordsKey,
+    WeeklyRollupKey,
 };
 use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, TopCollections, UFOsRecord};
 use async_trait::async_trait;
@@ -597,8 +598,9 @@ impl FjallWriter {
             last_cursor = key.cursor();
         }
 
+        // go through each new rollup thing and merge it with whatever might already be in the db
         for ((nsid, rollup), counts) in counts_by_rollup {
-            let key_bytes = match rollup {
+            let rollup_key_bytes = match rollup {
                 Rollup::Hourly(hourly_cursor) => {
                     HourlyRollupKey::new(hourly_cursor, &nsid).to_db_bytes()?
                 }
@@ -609,14 +611,84 @@ impl FjallWriter {
             };
             let mut rolled: CountsValue = self
                 .rollups
-                .get(&key_bytes)?
+                .get(&rollup_key_bytes)?
                 .as_deref()
                 .map(db_complete::<CountsValue>)
                 .transpose()?
                 .unwrap_or_default();
 
+            // now that we have values, we can fetch the ranks
+            // TODO: save .records() and .estimate() and then do this match only once later
+            let (rank_records_key_bytes, rank_dids_key_bytes) = match rollup {
+                Rollup::Hourly(hourly_cursor) => (
+                    HourlyRecordsKey::new(hourly_cursor, rolled.records().into(), &nsid)
+                        .to_db_bytes()?,
+                    HourlyDidsKey::new(
+                        hourly_cursor,
+                        (rolled.dids().estimate() as u64).into(),
+                        &nsid,
+                    )
+                    .to_db_bytes()?,
+                ),
+                Rollup::Weekly(weekly_cursor) => (
+                    WeeklyRecordsKey::new(weekly_cursor, rolled.records().into(), &nsid)
+                        .to_db_bytes()?,
+                    WeeklyDidsKey::new(
+                        weekly_cursor,
+                        (rolled.dids().estimate() as u64).into(),
+                        &nsid,
+                    )
+                    .to_db_bytes()?,
+                ),
+                Rollup::AllTime => (
+                    AllTimeRecordsKey::new(rolled.records().into(), &nsid).to_db_bytes()?,
+                    AllTimeDidsKey::new((rolled.dids().estimate() as u64).into(), &nsid)
+                        .to_db_bytes()?,
+                ),
+            };
+
+            // update the rollup
             rolled.merge(&counts);
-            batch.insert(&self.rollups, &key_bytes, &rolled.to_db_bytes()?);
+
+            // replace rank entries
+            let (new_rank_records_key_bytes, new_rank_dids_key_bytes) = match rollup {
+                Rollup::Hourly(hourly_cursor) => (
+                    HourlyRecordsKey::new(hourly_cursor, rolled.records().into(), &nsid)
+                        .to_db_bytes()?,
+                    HourlyDidsKey::new(
+                        hourly_cursor,
+                        (rolled.dids().estimate() as u64).into(),
+                        &nsid,
+                    )
+                    .to_db_bytes()?,
+                ),
+                Rollup::Weekly(weekly_cursor) => (
+                    WeeklyRecordsKey::new(weekly_cursor, rolled.records().into(), &nsid)
+                        .to_db_bytes()?,
+                    WeeklyDidsKey::new(
+                        weekly_cursor,
+                        (rolled.dids().estimate() as u64).into(),
+                        &nsid,
+                    )
+                    .to_db_bytes()?,
+                ),
+                Rollup::AllTime => (
+                    AllTimeRecordsKey::new(rolled.records().into(), &nsid).to_db_bytes()?,
+                    AllTimeDidsKey::new((rolled.dids().estimate() as u64).into(), &nsid)
+                        .to_db_bytes()?,
+                ),
+            };
+            if new_rank_records_key_bytes != rank_records_key_bytes {
+                batch.remove(&self.rollups, &rank_records_key_bytes);
+                batch.insert(&self.rollups, &new_rank_records_key_bytes, "");
+            }
+            if new_rank_dids_key_bytes != rank_dids_key_bytes {
+                batch.remove(&self.rollups, &rank_dids_key_bytes);
+                batch.insert(&self.rollups, &new_rank_dids_key_bytes, "");
+            }
+
+            // set the updated rollup
+            batch.insert(&self.rollups, &rollup_key_bytes, &rolled.to_db_bytes()?);
         }
 
         insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, last_cursor)?;
