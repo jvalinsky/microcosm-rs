@@ -617,77 +617,69 @@ impl FjallWriter {
                 .transpose()?
                 .unwrap_or_default();
 
-            // now that we have values, we can fetch the ranks
-            // TODO: save .records() and .estimate() and then do this match only once later
-            let (rank_records_key_bytes, rank_dids_key_bytes) = match rollup {
-                Rollup::Hourly(hourly_cursor) => (
-                    HourlyRecordsKey::new(hourly_cursor, rolled.records().into(), &nsid)
-                        .to_db_bytes()?,
-                    HourlyDidsKey::new(
-                        hourly_cursor,
-                        (rolled.dids().estimate() as u64).into(),
-                        &nsid,
-                    )
-                    .to_db_bytes()?,
-                ),
-                Rollup::Weekly(weekly_cursor) => (
-                    WeeklyRecordsKey::new(weekly_cursor, rolled.records().into(), &nsid)
-                        .to_db_bytes()?,
-                    WeeklyDidsKey::new(
-                        weekly_cursor,
-                        (rolled.dids().estimate() as u64).into(),
-                        &nsid,
-                    )
-                    .to_db_bytes()?,
-                ),
-                Rollup::AllTime => (
-                    AllTimeRecordsKey::new(rolled.records().into(), &nsid).to_db_bytes()?,
-                    AllTimeDidsKey::new((rolled.dids().estimate() as u64).into(), &nsid)
-                        .to_db_bytes()?,
-                ),
-            };
+            // now that we have values, we can know the exising ranks
+            let before_records_count = rolled.records();
+            let before_dids_estimate = rolled.dids().estimate() as u64;
 
             // update the rollup
             rolled.merge(&counts);
 
             // replace rank entries
-            let (new_rank_records_key_bytes, new_rank_dids_key_bytes) = match rollup {
-                Rollup::Hourly(hourly_cursor) => (
-                    HourlyRecordsKey::new(hourly_cursor, rolled.records().into(), &nsid)
-                        .to_db_bytes()?,
-                    HourlyDidsKey::new(
-                        hourly_cursor,
-                        (rolled.dids().estimate() as u64).into(),
-                        &nsid,
-                    )
-                    .to_db_bytes()?,
-                ),
-                Rollup::Weekly(weekly_cursor) => (
-                    WeeklyRecordsKey::new(weekly_cursor, rolled.records().into(), &nsid)
-                        .to_db_bytes()?,
-                    WeeklyDidsKey::new(
-                        weekly_cursor,
-                        (rolled.dids().estimate() as u64).into(),
-                        &nsid,
-                    )
-                    .to_db_bytes()?,
-                ),
-                Rollup::AllTime => (
-                    AllTimeRecordsKey::new(rolled.records().into(), &nsid).to_db_bytes()?,
-                    AllTimeDidsKey::new((rolled.dids().estimate() as u64).into(), &nsid)
-                        .to_db_bytes()?,
-                ),
+            let (old_records, new_records, dids) = match rollup {
+                Rollup::Hourly(hourly_cursor) => {
+                    let old_records =
+                        HourlyRecordsKey::new(hourly_cursor, before_records_count.into(), &nsid);
+                    let new_records = old_records.with_rank(rolled.records().into());
+                    let new_estimate = rolled.dids().estimate() as u64;
+                    let dids = if new_estimate == before_dids_estimate {
+                        None
+                    } else {
+                        let old_dids =
+                            HourlyDidsKey::new(hourly_cursor, before_dids_estimate.into(), &nsid);
+                        let new_dids = old_dids.with_rank(new_estimate.into());
+                        Some((old_dids.to_db_bytes()?, new_dids.to_db_bytes()?))
+                    };
+                    (old_records.to_db_bytes()?, new_records.to_db_bytes()?, dids)
+                }
+                Rollup::Weekly(weekly_cursor) => {
+                    let old_records =
+                        WeeklyRecordsKey::new(weekly_cursor, before_records_count.into(), &nsid);
+                    let new_records = old_records.with_rank(rolled.records().into());
+                    let new_estimate = rolled.dids().estimate() as u64;
+                    let dids = if new_estimate == before_dids_estimate {
+                        None
+                    } else {
+                        let old_dids =
+                            WeeklyDidsKey::new(weekly_cursor, before_dids_estimate.into(), &nsid);
+                        let new_dids = old_dids.with_rank(new_estimate.into());
+                        Some((old_dids.to_db_bytes()?, new_dids.to_db_bytes()?))
+                    };
+                    (old_records.to_db_bytes()?, new_records.to_db_bytes()?, dids)
+                }
+                Rollup::AllTime => {
+                    let old_records = AllTimeRecordsKey::new(before_records_count.into(), &nsid);
+                    let new_records = old_records.with_rank(rolled.records().into());
+                    let new_estimate = rolled.dids().estimate() as u64;
+                    let dids = if new_estimate == before_dids_estimate {
+                        None
+                    } else {
+                        let old_dids = AllTimeDidsKey::new(before_dids_estimate.into(), &nsid);
+                        let new_dids = old_dids.with_rank(new_estimate.into());
+                        Some((old_dids.to_db_bytes()?, new_dids.to_db_bytes()?))
+                    };
+                    (old_records.to_db_bytes()?, new_records.to_db_bytes()?, dids)
+                }
             };
-            if new_rank_records_key_bytes != rank_records_key_bytes {
-                batch.remove(&self.rollups, &rank_records_key_bytes);
-                batch.insert(&self.rollups, &new_rank_records_key_bytes, "");
-            }
-            if new_rank_dids_key_bytes != rank_dids_key_bytes {
-                batch.remove(&self.rollups, &rank_dids_key_bytes);
-                batch.insert(&self.rollups, &new_rank_dids_key_bytes, "");
+
+            // replace the ranks
+            batch.remove(&self.rollups, &old_records);
+            batch.insert(&self.rollups, &new_records, "");
+            if let Some((old_dids, new_dids)) = dids {
+                batch.remove(&self.rollups, &old_dids);
+                batch.insert(&self.rollups, &new_dids, "");
             }
 
-            // set the updated rollup
+            // replace the rollup
             batch.insert(&self.rollups, &rollup_key_bytes, &rolled.to_db_bytes()?);
         }
 

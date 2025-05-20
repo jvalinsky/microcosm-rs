@@ -291,7 +291,7 @@ pub type BucketedRankRecordsKey<P, C> =
 impl<P, C> BucketedRankRecordsKey<P, C>
 where
     P: StaticStr + PartialEq + std::fmt::Debug,
-    C: DbBytes + PartialEq + std::fmt::Debug,
+    C: DbBytes + PartialEq + std::fmt::Debug + Clone,
 {
     pub fn new(cursor: C, rank: KeyRank, nsid: &Nsid) -> Self {
         Self::from_pair(
@@ -299,8 +299,8 @@ where
             nsid.clone(),
         )
     }
-    pub fn update_rank(&mut self, new_rank: KeyRank) {
-        self.prefix.suffix = new_rank;
+    pub fn with_rank(&self, new_rank: KeyRank) -> Self {
+        Self::new(self.prefix.prefix.suffix.clone(), new_rank, &self.suffix)
     }
 }
 
@@ -363,8 +363,8 @@ where
     pub fn new(rank: KeyRank, nsid: &Nsid) -> Self {
         Self::from_pair(DbConcat::from_pair(Default::default(), rank), nsid.clone())
     }
-    pub fn update_rank(&mut self, new_rank: KeyRank) {
-        self.prefix.suffix = new_rank;
+    pub fn with_rank(&self, new_rank: KeyRank) -> Self {
+        Self::new(new_rank, &self.suffix)
     }
 }
 
