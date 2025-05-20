@@ -600,17 +600,12 @@ impl FjallWriter {
         for ((nsid, rollup), counts) in counts_by_rollup {
             let key_bytes = match rollup {
                 Rollup::Hourly(hourly_cursor) => {
-                    let k = HourlyRollupKey::new(hourly_cursor, &nsid);
-                    k.to_db_bytes()?
+                    HourlyRollupKey::new(hourly_cursor, &nsid).to_db_bytes()?
                 }
                 Rollup::Weekly(weekly_cursor) => {
-                    let k = WeeklyRollupKey::new(weekly_cursor, &nsid);
-                    k.to_db_bytes()?
+                    WeeklyRollupKey::new(weekly_cursor, &nsid).to_db_bytes()?
                 }
-                Rollup::AllTime => {
-                    let k = AllTimeRollupKey::new(&nsid);
-                    k.to_db_bytes()?
-                }
+                Rollup::AllTime => AllTimeRollupKey::new(&nsid).to_db_bytes()?,
             };
             let mut rolled: CountsValue = self
                 .rollups
@@ -619,16 +614,6 @@ impl FjallWriter {
                 .map(db_complete::<CountsValue>)
                 .transpose()?
                 .unwrap_or_default();
-
-            // try to round-trip before inserting, for funsies
-            let tripppin = counts.to_db_bytes()?;
-            let (and_back, n) = CountsValue::from_db_bytes(&tripppin)?;
-            assert_eq!(n, tripppin.len());
-            assert_eq!(counts.prefix, and_back.prefix);
-            assert_eq!(counts.dids().estimate(), and_back.dids().estimate());
-            if counts.records() > 200_000_000_000 {
-                panic!("COUNTS maybe wtf? {counts:?}")
-            }
 
             rolled.merge(&counts);
             batch.insert(&self.rollups, &key_bytes, &rolled.to_db_bytes()?);
