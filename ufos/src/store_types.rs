@@ -6,6 +6,18 @@ use bincode::{Decode, Encode};
 use cardinality_estimator_safe::CardinalityEstimator;
 use std::ops::Range;
 
+macro_rules! static_str {
+    ($prefix:expr, $name:ident) => {
+        #[derive(Debug, PartialEq)]
+        pub struct $name {}
+        impl StaticStr for $name {
+            fn static_str() -> &'static str {
+                $prefix
+            }
+        }
+    };
+}
+
 /// key format: ["js_cursor"]
 #[derive(Debug, PartialEq)]
 pub struct JetstreamCursorKey {}
@@ -289,6 +301,41 @@ impl DeleteAccountQueueKey {
 }
 pub type DeleteAccountQueueVal = Did;
 
+/// big-endian encoded u64 for LSM prefix-fiendly key
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyRank(u64);
+impl DbBytes for KeyRank {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(self.0.to_be_bytes().to_vec())
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        if bytes.len() < 8 {
+            return Err(EncodingError::DecodeNotEnoughBytes);
+        }
+        let bytes8 = TryInto::<[u8; 8]>::try_into(&bytes[..8])?;
+        let rank = KeyRank(u64::from_be_bytes(bytes8));
+        Ok((rank, 8))
+    }
+}
+
+pub type BucketedRankRecordsKey<P, C> =
+    DbConcat<DbConcat<DbConcat<DbStaticStr<P>, C>, KeyRank>, Nsid>;
+impl<P, C> BucketedRankRecordsKey<P, C>
+where
+    P: StaticStr + PartialEq + std::fmt::Debug,
+    C: DbBytes + PartialEq + std::fmt::Debug,
+{
+    pub fn new(cursor: C, rank: KeyRank, nsid: &Nsid) -> Self {
+        Self::from_pair(
+            DbConcat::from_pair(DbConcat::from_pair(Default::default(), cursor), rank),
+            nsid.clone(),
+        )
+    }
+    pub fn update_rank(&mut self, new_rank: KeyRank) {
+        self.prefix.suffix = new_rank;
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct _HourlyRollupStaticStr {}
 impl StaticStr for _HourlyRollupStaticStr {
@@ -307,6 +354,12 @@ impl HourlyRollupKey {
     }
 }
 pub type HourlyRollupVal = CountsValue;
+
+static_str!("hourly_rank_records", _HourlyRecordsStaticStr);
+pub type HourlyRecordsKey = BucketedRankRecordsKey<_HourlyRecordsStaticStr, HourTruncatedCursor>;
+
+static_str!("hourly_rank_dids", _HourlyDidsStaticStr);
+pub type HourlyDidsKey = BucketedRankRecordsKey<_HourlyDidsStaticStr, HourTruncatedCursor>;
 
 #[derive(Debug, PartialEq)]
 pub struct _WeeklyRollupStaticStr {}
@@ -327,6 +380,12 @@ impl WeeklyRollupKey {
 }
 pub type WeeklyRollupVal = CountsValue;
 
+static_str!("weekly_rank_records", _WeeklyRecordsStaticStr);
+pub type WeeklyRecordsKey = BucketedRankRecordsKey<_WeeklyRecordsStaticStr, WeekTruncatedCursor>;
+
+static_str!("weekly_rank_dids", _WeeklyDidsStaticStr);
+pub type WeeklyDidsKey = BucketedRankRecordsKey<_WeeklyDidsStaticStr, WeekTruncatedCursor>;
+
 #[derive(Debug, PartialEq)]
 pub struct _AllTimeRollupStaticStr {}
 impl StaticStr for _AllTimeRollupStaticStr {
@@ -345,6 +404,25 @@ impl AllTimeRollupKey {
     }
 }
 pub type AllTimeRollupVal = CountsValue;
+
+pub type AllTimeRankRecordsKey<P> = DbConcat<DbConcat<DbStaticStr<P>, KeyRank>, Nsid>;
+impl<P> AllTimeRankRecordsKey<P>
+where
+    P: StaticStr + PartialEq + std::fmt::Debug,
+{
+    pub fn new(rank: KeyRank, nsid: &Nsid) -> Self {
+        Self::from_pair(DbConcat::from_pair(Default::default(), rank), nsid.clone())
+    }
+    pub fn update_rank(&mut self, new_rank: KeyRank) {
+        self.prefix.suffix = new_rank;
+    }
+}
+
+static_str!("ever_rank_records", _AllTimeRecordsStaticStr);
+pub type AllTimeRecordsKey = AllTimeRankRecordsKey<_AllTimeRecordsStaticStr>;
+
+static_str!("ever_rank_dids", _AllTimeDidsStaticStr);
+pub type AllTimeDidsKey = AllTimeRankRecordsKey<_AllTimeDidsStaticStr>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash, PartialOrd, Eq)]
 pub struct TruncatedCursor<const MOD: u64>(u64);

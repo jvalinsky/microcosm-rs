@@ -70,19 +70,44 @@ const MAX_BATCHED_ROLLUP_COUNTS: usize = 256;
 ///      - key: "live_counts" || u64 || nullstr (js_cursor, nsid)
 ///      - val: u64 || HLL (count (not cursor), estimator)
 ///
+///
 /// - Hourly total record counts and dids estimate per collection
 ///      - key: "hourly_counts" || u64 || nullstr (hour, nsid)
 ///      - val: u64 || HLL (count (not cursor), estimator)
 ///
+/// - Hourly record count ranking
+///      - key: "hourly_rank_records" || u64 || u64 || nullstr (hour, count, nsid)
+///      - val: [empty]
+///
+/// - Hourly did estimate ranking
+///      - key: "hourly_rank_dids" || u64 || u64 || nullstr (hour, dids estimate, nsid)
+///      - val: [empty]
+///
+///
 /// - Weekly total record counts and dids estimate per collection
-///      - key: "weekly_counts" || u64 || nullstr (hour, nsid)
+///      - key: "weekly_counts" || u64 || nullstr (week, nsid)
 ///      - val: u64 || HLL (count (not cursor), estimator)
+///
+/// - Weekly record count ranking
+///      - key: "weekly_rank_records" || u64 || u64 || nullstr (week, count, nsid)
+///      - val: [empty]
+///
+/// - Weekly did estimate ranking
+///      - key: "weekly_rank_dids" || u64 || u64 || nullstr (week, dids estimate, nsid)
+///      - val: [empty]
+///
 ///
 /// - All-time total record counts and dids estimate per collection
 ///      - key: "ever_counts" || nullstr (nsid)
 ///      - val: u64 || HLL (count (not cursor), estimator)
 ///
-/// - TODO: sorted indexes for all-times?
+/// - All-time total record record count ranking
+///      - key: "ever_rank_records" || u64 || nullstr (count, nsid)
+///      - val: [empty]
+///
+/// - All-time did estimate ranking
+///      - key: "ever_rank_dids" || u64 || nullstr (dids estimate, nsid)
+///      - val: [empty]
 ///
 ///
 /// Partition: 'queues'
