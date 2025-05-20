@@ -18,35 +18,17 @@ macro_rules! static_str {
     };
 }
 
-/// key format: ["js_cursor"]
-#[derive(Debug, PartialEq)]
-pub struct JetstreamCursorKey {}
-impl StaticStr for JetstreamCursorKey {
-    fn static_str() -> &'static str {
-        "js_cursor"
-    }
-}
+// key format: ["js_cursor"]
+static_str!("js_cursor", JetstreamCursorKey);
 pub type JetstreamCursorValue = Cursor;
 
-/// key format: ["rollup_cursor"]
-#[derive(Debug, PartialEq)]
-pub struct NewRollupCursorKey {}
-impl StaticStr for NewRollupCursorKey {
-    fn static_str() -> &'static str {
-        "rollup_cursor"
-    }
-}
+// key format: ["rollup_cursor"]
+static_str!("rollup_cursor", NewRollupCursorKey);
 // pub type NewRollupCursorKey = DbStaticStr<_NewRollupCursorKey>;
 /// value format: [rollup_cursor(Cursor)|collection(Nsid)]
 pub type NewRollupCursorValue = Cursor;
 
-#[derive(Debug, PartialEq)]
-pub struct _TrimCollectionStaticStr {}
-impl StaticStr for _TrimCollectionStaticStr {
-    fn static_str() -> &'static str {
-        "trim_cursor"
-    }
-}
+static_str!("trim_cursor", _TrimCollectionStaticStr);
 type TrimCollectionCursorPrefix = DbStaticStr<_TrimCollectionStaticStr>;
 pub type TrimCollectionCursorKey = DbConcat<TrimCollectionCursorPrefix, Nsid>;
 impl TrimCollectionCursorKey {
@@ -56,24 +38,12 @@ impl TrimCollectionCursorKey {
 }
 pub type TrimCollectionCursorVal = Cursor;
 
-/// key format: ["js_endpoint"]
-#[derive(Debug, PartialEq)]
-pub struct TakeoffKey {}
-impl StaticStr for TakeoffKey {
-    fn static_str() -> &'static str {
-        "takeoff"
-    }
-}
+// key format: ["js_endpoint"]
+static_str!("takeoff", TakeoffKey);
 pub type TakeoffValue = Cursor;
 
-/// key format: ["js_endpoint"]
-#[derive(Debug, PartialEq)]
-pub struct JetstreamEndpointKey {}
-impl StaticStr for JetstreamEndpointKey {
-    fn static_str() -> &'static str {
-        "js_endpoint"
-    }
-}
+// key format: ["js_endpoint"]
+static_str!("js_endpoint", JetstreamEndpointKey);
 #[derive(Debug, PartialEq)]
 pub struct JetstreamEndpointValue(pub String);
 /// String wrapper for jetstream endpoint value
@@ -199,13 +169,7 @@ impl From<(Cursor, &str, PutAction)> for RecordLocationVal {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct _LiveRecordsStaticStr {}
-impl StaticStr for _LiveRecordsStaticStr {
-    fn static_str() -> &'static str {
-        "live_counts"
-    }
-}
+static_str!("live_counts", _LiveRecordsStaticStr);
 
 type LiveCountsStaticPrefix = DbStaticStr<_LiveRecordsStaticStr>;
 type LiveCountsCursorPrefix = DbConcat<LiveCountsStaticPrefix, Cursor>;
@@ -285,13 +249,7 @@ impl Default for CountsValue {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct _DeleteAccountStaticStr {}
-impl StaticStr for _DeleteAccountStaticStr {
-    fn static_str() -> &'static str {
-        "delete_acount"
-    }
-}
+static_str!("delete_acount", _DeleteAccountStaticStr);
 pub type DeleteAccountStaticPrefix = DbStaticStr<_DeleteAccountStaticStr>;
 pub type DeleteAccountQueueKey = DbConcat<DeleteAccountStaticPrefix, Cursor>;
 impl DeleteAccountQueueKey {
@@ -336,13 +294,7 @@ where
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct _HourlyRollupStaticStr {}
-impl StaticStr for _HourlyRollupStaticStr {
-    fn static_str() -> &'static str {
-        "hourly_counts"
-    }
-}
+static_str!("hourly_counts", _HourlyRollupStaticStr);
 pub type HourlyRollupStaticPrefix = DbStaticStr<_HourlyRollupStaticStr>;
 pub type HourlyRollupKey = DbConcat<DbConcat<HourlyRollupStaticPrefix, HourTruncatedCursor>, Nsid>;
 impl HourlyRollupKey {
@@ -361,13 +313,7 @@ pub type HourlyRecordsKey = BucketedRankRecordsKey<_HourlyRecordsStaticStr, Hour
 static_str!("hourly_rank_dids", _HourlyDidsStaticStr);
 pub type HourlyDidsKey = BucketedRankRecordsKey<_HourlyDidsStaticStr, HourTruncatedCursor>;
 
-#[derive(Debug, PartialEq)]
-pub struct _WeeklyRollupStaticStr {}
-impl StaticStr for _WeeklyRollupStaticStr {
-    fn static_str() -> &'static str {
-        "weekly_counts"
-    }
-}
+static_str!("weekly_counts", _WeeklyRollupStaticStr);
 pub type WeeklyRollupStaticPrefix = DbStaticStr<_WeeklyRollupStaticStr>;
 pub type WeeklyRollupKey = DbConcat<DbConcat<WeeklyRollupStaticPrefix, WeekTruncatedCursor>, Nsid>;
 impl WeeklyRollupKey {
@@ -386,13 +332,7 @@ pub type WeeklyRecordsKey = BucketedRankRecordsKey<_WeeklyRecordsStaticStr, Week
 static_str!("weekly_rank_dids", _WeeklyDidsStaticStr);
 pub type WeeklyDidsKey = BucketedRankRecordsKey<_WeeklyDidsStaticStr, WeekTruncatedCursor>;
 
-#[derive(Debug, PartialEq)]
-pub struct _AllTimeRollupStaticStr {}
-impl StaticStr for _AllTimeRollupStaticStr {
-    fn static_str() -> &'static str {
-        "ever_counts"
-    }
-}
+static_str!("ever_counts", _AllTimeRollupStaticStr);
 pub type AllTimeRollupStaticPrefix = DbStaticStr<_AllTimeRollupStaticStr>;
 pub type AllTimeRollupKey = DbConcat<AllTimeRollupStaticPrefix, Nsid>;
 impl AllTimeRollupKey {
