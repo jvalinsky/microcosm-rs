@@ -6,35 +6,29 @@ use bincode::{Decode, Encode};
 use cardinality_estimator_safe::CardinalityEstimator;
 use std::ops::Range;
 
-/// key format: ["js_cursor"]
-#[derive(Debug, PartialEq)]
-pub struct JetstreamCursorKey {}
-impl StaticStr for JetstreamCursorKey {
-    fn static_str() -> &'static str {
-        "js_cursor"
-    }
+macro_rules! static_str {
+    ($prefix:expr, $name:ident) => {
+        #[derive(Debug, PartialEq)]
+        pub struct $name {}
+        impl StaticStr for $name {
+            fn static_str() -> &'static str {
+                $prefix
+            }
+        }
+    };
 }
+
+// key format: ["js_cursor"]
+static_str!("js_cursor", JetstreamCursorKey);
 pub type JetstreamCursorValue = Cursor;
 
-/// key format: ["rollup_cursor"]
-#[derive(Debug, PartialEq)]
-pub struct NewRollupCursorKey {}
-impl StaticStr for NewRollupCursorKey {
-    fn static_str() -> &'static str {
-        "rollup_cursor"
-    }
-}
+// key format: ["rollup_cursor"]
+static_str!("rollup_cursor", NewRollupCursorKey);
 // pub type NewRollupCursorKey = DbStaticStr<_NewRollupCursorKey>;
 /// value format: [rollup_cursor(Cursor)|collection(Nsid)]
 pub type NewRollupCursorValue = Cursor;
 
-#[derive(Debug, PartialEq)]
-pub struct _TrimCollectionStaticStr {}
-impl StaticStr for _TrimCollectionStaticStr {
-    fn static_str() -> &'static str {
-        "trim_cursor"
-    }
-}
+static_str!("trim_cursor", _TrimCollectionStaticStr);
 type TrimCollectionCursorPrefix = DbStaticStr<_TrimCollectionStaticStr>;
 pub type TrimCollectionCursorKey = DbConcat<TrimCollectionCursorPrefix, Nsid>;
 impl TrimCollectionCursorKey {
@@ -44,24 +38,12 @@ impl TrimCollectionCursorKey {
 }
 pub type TrimCollectionCursorVal = Cursor;
 
-/// key format: ["js_endpoint"]
-#[derive(Debug, PartialEq)]
-pub struct TakeoffKey {}
-impl StaticStr for TakeoffKey {
-    fn static_str() -> &'static str {
-        "takeoff"
-    }
-}
+// key format: ["js_endpoint"]
+static_str!("takeoff", TakeoffKey);
 pub type TakeoffValue = Cursor;
 
-/// key format: ["js_endpoint"]
-#[derive(Debug, PartialEq)]
-pub struct JetstreamEndpointKey {}
-impl StaticStr for JetstreamEndpointKey {
-    fn static_str() -> &'static str {
-        "js_endpoint"
-    }
-}
+// key format: ["js_endpoint"]
+static_str!("js_endpoint", JetstreamEndpointKey);
 #[derive(Debug, PartialEq)]
 pub struct JetstreamEndpointValue(pub String);
 /// String wrapper for jetstream endpoint value
@@ -187,13 +169,7 @@ impl From<(Cursor, &str, PutAction)> for RecordLocationVal {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct _LiveRecordsStaticStr {}
-impl StaticStr for _LiveRecordsStaticStr {
-    fn static_str() -> &'static str {
-        "live_counts"
-    }
-}
+static_str!("live_counts", _LiveRecordsStaticStr);
 
 type LiveCountsStaticPrefix = DbStaticStr<_LiveRecordsStaticStr>;
 type LiveCountsCursorPrefix = DbConcat<LiveCountsStaticPrefix, Cursor>;
@@ -273,13 +249,7 @@ impl Default for CountsValue {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct _DeleteAccountStaticStr {}
-impl StaticStr for _DeleteAccountStaticStr {
-    fn static_str() -> &'static str {
-        "delete_acount"
-    }
-}
+static_str!("delete_acount", _DeleteAccountStaticStr);
 pub type DeleteAccountStaticPrefix = DbStaticStr<_DeleteAccountStaticStr>;
 pub type DeleteAccountQueueKey = DbConcat<DeleteAccountStaticPrefix, Cursor>;
 impl DeleteAccountQueueKey {
@@ -289,13 +259,52 @@ impl DeleteAccountQueueKey {
 }
 pub type DeleteAccountQueueVal = Did;
 
-#[derive(Debug, PartialEq)]
-pub struct _HourlyRollupStaticStr {}
-impl StaticStr for _HourlyRollupStaticStr {
-    fn static_str() -> &'static str {
-        "hourly_counts"
+/// big-endian encoded u64 for LSM prefix-fiendly key
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyRank(u64);
+impl DbBytes for KeyRank {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(self.0.to_be_bytes().to_vec())
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        if bytes.len() < 8 {
+            return Err(EncodingError::DecodeNotEnoughBytes);
+        }
+        let bytes8 = TryInto::<[u8; 8]>::try_into(&bytes[..8])?;
+        let rank = KeyRank(u64::from_be_bytes(bytes8));
+        Ok((rank, 8))
     }
 }
+impl From<u64> for KeyRank {
+    fn from(n: u64) -> Self {
+        Self(n)
+    }
+}
+impl From<KeyRank> for u64 {
+    fn from(kr: KeyRank) -> Self {
+        kr.0
+    }
+}
+
+pub type BucketedRankRecordsKey<P, C> =
+    DbConcat<DbConcat<DbStaticStr<P>, C>, DbConcat<KeyRank, Nsid>>;
+impl<P, C> BucketedRankRecordsKey<P, C>
+where
+    P: StaticStr + PartialEq + std::fmt::Debug,
+    C: DbBytes + PartialEq + std::fmt::Debug + Clone,
+{
+    pub fn new(cursor: C, rank: KeyRank, nsid: &Nsid) -> Self {
+        Self::from_pair(
+            DbConcat::from_pair(Default::default(), cursor),
+            DbConcat::from_pair(rank, nsid.clone()),
+        )
+    }
+    pub fn with_rank(&self, new_rank: KeyRank) -> Self {
+        Self::new(self.prefix.suffix.clone(), new_rank, &self.suffix.suffix)
+    }
+}
+
+static_str!("hourly_counts", _HourlyRollupStaticStr);
 pub type HourlyRollupStaticPrefix = DbStaticStr<_HourlyRollupStaticStr>;
 pub type HourlyRollupKey = DbConcat<DbConcat<HourlyRollupStaticPrefix, HourTruncatedCursor>, Nsid>;
 impl HourlyRollupKey {
@@ -308,13 +317,13 @@ impl HourlyRollupKey {
 }
 pub type HourlyRollupVal = CountsValue;
 
-#[derive(Debug, PartialEq)]
-pub struct _WeeklyRollupStaticStr {}
-impl StaticStr for _WeeklyRollupStaticStr {
-    fn static_str() -> &'static str {
-        "weekly_counts"
-    }
-}
+static_str!("hourly_rank_records", _HourlyRecordsStaticStr);
+pub type HourlyRecordsKey = BucketedRankRecordsKey<_HourlyRecordsStaticStr, HourTruncatedCursor>;
+
+static_str!("hourly_rank_dids", _HourlyDidsStaticStr);
+pub type HourlyDidsKey = BucketedRankRecordsKey<_HourlyDidsStaticStr, HourTruncatedCursor>;
+
+static_str!("weekly_counts", _WeeklyRollupStaticStr);
 pub type WeeklyRollupStaticPrefix = DbStaticStr<_WeeklyRollupStaticStr>;
 pub type WeeklyRollupKey = DbConcat<DbConcat<WeeklyRollupStaticPrefix, WeekTruncatedCursor>, Nsid>;
 impl WeeklyRollupKey {
@@ -327,13 +336,13 @@ impl WeeklyRollupKey {
 }
 pub type WeeklyRollupVal = CountsValue;
 
-#[derive(Debug, PartialEq)]
-pub struct _AllTimeRollupStaticStr {}
-impl StaticStr for _AllTimeRollupStaticStr {
-    fn static_str() -> &'static str {
-        "ever_counts"
-    }
-}
+static_str!("weekly_rank_records", _WeeklyRecordsStaticStr);
+pub type WeeklyRecordsKey = BucketedRankRecordsKey<_WeeklyRecordsStaticStr, WeekTruncatedCursor>;
+
+static_str!("weekly_rank_dids", _WeeklyDidsStaticStr);
+pub type WeeklyDidsKey = BucketedRankRecordsKey<_WeeklyDidsStaticStr, WeekTruncatedCursor>;
+
+static_str!("ever_counts", _AllTimeRollupStaticStr);
 pub type AllTimeRollupStaticPrefix = DbStaticStr<_AllTimeRollupStaticStr>;
 pub type AllTimeRollupKey = DbConcat<AllTimeRollupStaticPrefix, Nsid>;
 impl AllTimeRollupKey {
@@ -345,6 +354,31 @@ impl AllTimeRollupKey {
     }
 }
 pub type AllTimeRollupVal = CountsValue;
+
+pub type AllTimeRankRecordsKey<P> = DbConcat<DbStaticStr<P>, DbConcat<KeyRank, Nsid>>;
+impl<P> AllTimeRankRecordsKey<P>
+where
+    P: StaticStr + PartialEq + std::fmt::Debug,
+{
+    pub fn new(rank: KeyRank, nsid: &Nsid) -> Self {
+        Self::from_pair(Default::default(), DbConcat::from_pair(rank, nsid.clone()))
+    }
+    pub fn with_rank(&self, new_rank: KeyRank) -> Self {
+        Self::new(new_rank, &self.suffix.suffix)
+    }
+    pub fn count(&self) -> u64 {
+        self.suffix.prefix.0
+    }
+    pub fn collection(&self) -> &Nsid {
+        &self.suffix.suffix
+    }
+}
+
+static_str!("ever_rank_records", _AllTimeRecordsStaticStr);
+pub type AllTimeRecordsKey = AllTimeRankRecordsKey<_AllTimeRecordsStaticStr>;
+
+static_str!("ever_rank_dids", _AllTimeDidsStaticStr);
+pub type AllTimeDidsKey = AllTimeRankRecordsKey<_AllTimeDidsStaticStr>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash, PartialOrd, Eq)]
 pub struct TruncatedCursor<const MOD: u64>(u64);

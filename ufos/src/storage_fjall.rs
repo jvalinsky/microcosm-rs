@@ -2,14 +2,18 @@ use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use crate::store_types::{
-    AllTimeRollupKey, CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal,
-    HourTruncatedCursor, HourlyRollupKey, JetstreamCursorKey, JetstreamCursorValue,
-    JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey, NewRollupCursorKey,
-    NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey,
-    RecordLocationMeta, RecordLocationVal, RecordRawValue, TakeoffKey, TakeoffValue,
-    TrimCollectionCursorKey, WeekTruncatedCursor, WeeklyRollupKey,
+    AllTimeDidsKey, AllTimeRecordsKey, AllTimeRollupKey, CountsValue, DeleteAccountQueueKey,
+    DeleteAccountQueueVal, HourTruncatedCursor, HourlyDidsKey, HourlyRecordsKey, HourlyRollupKey,
+    JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
+    LiveCountsKey, NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
+    RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, TakeoffKey,
+    TakeoffValue, TrimCollectionCursorKey, WeekTruncatedCursor, WeeklyDidsKey, WeeklyRecordsKey,
+    WeeklyRollupKey,
 };
-use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, TopCollections, UFOsRecord};
+use crate::{
+    CommitAction, ConsumerInfo, Count, Did, EventBatch, Nsid, QueryPeriod, TopCollections,
+    UFOsRecord,
+};
 use async_trait::async_trait;
 use fjall::{Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle};
 use jetstream::events::Cursor;
@@ -70,19 +74,44 @@ const MAX_BATCHED_ROLLUP_COUNTS: usize = 256;
 ///      - key: "live_counts" || u64 || nullstr (js_cursor, nsid)
 ///      - val: u64 || HLL (count (not cursor), estimator)
 ///
+///
 /// - Hourly total record counts and dids estimate per collection
 ///      - key: "hourly_counts" || u64 || nullstr (hour, nsid)
 ///      - val: u64 || HLL (count (not cursor), estimator)
 ///
+/// - Hourly record count ranking
+///      - key: "hourly_rank_records" || u64 || u64 || nullstr (hour, count, nsid)
+///      - val: [empty]
+///
+/// - Hourly did estimate ranking
+///      - key: "hourly_rank_dids" || u64 || u64 || nullstr (hour, dids estimate, nsid)
+///      - val: [empty]
+///
+///
 /// - Weekly total record counts and dids estimate per collection
-///      - key: "weekly_counts" || u64 || nullstr (hour, nsid)
+///      - key: "weekly_counts" || u64 || nullstr (week, nsid)
 ///      - val: u64 || HLL (count (not cursor), estimator)
+///
+/// - Weekly record count ranking
+///      - key: "weekly_rank_records" || u64 || u64 || nullstr (week, count, nsid)
+///      - val: [empty]
+///
+/// - Weekly did estimate ranking
+///      - key: "weekly_rank_dids" || u64 || u64 || nullstr (week, dids estimate, nsid)
+///      - val: [empty]
+///
 ///
 /// - All-time total record counts and dids estimate per collection
 ///      - key: "ever_counts" || nullstr (nsid)
 ///      - val: u64 || HLL (count (not cursor), estimator)
 ///
-/// - TODO: sorted indexes for all-times?
+/// - All-time total record record count ranking
+///      - key: "ever_rank_records" || u64 || nullstr (count, nsid)
+///      - val: [empty]
+///
+/// - All-time did estimate ranking
+///      - key: "ever_rank_dids" || u64 || nullstr (dids estimate, nsid)
+///      - val: [empty]
 ///
 ///
 /// Partition: 'queues'
@@ -313,6 +342,66 @@ impl FjallReader {
         })
     }
 
+    fn get_top_collections_by_count(
+        &self,
+        limit: usize,
+        period: QueryPeriod,
+    ) -> StorageResult<Vec<Count>> {
+        Ok(if period.is_all_time() {
+            let snapshot = self.rollups.snapshot();
+            let mut out = Vec::with_capacity(limit);
+            let prefix = AllTimeRecordsKey::from_prefix_to_db_bytes(&Default::default())?;
+            for kv in snapshot.prefix(prefix).rev().take(limit) {
+                let (key_bytes, _) = kv?;
+                let key = db_complete::<AllTimeRecordsKey>(&key_bytes)?;
+                let rollup_key = AllTimeRollupKey::new(key.collection());
+                let db_count_bytes = snapshot.get(rollup_key.to_db_bytes()?)?.expect(
+                    "integrity: all-time rank rollup must have corresponding all-time count rollup",
+                );
+                let db_counts = db_complete::<CountsValue>(&db_count_bytes)?;
+                assert_eq!(db_counts.records(), key.count());
+                out.push(Count {
+                    thing: key.collection().to_string(),
+                    records: db_counts.records(),
+                    dids_estimate: db_counts.dids().estimate() as u64,
+                });
+            }
+            out
+        } else {
+            todo!()
+        })
+    }
+
+    fn get_top_collections_by_dids(
+        &self,
+        limit: usize,
+        period: QueryPeriod,
+    ) -> StorageResult<Vec<Count>> {
+        Ok(if period.is_all_time() {
+            let snapshot = self.rollups.snapshot();
+            let mut out = Vec::with_capacity(limit);
+            let prefix = AllTimeDidsKey::from_prefix_to_db_bytes(&Default::default())?;
+            for kv in snapshot.prefix(prefix).rev().take(limit) {
+                let (key_bytes, _) = kv?;
+                let key = db_complete::<AllTimeDidsKey>(&key_bytes)?;
+                let rollup_key = AllTimeRollupKey::new(key.collection());
+                let db_count_bytes = snapshot.get(rollup_key.to_db_bytes()?)?.expect(
+                    "integrity: all-time rank rollup must have corresponding all-time count rollup",
+                );
+                let db_counts = db_complete::<CountsValue>(&db_count_bytes)?;
+                assert_eq!(db_counts.dids().estimate() as u64, key.count());
+                out.push(Count {
+                    thing: key.collection().to_string(),
+                    records: db_counts.records(),
+                    dids_estimate: db_counts.dids().estimate() as u64,
+                });
+            }
+            out
+        } else {
+            todo!()
+        })
+    }
+
     fn get_top_collections(&self) -> Result<TopCollections, StorageError> {
         // TODO: limit nsid traversal depth
         // TODO: limit nsid traversal breadth
@@ -454,6 +543,28 @@ impl StoreReader for FjallReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || FjallReader::get_consumer_info(&s)).await?
     }
+    async fn get_top_collections_by_count(
+        &self,
+        limit: usize,
+        period: QueryPeriod,
+    ) -> StorageResult<Vec<Count>> {
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || {
+            FjallReader::get_top_collections_by_count(&s, limit, period)
+        })
+        .await?
+    }
+    async fn get_top_collections_by_dids(
+        &self,
+        limit: usize,
+        period: QueryPeriod,
+    ) -> StorageResult<Vec<Count>> {
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || {
+            FjallReader::get_top_collections_by_dids(&s, limit, period)
+        })
+        .await?
+    }
     async fn get_top_collections(&self) -> Result<TopCollections, StorageError> {
         let s = self.clone();
         tokio::task::spawn_blocking(move || FjallReader::get_top_collections(&s)).await?
@@ -572,41 +683,89 @@ impl FjallWriter {
             last_cursor = key.cursor();
         }
 
+        // go through each new rollup thing and merge it with whatever might already be in the db
         for ((nsid, rollup), counts) in counts_by_rollup {
-            let key_bytes = match rollup {
+            let rollup_key_bytes = match rollup {
                 Rollup::Hourly(hourly_cursor) => {
-                    let k = HourlyRollupKey::new(hourly_cursor, &nsid);
-                    k.to_db_bytes()?
+                    HourlyRollupKey::new(hourly_cursor, &nsid).to_db_bytes()?
                 }
                 Rollup::Weekly(weekly_cursor) => {
-                    let k = WeeklyRollupKey::new(weekly_cursor, &nsid);
-                    k.to_db_bytes()?
+                    WeeklyRollupKey::new(weekly_cursor, &nsid).to_db_bytes()?
                 }
-                Rollup::AllTime => {
-                    let k = AllTimeRollupKey::new(&nsid);
-                    k.to_db_bytes()?
-                }
+                Rollup::AllTime => AllTimeRollupKey::new(&nsid).to_db_bytes()?,
             };
             let mut rolled: CountsValue = self
                 .rollups
-                .get(&key_bytes)?
+                .get(&rollup_key_bytes)?
                 .as_deref()
                 .map(db_complete::<CountsValue>)
                 .transpose()?
                 .unwrap_or_default();
 
-            // try to round-trip before inserting, for funsies
-            let tripppin = counts.to_db_bytes()?;
-            let (and_back, n) = CountsValue::from_db_bytes(&tripppin)?;
-            assert_eq!(n, tripppin.len());
-            assert_eq!(counts.prefix, and_back.prefix);
-            assert_eq!(counts.dids().estimate(), and_back.dids().estimate());
-            if counts.records() > 200_000_000_000 {
-                panic!("COUNTS maybe wtf? {counts:?}")
+            // now that we have values, we can know the exising ranks
+            let before_records_count = rolled.records();
+            let before_dids_estimate = rolled.dids().estimate() as u64;
+
+            // update the rollup
+            rolled.merge(&counts);
+
+            // replace rank entries
+            let (old_records, new_records, dids) = match rollup {
+                Rollup::Hourly(hourly_cursor) => {
+                    let old_records =
+                        HourlyRecordsKey::new(hourly_cursor, before_records_count.into(), &nsid);
+                    let new_records = old_records.with_rank(rolled.records().into());
+                    let new_estimate = rolled.dids().estimate() as u64;
+                    let dids = if new_estimate == before_dids_estimate {
+                        None
+                    } else {
+                        let old_dids =
+                            HourlyDidsKey::new(hourly_cursor, before_dids_estimate.into(), &nsid);
+                        let new_dids = old_dids.with_rank(new_estimate.into());
+                        Some((old_dids.to_db_bytes()?, new_dids.to_db_bytes()?))
+                    };
+                    (old_records.to_db_bytes()?, new_records.to_db_bytes()?, dids)
+                }
+                Rollup::Weekly(weekly_cursor) => {
+                    let old_records =
+                        WeeklyRecordsKey::new(weekly_cursor, before_records_count.into(), &nsid);
+                    let new_records = old_records.with_rank(rolled.records().into());
+                    let new_estimate = rolled.dids().estimate() as u64;
+                    let dids = if new_estimate == before_dids_estimate {
+                        None
+                    } else {
+                        let old_dids =
+                            WeeklyDidsKey::new(weekly_cursor, before_dids_estimate.into(), &nsid);
+                        let new_dids = old_dids.with_rank(new_estimate.into());
+                        Some((old_dids.to_db_bytes()?, new_dids.to_db_bytes()?))
+                    };
+                    (old_records.to_db_bytes()?, new_records.to_db_bytes()?, dids)
+                }
+                Rollup::AllTime => {
+                    let old_records = AllTimeRecordsKey::new(before_records_count.into(), &nsid);
+                    let new_records = old_records.with_rank(rolled.records().into());
+                    let new_estimate = rolled.dids().estimate() as u64;
+                    let dids = if new_estimate == before_dids_estimate {
+                        None
+                    } else {
+                        let old_dids = AllTimeDidsKey::new(before_dids_estimate.into(), &nsid);
+                        let new_dids = old_dids.with_rank(new_estimate.into());
+                        Some((old_dids.to_db_bytes()?, new_dids.to_db_bytes()?))
+                    };
+                    (old_records.to_db_bytes()?, new_records.to_db_bytes()?, dids)
+                }
+            };
+
+            // replace the ranks
+            batch.remove(&self.rollups, &old_records);
+            batch.insert(&self.rollups, &new_records, "");
+            if let Some((old_dids, new_dids)) = dids {
+                batch.remove(&self.rollups, &old_dids);
+                batch.insert(&self.rollups, &new_dids, "");
             }
 
-            rolled.merge(&counts);
-            batch.insert(&self.rollups, &key_bytes, &rolled.to_db_bytes()?);
+            // replace the rollup
+            batch.insert(&self.rollups, &rollup_key_bytes, &rolled.to_db_bytes()?);
         }
 
         insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, last_cursor)?;

@@ -1,6 +1,6 @@
 use crate::index_html::INDEX_HTML;
 use crate::storage::StoreReader;
-use crate::{ConsumerInfo, Nsid, TopCollections, UFOsRecord};
+use crate::{ConsumerInfo, Count, Nsid, QueryPeriod, TopCollections, UFOsRecord};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
 use dropshot::Body;
@@ -213,6 +213,36 @@ async fn get_records_total_seen(
     ok_cors(seen_by_collection)
 }
 
+/// Get top collections by record count
+#[endpoint {
+    method = GET,
+    path = "/collections/by-count"
+}]
+async fn get_top_collections_by_count(ctx: RequestContext<Context>) -> OkCorsResponse<Vec<Count>> {
+    let Context { storage, .. } = ctx.context();
+    let collections = storage
+        .get_top_collections_by_count(100, QueryPeriod::all_time())
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
+
+    ok_cors(collections)
+}
+
+/// Get top collections by estimated unique DIDs
+#[endpoint {
+    method = GET,
+    path = "/collections/by-dids"
+}]
+async fn get_top_collections_by_dids(ctx: RequestContext<Context>) -> OkCorsResponse<Vec<Count>> {
+    let Context { storage, .. } = ctx.context();
+    let collections = storage
+        .get_top_collections_by_dids(100, QueryPeriod::all_time())
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
+
+    ok_cors(collections)
+}
+
 /// Get top collections
 ///
 /// The format of this API response will be changing soon.
@@ -244,6 +274,8 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_meta_info).unwrap();
     api.register(get_records_by_collections).unwrap();
     api.register(get_records_total_seen).unwrap();
+    api.register(get_top_collections_by_count).unwrap();
+    api.register(get_top_collections_by_dids).unwrap();
     api.register(get_top_collections).unwrap();
 
     let context = Context {
