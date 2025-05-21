@@ -359,7 +359,37 @@ impl FjallReader {
                     "integrity: all-time rank rollup must have corresponding all-time count rollup",
                 );
                 let db_counts = db_complete::<CountsValue>(&db_count_bytes)?;
-                assert_eq!(db_counts.records(), key.records());
+                assert_eq!(db_counts.records(), key.count());
+                out.push(Count {
+                    thing: key.collection().to_string(),
+                    records: db_counts.records(),
+                    dids_estimate: db_counts.dids().estimate() as u64,
+                });
+            }
+            out
+        } else {
+            todo!()
+        })
+    }
+
+    fn get_top_collections_by_dids(
+        &self,
+        limit: usize,
+        period: QueryPeriod,
+    ) -> StorageResult<Vec<Count>> {
+        Ok(if period.is_all_time() {
+            let snapshot = self.rollups.snapshot();
+            let mut out = Vec::with_capacity(limit);
+            let prefix = AllTimeDidsKey::from_prefix_to_db_bytes(&Default::default())?;
+            for kv in snapshot.prefix(prefix).rev().take(limit) {
+                let (key_bytes, _) = kv?;
+                let key = db_complete::<AllTimeDidsKey>(&key_bytes)?;
+                let rollup_key = AllTimeRollupKey::new(key.collection());
+                let db_count_bytes = snapshot.get(rollup_key.to_db_bytes()?)?.expect(
+                    "integrity: all-time rank rollup must have corresponding all-time count rollup",
+                );
+                let db_counts = db_complete::<CountsValue>(&db_count_bytes)?;
+                assert_eq!(db_counts.dids().estimate() as u64, key.count());
                 out.push(Count {
                     thing: key.collection().to_string(),
                     records: db_counts.records(),
@@ -521,6 +551,17 @@ impl StoreReader for FjallReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || {
             FjallReader::get_top_collections_by_count(&s, limit, period)
+        })
+        .await?
+    }
+    async fn get_top_collections_by_dids(
+        &self,
+        limit: usize,
+        period: QueryPeriod,
+    ) -> StorageResult<Vec<Count>> {
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || {
+            FjallReader::get_top_collections_by_dids(&s, limit, period)
         })
         .await?
     }

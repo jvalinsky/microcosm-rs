@@ -76,6 +76,12 @@ pub trait StoreReader: Send + Sync {
         period: QueryPeriod,
     ) -> StorageResult<Vec<Count>>;
 
+    async fn get_top_collections_by_dids(
+        &self,
+        limit: usize,
+        period: QueryPeriod,
+    ) -> StorageResult<Vec<Count>>;
+
     async fn get_top_collections(&self) -> StorageResult<TopCollections>;
 
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)>;

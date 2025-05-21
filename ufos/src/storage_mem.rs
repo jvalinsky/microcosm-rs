@@ -595,6 +595,13 @@ impl StoreReader for MemReader {
     ) -> StorageResult<Vec<Count>> {
         todo!()
     }
+    async fn get_top_collections_by_dids(
+        &self,
+        _: usize,
+        _: QueryPeriod,
+    ) -> StorageResult<Vec<Count>> {
+        todo!()
+    }
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
         let s = self.clone();
         let collection = collection.clone();

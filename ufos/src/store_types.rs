@@ -366,7 +366,7 @@ where
     pub fn with_rank(&self, new_rank: KeyRank) -> Self {
         Self::new(new_rank, &self.suffix.suffix)
     }
-    pub fn records(&self) -> u64 {
+    pub fn count(&self) -> u64 {
         self.suffix.prefix.0
     }
     pub fn collection(&self) -> &Nsid {
