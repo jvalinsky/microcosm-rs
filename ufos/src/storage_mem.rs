@@ -12,16 +12,16 @@ use crate::store_types::{
     RecordLocationMeta, RecordLocationVal, RecordRawValue, TakeoffKey, TakeoffValue,
     WeekTruncatedCursor, WeeklyRollupKey,
 };
-use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, TopCollections, UFOsRecord};
+use crate::{
+    CommitAction, ConsumerInfo, Count, Did, EventBatch, Nsid, QueryPeriod, TopCollections,
+    UFOsRecord,
+};
 use async_trait::async_trait;
 use jetstream::events::Cursor;
 use lsm_tree::range::prefix_to_range;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use std::time::SystemTime;
 
 const MAX_BATCHED_CLEANUP_SIZE: usize = 1024; // try to commit progress for longer feeds
@@ -584,9 +584,16 @@ impl StoreReader for MemReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || MemReader::get_consumer_info(&s)).await?
     }
-    async fn get_top_collections(&self) -> Result<TopCollections, StorageError> {
+    async fn get_top_collections(&self) -> StorageResult<TopCollections> {
         let s = self.clone();
         tokio::task::spawn_blocking(move || MemReader::get_top_collections(&s)).await?
+    }
+    async fn get_top_collections_by_count(
+        &self,
+        _: usize,
+        _: QueryPeriod,
+    ) -> StorageResult<Vec<Count>> {
+        todo!()
     }
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
         let s = self.clone();

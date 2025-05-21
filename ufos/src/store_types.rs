@@ -287,7 +287,7 @@ impl From<KeyRank> for u64 {
 }
 
 pub type BucketedRankRecordsKey<P, C> =
-    DbConcat<DbConcat<DbConcat<DbStaticStr<P>, C>, KeyRank>, Nsid>;
+    DbConcat<DbConcat<DbStaticStr<P>, C>, DbConcat<KeyRank, Nsid>>;
 impl<P, C> BucketedRankRecordsKey<P, C>
 where
     P: StaticStr + PartialEq + std::fmt::Debug,
@@ -295,12 +295,12 @@ where
 {
     pub fn new(cursor: C, rank: KeyRank, nsid: &Nsid) -> Self {
         Self::from_pair(
-            DbConcat::from_pair(DbConcat::from_pair(Default::default(), cursor), rank),
-            nsid.clone(),
+            DbConcat::from_pair(Default::default(), cursor),
+            DbConcat::from_pair(rank, nsid.clone()),
         )
     }
     pub fn with_rank(&self, new_rank: KeyRank) -> Self {
-        Self::new(self.prefix.prefix.suffix.clone(), new_rank, &self.suffix)
+        Self::new(self.prefix.suffix.clone(), new_rank, &self.suffix.suffix)
     }
 }
 
@@ -355,16 +355,22 @@ impl AllTimeRollupKey {
 }
 pub type AllTimeRollupVal = CountsValue;
 
-pub type AllTimeRankRecordsKey<P> = DbConcat<DbConcat<DbStaticStr<P>, KeyRank>, Nsid>;
+pub type AllTimeRankRecordsKey<P> = DbConcat<DbStaticStr<P>, DbConcat<KeyRank, Nsid>>;
 impl<P> AllTimeRankRecordsKey<P>
 where
     P: StaticStr + PartialEq + std::fmt::Debug,
 {
     pub fn new(rank: KeyRank, nsid: &Nsid) -> Self {
-        Self::from_pair(DbConcat::from_pair(Default::default(), rank), nsid.clone())
+        Self::from_pair(Default::default(), DbConcat::from_pair(rank, nsid.clone()))
     }
     pub fn with_rank(&self, new_rank: KeyRank) -> Self {
-        Self::new(new_rank, &self.suffix)
+        Self::new(new_rank, &self.suffix.suffix)
+    }
+    pub fn records(&self) -> u64 {
+        self.suffix.prefix.0
+    }
+    pub fn collection(&self) -> &Nsid {
+        &self.suffix.suffix
     }
 }
 

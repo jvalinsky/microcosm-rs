@@ -1,4 +1,7 @@
-use crate::{error::StorageError, ConsumerInfo, Cursor, EventBatch, TopCollections, UFOsRecord};
+use crate::{
+    error::StorageError, ConsumerInfo, Count, Cursor, EventBatch, QueryPeriod, TopCollections,
+    UFOsRecord,
+};
 use async_trait::async_trait;
 use jetstream::exports::{Did, Nsid};
 use std::collections::HashSet;
@@ -66,6 +69,12 @@ pub trait StoreReader: Send + Sync {
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value>;
 
     async fn get_consumer_info(&self) -> StorageResult<ConsumerInfo>;
+
+    async fn get_top_collections_by_count(
+        &self,
+        limit: usize,
+        period: QueryPeriod,
+    ) -> StorageResult<Vec<Count>>;
 
     async fn get_top_collections(&self) -> StorageResult<TopCollections>;
 

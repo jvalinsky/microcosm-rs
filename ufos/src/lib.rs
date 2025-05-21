@@ -249,6 +249,30 @@ impl From<TopCollections> for Vec<String> {
     }
 }
 
+#[derive(Debug)]
+pub struct QueryPeriod {
+    from: Option<Cursor>,
+    until: Option<Cursor>,
+}
+impl QueryPeriod {
+    pub fn all_time() -> Self {
+        QueryPeriod {
+            from: None,
+            until: None,
+        }
+    }
+    pub fn is_all_time(&self) -> bool {
+        self.from.is_none() && self.until.is_none()
+    }
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Count {
+    thing: String,
+    records: u64,
+    dids_estimate: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
