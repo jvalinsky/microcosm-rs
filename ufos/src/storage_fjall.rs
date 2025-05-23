@@ -6,9 +6,9 @@ use crate::store_types::{
     DeleteAccountQueueVal, HourTruncatedCursor, HourlyDidsKey, HourlyRecordsKey, HourlyRollupKey,
     JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
     LiveCountsKey, NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
-    RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, TakeoffKey,
-    TakeoffValue, TrimCollectionCursorKey, WeekTruncatedCursor, WeeklyDidsKey, WeeklyRecordsKey,
-    WeeklyRollupKey,
+    RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, SketchSecretKey,
+    SketchSecretPrefix, TakeoffKey, TakeoffValue, TrimCollectionCursorKey, WeekTruncatedCursor,
+    WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey,
 };
 use crate::{
     CommitAction, ConsumerInfo, Count, Did, EventBatch, Nsid, QueryPeriod, TopCollections,
@@ -45,6 +45,10 @@ const MAX_BATCHED_ROLLUP_COUNTS: usize = 256;
 ///  - Launch date
 ///      - key: "takeoff" (literal)
 ///      - val: u64 (micros timestamp, not from jetstream for now so not precise)
+///
+///  - Cardinality estimator secret
+///      - key: "sketch_secret" (literal)
+///      - val: [u8; 16]
 ///
 ///  - Rollup cursor (bg work: roll stats into hourlies, delete accounts, old record deletes)
 ///      - key: "rollup_cursor" (literal)
@@ -141,7 +145,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
         endpoint: String,
         force_endpoint: bool,
         _config: FjallConfig,
-    ) -> StorageResult<(FjallReader, FjallWriter, Option<Cursor>)> {
+    ) -> StorageResult<(FjallReader, FjallWriter, Option<Cursor>, SketchSecretPrefix)> {
         let keyspace = {
             let config = Config::new(path);
 
@@ -159,13 +163,20 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
 
         let js_cursor = get_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?;
 
-        if js_cursor.is_some() {
+        let sketch_secret = if js_cursor.is_some() {
             let stored_endpoint =
                 get_static_neu::<JetstreamEndpointKey, JetstreamEndpointValue>(&global)?;
-
             let JetstreamEndpointValue(stored) = stored_endpoint.ok_or(StorageError::InitError(
                 "found cursor but missing js_endpoint, refusing to start.".to_string(),
             ))?;
+
+            let Some(stored_secret) =
+                get_static_neu::<SketchSecretKey, SketchSecretPrefix>(&global)?
+            else {
+                return Err(StorageError::InitError(
+                    "found cursor but missing sketch_secret, refusing to start.".to_string(),
+                ));
+            };
 
             if stored != endpoint {
                 if force_endpoint {
@@ -179,14 +190,28 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
                         "stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start.")));
                 }
             }
+            stored_secret
         } else {
-            insert_static_neu::<JetstreamEndpointKey>(
+            log::info!("initializing a fresh db!");
+            init_static_neu::<JetstreamEndpointKey>(
                 &global,
                 JetstreamEndpointValue(endpoint.to_string()),
             )?;
-            insert_static_neu::<TakeoffKey>(&global, Cursor::at(SystemTime::now()))?;
-            insert_static_neu::<NewRollupCursorKey>(&global, Cursor::from_start())?;
-        }
+
+            log::info!("generating new secret for cardinality sketches...");
+            let mut sketch_secret: SketchSecretPrefix = [0u8; 16];
+            getrandom::fill(&mut sketch_secret).map_err(|e| {
+                StorageError::InitError(format!(
+                    "failed to get a random secret for cardinality sketches: {e:?}"
+                ))
+            })?;
+            init_static_neu::<SketchSecretKey>(&global, sketch_secret)?;
+
+            init_static_neu::<TakeoffKey>(&global, Cursor::at(SystemTime::now()))?;
+            init_static_neu::<NewRollupCursorKey>(&global, Cursor::from_start())?;
+
+            sketch_secret
+        };
 
         let reader = FjallReader {
             keyspace: keyspace.clone(),
@@ -204,7 +229,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
             rollups,
             queues,
         };
-        Ok((reader, writer, js_cursor))
+        Ok((reader, writer, js_cursor, sketch_secret))
     }
 }
 
@@ -1089,6 +1114,25 @@ fn insert_static_neu<K: StaticStr>(
     Ok(())
 }
 
+/// Set a value to a fixed key, erroring if the value already exists
+///
+/// Intended for single-threaded init: not safe under concurrency, since there
+/// is no transaction between checking if the already exists and writing it.
+fn init_static_neu<K: StaticStr>(
+    global: &PartitionHandle,
+    value: impl DbBytes,
+) -> StorageResult<()> {
+    let key_bytes = DbStaticStr::<K>::default().to_db_bytes()?;
+    if global.get(&key_bytes)?.is_some() {
+        return Err(StorageError::InitError(format!(
+            "init failed: value for key {key_bytes:?} already exists"
+        )));
+    }
+    let value_bytes = value.to_db_bytes()?;
+    global.insert(&key_bytes, &value_bytes)?;
+    Ok(())
+}
+
 /// Set a value to a fixed key
 fn insert_batch_static_neu<K: StaticStr>(
     batch: &mut FjallBatch,
@@ -1132,7 +1176,7 @@ mod tests {
     use serde_json::value::RawValue;
 
     fn fjall_db() -> (FjallReader, FjallWriter) {
-        let (read, write, _) = FjallStorage::init(
+        let (read, write, _, _) = FjallStorage::init(
             tempfile::tempdir().unwrap(),
             "offline test (no real jetstream endpoint)".to_string(),
             false,
@@ -1187,7 +1231,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit)
+                .truncating_insert(commit, &[0u8; 16])
                 .unwrap();
 
             collection
@@ -1229,7 +1273,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit)
+                .truncating_insert(commit, &[0u8; 16])
                 .unwrap();
 
             collection
@@ -1261,7 +1305,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit)
+                .truncating_insert(commit, &[0u8; 16])
                 .unwrap();
 
             collection

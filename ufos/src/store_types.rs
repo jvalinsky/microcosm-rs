@@ -3,7 +3,7 @@ use crate::db_types::{
 };
 use crate::{Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
 use bincode::{Decode, Encode};
-use cardinality_estimator_safe::CardinalityEstimator;
+use cardinality_estimator_safe::Sketch;
 use std::ops::Range;
 
 macro_rules! static_str {
@@ -21,6 +21,10 @@ macro_rules! static_str {
 // key format: ["js_cursor"]
 static_str!("js_cursor", JetstreamCursorKey);
 pub type JetstreamCursorValue = Cursor;
+
+// key format: ["sketch_secret"]
+static_str!("sketch_secret", SketchSecretKey);
+pub type SketchSecretPrefix = [u8; 16];
 
 // key format: ["rollup_cursor"]
 static_str!("rollup_cursor", NewRollupCursorKey);
@@ -199,7 +203,7 @@ pub struct TotalRecordsValue(pub u64);
 impl UseBincodePlz for TotalRecordsValue {}
 
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct EstimatedDidsValue(pub CardinalityEstimator<Did>);
+pub struct EstimatedDidsValue(pub Sketch<14>);
 impl SerdeBytes for EstimatedDidsValue {}
 impl DbBytes for EstimatedDidsValue {
     #[cfg(test)]
@@ -223,7 +227,7 @@ impl DbBytes for EstimatedDidsValue {
 
 pub type CountsValue = DbConcat<TotalRecordsValue, EstimatedDidsValue>;
 impl CountsValue {
-    pub fn new(total: u64, dids: CardinalityEstimator<Did>) -> Self {
+    pub fn new(total: u64, dids: Sketch<14>) -> Self {
         Self {
             prefix: TotalRecordsValue(total),
             suffix: EstimatedDidsValue(dids),
@@ -232,7 +236,7 @@ impl CountsValue {
     pub fn records(&self) -> u64 {
         self.prefix.0
     }
-    pub fn dids(&self) -> &CardinalityEstimator<Did> {
+    pub fn dids(&self) -> &Sketch<14> {
         &self.suffix.0
     }
     pub fn merge(&mut self, other: &Self) {
@@ -244,7 +248,7 @@ impl Default for CountsValue {
     fn default() -> Self {
         Self {
             prefix: TotalRecordsValue(0),
-            suffix: EstimatedDidsValue(CardinalityEstimator::new()),
+            suffix: EstimatedDidsValue(Sketch::<14>::default()),
         }
     }
 }
@@ -433,10 +437,12 @@ pub type WeekTruncatedCursor = TruncatedCursor<WEEK_IN_MICROS>;
 #[cfg(test)]
 mod test {
     use super::{
-        CardinalityEstimator, CountsValue, Cursor, Did, EncodingError, HourTruncatedCursor,
-        HourlyRollupKey, Nsid, HOUR_IN_MICROS,
+        CountsValue, Cursor, Did, EncodingError, HourTruncatedCursor, HourlyRollupKey, Nsid,
+        Sketch, HOUR_IN_MICROS,
     };
     use crate::db_types::DbBytes;
+    use cardinality_estimator_safe::Element;
+    use sha2::Sha256;
 
     #[test]
     fn test_by_hourly_rollup_key() -> Result<(), EncodingError> {
@@ -456,9 +462,14 @@ mod test {
 
     #[test]
     fn test_by_hourly_rollup_value() -> Result<(), EncodingError> {
-        let mut estimator = CardinalityEstimator::new();
+        let mut estimator = Sketch::<14>::default();
+        fn to_element(d: Did) -> Element<14> {
+            Element::from_digest_oneshot::<Sha256>(d.to_string().as_bytes())
+        }
         for i in 0..10 {
-            estimator.insert(&Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig7{i}")).unwrap());
+            estimator.insert(to_element(
+                Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig7{i}")).unwrap(),
+            ));
         }
         let original = CountsValue::new(123, estimator.clone());
         let serialized = original.to_db_bytes()?;
@@ -467,7 +478,9 @@ mod test {
         assert_eq!(bytes_consumed, serialized.len());
 
         for i in 10..1_000 {
-            estimator.insert(&Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig{i}")).unwrap());
+            estimator.insert(to_element(
+                Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig{i}")).unwrap(),
+            ));
         }
         let original = CountsValue::new(123, estimator);
         let serialized = original.to_db_bytes()?;

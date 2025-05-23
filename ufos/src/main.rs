@@ -7,6 +7,7 @@ use ufos::server;
 use ufos::storage::{StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use ufos::storage_fjall::FjallStorage;
 use ufos::storage_mem::MemStorage;
+use ufos::store_types::SketchSecretPrefix;
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -57,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let jetstream = args.jetstream.clone();
     if args.in_mem {
-        let (read_store, write_store, cursor) = MemStorage::init(
+        let (read_store, write_store, cursor, sketch_secret) = MemStorage::init(
             args.data,
             jetstream,
             args.jetstream_force,
@@ -70,10 +71,11 @@ async fn main() -> anyhow::Result<()> {
             read_store,
             write_store,
             cursor,
+            sketch_secret,
         )
         .await?;
     } else {
-        let (read_store, write_store, cursor) = FjallStorage::init(
+        let (read_store, write_store, cursor, sketch_secret) = FjallStorage::init(
             args.data,
             jetstream,
             args.jetstream_force,
@@ -86,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
             read_store,
             write_store,
             cursor,
+            sketch_secret,
         )
         .await?;
     }
@@ -100,6 +103,7 @@ async fn go<B: StoreBackground>(
     read_store: impl StoreReader + 'static,
     mut write_store: impl StoreWriter<B> + 'static,
     cursor: Option<Cursor>,
+    sketch_secret: SketchSecretPrefix,
 ) -> anyhow::Result<()> {
     println!("starting server with storage...");
     let serving = server::serve(read_store);
@@ -112,13 +116,13 @@ async fn go<B: StoreBackground>(
 
     let batches = if jetstream_fixture {
         log::info!("starting with jestream file fixture: {jetstream:?}");
-        file_consumer::consume(jetstream.into()).await?
+        file_consumer::consume(jetstream.into(), sketch_secret).await?
     } else {
         log::info!(
             "starting consumer with cursor: {cursor:?} from {:?} ago",
             cursor.map(|c| c.elapsed())
         );
-        consumer::consume(&jetstream, cursor, false).await?
+        consumer::consume(&jetstream, cursor, false, sketch_secret).await?
     };
 
     let rolling = write_store.background_tasks()?.run();
