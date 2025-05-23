@@ -10,22 +10,27 @@ pub mod storage_mem;
 pub mod store_types;
 
 use crate::error::BatchInsertError;
-use cardinality_estimator_safe::CardinalityEstimator;
+use cardinality_estimator_safe::{Element, Sketch};
 use error::FirehoseEventError;
 use jetstream::events::{CommitEvent, CommitOp, Cursor};
 use jetstream::exports::{Did, Nsid, RecordKey};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::value::RawValue;
+use sha2::Sha256;
 use std::collections::HashMap;
 
 #[derive(Debug, Default, Clone)]
 pub struct CollectionCommits<const LIMIT: usize> {
     pub total_seen: usize,
-    pub dids_estimate: CardinalityEstimator<Did>,
+    pub dids_estimate: Sketch<14>,
     pub commits: Vec<UFOsCommit>,
     head: usize,
     non_creates: usize,
+}
+
+fn did_element(did: &Did) -> Element<14> {
+    Element::from_digest_oneshot::<Sha256>(did.as_bytes())
 }
 
 impl<const LIMIT: usize> CollectionCommits<LIMIT> {
@@ -66,7 +71,7 @@ impl<const LIMIT: usize> CollectionCommits<LIMIT> {
 
         if is_create {
             self.total_seen += 1;
-            self.dids_estimate.insert(&did);
+            self.dids_estimate.insert(did_element(&did));
         } else {
             self.non_creates += 1;
         }
@@ -181,7 +186,7 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
         self.account_removes.len()
     }
     pub fn estimate_dids(&self) -> usize {
-        let mut estimator = CardinalityEstimator::<Did>::new();
+        let mut estimator = Sketch::<14>::default();
         for commits in self.commits_by_nsid.values() {
             estimator.merge(&commits.dids_estimate);
         }

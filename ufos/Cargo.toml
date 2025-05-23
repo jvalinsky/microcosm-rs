@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1.0.97"
 async-trait = "0.1.88"
 bincode = { version = "2.0.1", features = ["serde"] }
-cardinality-estimator-safe = { version = "2.1.1", features = ["with_serde"] }
+cardinality-estimator-safe = { version = "4.0.1", features = ["with_serde", "with_digest"] }
 clap = { version = "4.5.31", features = ["derive"] }
 dropshot = "0.16.0"
 env_logger = "0.11.7"
@@ -20,6 +20,7 @@ schemars = { version = "0.8.22", features = ["raw_value"] }
 semver = "1.0.26"
 serde = "1.0.219"
 serde_json = "1.0.140"
+sha2 = "0.10.9"
 thiserror = "2.0.12"
 tokio = { version = "1.44.2", features = ["full", "sync", "time"] }
 
