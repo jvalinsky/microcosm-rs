@@ -36,9 +36,11 @@ struct Args {
     #[arg(long)]
     data: PathBuf,
     /// DEBUG: don't start the jetstream consumer or its write loop
-    /// todo: restore this
     #[arg(long, action)]
     pause_writer: bool,
+    /// Adjust runtime settings like background task intervals for efficient backfill
+    #[arg(long, action)]
+    backfill: bool,
     /// DEBUG: force the rw loop to fall behind  by pausing it
     /// todo: restore this
     #[arg(long, action)]
@@ -46,6 +48,9 @@ struct Args {
     /// DEBUG: use an in-memory store instead of fjall
     #[arg(long, action)]
     in_mem: bool,
+    /// reset the rollup cursor, scrape through missed things in the past (backfill)
+    #[arg(long, action)]
+    reroll: bool,
     /// DEBUG: interpret jetstream as a file fixture
     #[arg(long, action)]
     jetstream_fixture: bool,
@@ -68,6 +73,8 @@ async fn main() -> anyhow::Result<()> {
             args.jetstream,
             args.jetstream_fixture,
             args.pause_writer,
+            args.backfill,
+            args.reroll,
             read_store,
             write_store,
             cursor,
@@ -85,6 +92,8 @@ async fn main() -> anyhow::Result<()> {
             args.jetstream,
             args.jetstream_fixture,
             args.pause_writer,
+            args.backfill,
+            args.reroll,
             read_store,
             write_store,
             cursor,
@@ -96,10 +105,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn go<B: StoreBackground>(
     jetstream: String,
     jetstream_fixture: bool,
     pause_writer: bool,
+    backfill: bool,
+    reroll: bool,
     read_store: impl StoreReader + 'static,
     mut write_store: impl StoreWriter<B> + 'static,
     cursor: Option<Cursor>,
@@ -125,7 +137,7 @@ async fn go<B: StoreBackground>(
         consumer::consume(&jetstream, cursor, false, sketch_secret).await?
     };
 
-    let rolling = write_store.background_tasks()?.run();
+    let rolling = write_store.background_tasks(reroll)?.run(backfill);
     let storing = write_store.receive_batches(batches);
 
     tokio::select! {

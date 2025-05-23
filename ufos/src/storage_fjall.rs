@@ -187,7 +187,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
                     )?;
                 } else {
                     return Err(StorageError::InitError(format!(
-                        "stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start.")));
+                        "stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start without --jetstream-force.")));
                 }
             }
             stored_secret
@@ -801,10 +801,13 @@ impl FjallWriter {
 }
 
 impl StoreWriter<FjallBackground> for FjallWriter {
-    fn background_tasks(&mut self) -> StorageResult<FjallBackground> {
+    fn background_tasks(&mut self, reroll: bool) -> StorageResult<FjallBackground> {
         if self.bg_taken.swap(true, Ordering::SeqCst) {
             Err(StorageError::BackgroundAlreadyStarted)
         } else {
+            if reroll {
+                insert_static_neu::<NewRollupCursorKey>(&self.global, Cursor::from_start())?;
+            }
             Ok(FjallBackground(self.clone()))
         }
     }
@@ -1048,13 +1051,15 @@ pub struct FjallBackground(FjallWriter);
 
 #[async_trait]
 impl StoreBackground for FjallBackground {
-    async fn run(mut self) -> StorageResult<()> {
+    async fn run(mut self, backfill: bool) -> StorageResult<()> {
         let mut dirty_nsids = HashSet::new();
 
-        let mut rollup = tokio::time::interval(Duration::from_millis(81));
+        let mut rollup =
+            tokio::time::interval(Duration::from_millis(if backfill { 1_300 } else { 140 }));
         rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let mut trim = tokio::time::interval(Duration::from_millis(6_000));
+        let mut trim =
+            tokio::time::interval(Duration::from_millis(if backfill { 12_000 } else { 6_000 }));
         trim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -1065,7 +1070,7 @@ impl StoreBackground for FjallBackground {
                         rollup.reset_after(Duration::from_millis(1_200)); // we're caught up, take a break
                     }
                     dirty_nsids.extend(dirty);
-                    log::info!("rolled up {n} items ({} collections now dirty)", dirty_nsids.len());
+                    log::trace!("rolled up {n} items ({} collections now dirty)", dirty_nsids.len());
                 },
                 _ = trim.tick() => {
                     log::info!("trimming {} nsids: {dirty_nsids:?}", dirty_nsids.len());
@@ -1154,18 +1159,6 @@ pub struct StorageInfo {
 }
 
 ////////// temp stuff to remove:
-
-// fn summarize_batch<const LIMIT: usize>(batch: &EventBatch<LIMIT>) -> String {
-//     format!(
-//         "batch of {: >3} samples from {: >4} records in {: >2} collections from ~{: >4} DIDs, {} acct removes, cursor {: <12?}",
-//         batch.total_records(),
-//         batch.total_seen(),
-//         batch.total_collections(),
-//         batch.estimate_dids(),
-//         batch.account_removes(),
-//         batch.latest_cursor().map(|c| c.elapsed()),
-//     )
-// }
 
 #[cfg(test)]
 mod tests {

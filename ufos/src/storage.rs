@@ -26,7 +26,7 @@ pub trait StoreWriter<B: StoreBackground>: Send + Sync
 where
     Self: 'static,
 {
-    fn background_tasks(&mut self) -> StorageResult<B>;
+    fn background_tasks(&mut self, reroll: bool) -> StorageResult<B>;
 
     fn receive_batches<const LIMIT: usize>(
         mut self,
@@ -60,7 +60,7 @@ where
 
 #[async_trait]
 pub trait StoreBackground: Send + Sync {
-    async fn run(mut self) -> StorageResult<()>;
+    async fn run(mut self, backfill: bool) -> StorageResult<()>;
 }
 
 #[async_trait]

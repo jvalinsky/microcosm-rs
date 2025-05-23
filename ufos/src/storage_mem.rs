@@ -797,7 +797,7 @@ impl MemWriter {
 }
 
 impl StoreWriter<MemBackground> for MemWriter {
-    fn background_tasks(&mut self) -> StorageResult<MemBackground> {
+    fn background_tasks(&mut self, _reroll: bool) -> StorageResult<MemBackground> {
         Ok(MemBackground {})
     }
 
@@ -1040,7 +1040,7 @@ pub struct MemBackground;
 
 #[async_trait]
 impl StoreBackground for MemBackground {
-    async fn run(mut self) -> StorageResult<()> {
+    async fn run(mut self, _backfill: bool) -> StorageResult<()> {
         // noop for mem (is there a nicer way to do this?)
         loop {
             tokio::time::sleep(std::time::Duration::from_secs_f64(10.)).await;
