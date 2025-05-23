@@ -9,8 +9,8 @@ use crate::store_types::{
     HourTruncatedCursor, HourlyRollupKey, JetstreamCursorKey, JetstreamCursorValue,
     JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey, NewRollupCursorKey,
     NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey,
-    RecordLocationMeta, RecordLocationVal, RecordRawValue, TakeoffKey, TakeoffValue,
-    WeekTruncatedCursor, WeeklyRollupKey,
+    RecordLocationMeta, RecordLocationVal, RecordRawValue, SketchSecretPrefix, TakeoffKey,
+    TakeoffValue, WeekTruncatedCursor, WeeklyRollupKey,
 };
 use crate::{
     CommitAction, ConsumerInfo, Count, Did, EventBatch, Nsid, QueryPeriod, TopCollections,
@@ -257,7 +257,7 @@ impl StorageWhatever<MemReader, MemWriter, MemBackground, MemConfig> for MemStor
         endpoint: String,
         force_endpoint: bool,
         _config: MemConfig,
-    ) -> StorageResult<(MemReader, MemWriter, Option<Cursor>)> {
+    ) -> StorageResult<(MemReader, MemWriter, Option<Cursor>, SketchSecretPrefix)> {
         let keyspace = MemKeyspace::open();
 
         let global = keyspace.open_partition("global")?;
@@ -312,7 +312,8 @@ impl StorageWhatever<MemReader, MemWriter, MemBackground, MemConfig> for MemStor
             rollups,
             queues,
         };
-        Ok((reader, writer, js_cursor))
+        let secret_prefix = [0u8; 16]; // in-mem store is always deterministic: no secret
+        Ok((reader, writer, js_cursor, secret_prefix))
     }
 }
 
@@ -1106,7 +1107,7 @@ mod tests {
     use serde_json::value::RawValue;
 
     fn fjall_db() -> (MemReader, MemWriter) {
-        let (read, write, _) = MemStorage::init(
+        let (read, write, _, _) = MemStorage::init(
             tempfile::tempdir().unwrap(),
             "offline test (no real jetstream endpoint)".to_string(),
             false,
@@ -1161,7 +1162,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit)
+                .truncating_insert(commit, &[0u8; 16])
                 .unwrap();
 
             collection
@@ -1203,7 +1204,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit)
+                .truncating_insert(commit, &[0u8; 16])
                 .unwrap();
 
             collection
@@ -1235,7 +1236,7 @@ mod tests {
                 .commits_by_nsid
                 .entry(collection.clone())
                 .or_default()
-                .truncating_insert(commit)
+                .truncating_insert(commit, &[0u8; 16])
                 .unwrap();
 
             collection

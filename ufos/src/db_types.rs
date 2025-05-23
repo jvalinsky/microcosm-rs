@@ -224,6 +224,8 @@ pub trait SerdeBytes: serde::Serialize + for<'a> serde::Deserialize<'a> {
 
 //////
 
+impl<const N: usize> UseBincodePlz for [u8; N] {}
+
 impl DbBytes for Vec<u8> {
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
         Ok(self.to_vec())

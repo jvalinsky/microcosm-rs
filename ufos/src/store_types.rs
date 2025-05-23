@@ -22,6 +22,10 @@ macro_rules! static_str {
 static_str!("js_cursor", JetstreamCursorKey);
 pub type JetstreamCursorValue = Cursor;
 
+// key format: ["sketch_secret"]
+static_str!("sketch_secret", SketchSecretKey);
+pub type SketchSecretPrefix = [u8; 16];
+
 // key format: ["rollup_cursor"]
 static_str!("rollup_cursor", NewRollupCursorKey);
 // pub type NewRollupCursorKey = DbStaticStr<_NewRollupCursorKey>;

@@ -10,6 +10,7 @@ pub mod storage_mem;
 pub mod store_types;
 
 use crate::error::BatchInsertError;
+use crate::store_types::SketchSecretPrefix;
 use cardinality_estimator_safe::{Element, Sketch};
 use error::FirehoseEventError;
 use jetstream::events::{CommitEvent, CommitOp, Cursor};
@@ -20,6 +21,10 @@ use serde_json::value::RawValue;
 use sha2::Sha256;
 use std::collections::HashMap;
 
+fn did_element(sketch_secret: &SketchSecretPrefix, did: &Did) -> Element<14> {
+    Element::from_digest_with_prefix::<Sha256>(sketch_secret, did.as_bytes())
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct CollectionCommits<const LIMIT: usize> {
     pub total_seen: usize,
@@ -29,10 +34,6 @@ pub struct CollectionCommits<const LIMIT: usize> {
     non_creates: usize,
 }
 
-fn did_element(did: &Did) -> Element<14> {
-    Element::from_digest_oneshot::<Sha256>(did.as_bytes())
-}
-
 impl<const LIMIT: usize> CollectionCommits<LIMIT> {
     fn advance_head(&mut self) {
         self.head += 1;
@@ -40,7 +41,11 @@ impl<const LIMIT: usize> CollectionCommits<LIMIT> {
             self.head = 0;
         }
     }
-    pub fn truncating_insert(&mut self, commit: UFOsCommit) -> Result<(), BatchInsertError> {
+    pub fn truncating_insert(
+        &mut self,
+        commit: UFOsCommit,
+        sketch_secret: &SketchSecretPrefix,
+    ) -> Result<(), BatchInsertError> {
         if self.non_creates == LIMIT {
             return Err(BatchInsertError::BatchFull(commit));
         }
@@ -71,7 +76,7 @@ impl<const LIMIT: usize> CollectionCommits<LIMIT> {
 
         if is_create {
             self.total_seen += 1;
-            self.dids_estimate.insert(did_element(&did));
+            self.dids_estimate.insert(did_element(sketch_secret, &did));
         } else {
             self.non_creates += 1;
         }
@@ -163,6 +168,7 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
         collection: &Nsid,
         commit: UFOsCommit,
         max_collections: usize,
+        sketch_secret: &SketchSecretPrefix,
     ) -> Result<(), BatchInsertError> {
         let map = &mut self.commits_by_nsid;
         if !map.contains_key(collection) && map.len() >= max_collections {
@@ -170,7 +176,7 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
         }
         map.entry(collection.clone())
             .or_default()
-            .truncating_insert(commit)?;
+            .truncating_insert(commit, sketch_secret)?;
         Ok(())
     }
     pub fn total_records(&self) -> usize {
@@ -313,38 +319,47 @@ mod tests {
     fn test_truncating_insert_truncates() -> anyhow::Result<()> {
         let mut commits: CollectionCommits<2> = Default::default();
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(100),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
-            rev: "rev-asdf".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(100),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+                rev: "rev-asdf".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(101),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
-            rev: "rev-asdg".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(101),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+                rev: "rev-asdg".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(102),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
-            rev: "rev-asdh".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(102),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
+                rev: "rev-asdh".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
         assert_eq!(commits.total_seen, 3);
         assert_eq!(commits.dids_estimate.estimate(), 1);
@@ -373,35 +388,44 @@ mod tests {
     fn test_truncating_insert_does_not_truncate_deletes() -> anyhow::Result<()> {
         let mut commits: CollectionCommits<2> = Default::default();
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(100),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
-            rev: "rev-asdf".to_string(),
-            action: CommitAction::Cut,
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(100),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+                rev: "rev-asdf".to_string(),
+                action: CommitAction::Cut,
+            },
+            &[0u8; 16],
+        )?;
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(101),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
-            rev: "rev-asdg".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(101),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+                rev: "rev-asdg".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(102),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
-            rev: "rev-asdh".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(102),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
+                rev: "rev-asdh".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
         assert_eq!(commits.total_seen, 2);
         assert_eq!(commits.dids_estimate.estimate(), 1);
@@ -436,46 +460,58 @@ mod tests {
         let mut commits: CollectionCommits<2> = Default::default();
 
         commits
-            .truncating_insert(UFOsCommit {
-                cursor: Cursor::from_raw_u64(100),
-                did: Did::new("did:plc:whatever".to_string()).unwrap(),
-                rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
-                rev: "rev-asdf".to_string(),
-                action: CommitAction::Cut,
-            })
+            .truncating_insert(
+                UFOsCommit {
+                    cursor: Cursor::from_raw_u64(100),
+                    did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                    rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+                    rev: "rev-asdf".to_string(),
+                    action: CommitAction::Cut,
+                },
+                &[0u8; 16],
+            )
             .unwrap();
 
         // this create will just be discarded
         commits
-            .truncating_insert(UFOsCommit {
-                cursor: Cursor::from_raw_u64(80),
-                did: Did::new("did:plc:whatever".to_string()).unwrap(),
-                rkey: RecordKey::new("rkey-asdf-zzz".to_string()).unwrap(),
-                rev: "rev-asdzzz".to_string(),
-                action: CommitAction::Put(PutAction {
-                    record: RawValue::from_string("{}".to_string())?,
-                    is_update: false,
-                }),
-            })
+            .truncating_insert(
+                UFOsCommit {
+                    cursor: Cursor::from_raw_u64(80),
+                    did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                    rkey: RecordKey::new("rkey-asdf-zzz".to_string()).unwrap(),
+                    rev: "rev-asdzzz".to_string(),
+                    action: CommitAction::Put(PutAction {
+                        record: RawValue::from_string("{}".to_string())?,
+                        is_update: false,
+                    }),
+                },
+                &[0u8; 16],
+            )
             .unwrap();
 
         commits
-            .truncating_insert(UFOsCommit {
-                cursor: Cursor::from_raw_u64(101),
-                did: Did::new("did:plc:whatever".to_string()).unwrap(),
-                rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
-                rev: "rev-asdg".to_string(),
-                action: CommitAction::Cut,
-            })
+            .truncating_insert(
+                UFOsCommit {
+                    cursor: Cursor::from_raw_u64(101),
+                    did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                    rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+                    rev: "rev-asdg".to_string(),
+                    action: CommitAction::Cut,
+                },
+                &[0u8; 16],
+            )
             .unwrap();
 
-        let res = commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(102),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
-            rev: "rev-asdh".to_string(),
-            action: CommitAction::Cut,
-        });
+        let res = commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(102),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
+                rev: "rev-asdh".to_string(),
+                action: CommitAction::Cut,
+            },
+            &[0u8; 16],
+        );
 
         assert!(res.is_err());
         let overflowed = match res {

@@ -1,3 +1,4 @@
+use crate::store_types::SketchSecretPrefix;
 use crate::{
     error::StorageError, ConsumerInfo, Count, Cursor, EventBatch, QueryPeriod, TopCollections,
     UFOsRecord,
@@ -16,7 +17,7 @@ pub trait StorageWhatever<R: StoreReader, W: StoreWriter<B>, B: StoreBackground,
         endpoint: String,
         force_endpoint: bool,
         config: C,
-    ) -> StorageResult<(R, W, Option<Cursor>)>
+    ) -> StorageResult<(R, W, Option<Cursor>, SketchSecretPrefix)>
     where
         Self: Sized;
 }

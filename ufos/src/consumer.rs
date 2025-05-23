@@ -1,3 +1,4 @@
+use crate::store_types::SketchSecretPrefix;
 use jetstream::{
     events::{Cursor, EventKind, JetstreamEvent},
     exports::{Did, Nsid},
@@ -32,12 +33,14 @@ pub struct Batcher {
     jetstream_receiver: JetstreamReceiver,
     batch_sender: Sender<LimitedBatch>,
     current_batch: CurrentBatch,
+    sketch_secret: SketchSecretPrefix,
 }
 
 pub async fn consume(
     jetstream_endpoint: &str,
     cursor: Option<Cursor>,
     no_compress: bool,
+    sketch_secret: SketchSecretPrefix,
 ) -> anyhow::Result<Receiver<LimitedBatch>> {
     let endpoint = DefaultJetstreamEndpoints::endpoint_or_shortcut(jetstream_endpoint);
     if endpoint == jetstream_endpoint {
@@ -60,17 +63,22 @@ pub async fn consume(
         .connect_cursor(cursor)
         .await?;
     let (batch_sender, batch_reciever) = channel::<LimitedBatch>(BATCH_QUEUE_SIZE);
-    let mut batcher = Batcher::new(jetstream_receiver, batch_sender);
+    let mut batcher = Batcher::new(jetstream_receiver, batch_sender, sketch_secret);
     tokio::task::spawn(async move { batcher.run().await });
     Ok(batch_reciever)
 }
 
 impl Batcher {
-    pub fn new(jetstream_receiver: JetstreamReceiver, batch_sender: Sender<LimitedBatch>) -> Self {
+    pub fn new(
+        jetstream_receiver: JetstreamReceiver,
+        batch_sender: Sender<LimitedBatch>,
+        sketch_secret: SketchSecretPrefix,
+    ) -> Self {
         Self {
             jetstream_receiver,
             batch_sender,
             current_batch: Default::default(),
+            sketch_secret,
         }
     }
 
@@ -129,6 +137,7 @@ impl Batcher {
             &collection,
             commit,
             MAX_BATCHED_COLLECTIONS,
+            &self.sketch_secret,
         );
 
         if let Err(BatchInsertError::BatchFull(commit)) = optimistic_res {
@@ -137,6 +146,7 @@ impl Batcher {
                 &collection,
                 commit,
                 MAX_BATCHED_COLLECTIONS,
+                &self.sketch_secret,
             )?;
         } else {
             optimistic_res?;
