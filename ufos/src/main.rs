@@ -1,6 +1,7 @@
 use clap::Parser;
 use jetstream::events::Cursor;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 use ufos::consumer;
 use ufos::file_consumer;
 use ufos::server;
@@ -8,6 +9,7 @@ use ufos::storage::{StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use ufos::storage_fjall::FjallStorage;
 use ufos::storage_mem::MemStorage;
 use ufos::store_types::SketchSecretPrefix;
+use ufos::ConsumerInfo;
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -112,13 +114,13 @@ async fn go<B: StoreBackground>(
     pause_writer: bool,
     backfill: bool,
     reroll: bool,
-    read_store: impl StoreReader + 'static,
+    read_store: impl StoreReader + 'static + Clone,
     mut write_store: impl StoreWriter<B> + 'static,
     cursor: Option<Cursor>,
     sketch_secret: SketchSecretPrefix,
 ) -> anyhow::Result<()> {
     println!("starting server with storage...");
-    let serving = server::serve(read_store);
+    let serving = server::serve(read_store.clone());
 
     if pause_writer {
         log::info!("not starting jetstream or the write loop.");
@@ -140,13 +142,169 @@ async fn go<B: StoreBackground>(
     let rolling = write_store.background_tasks(reroll)?.run(backfill);
     let storing = write_store.receive_batches(batches);
 
+    let stating = do_update_stuff(read_store, backfill);
+
     tokio::select! {
         z = serving => log::warn!("serve task ended: {z:?}"),
         z = rolling => log::warn!("rollup task ended: {z:?}"),
         z = storing => log::warn!("storage task ended: {z:?}"),
+        z = stating => log::warn!("status task ended: {z:?}"),
     };
 
     println!("bye!");
 
     Ok(())
+}
+
+async fn do_update_stuff(read_store: impl StoreReader, actually: bool) {
+    if !actually {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs_f64(4.)).await;
+        }
+    }
+    let started_at = std::time::SystemTime::now();
+    let mut first_cursor = None;
+    let mut first_rollup = None;
+    let mut last_at = std::time::SystemTime::now();
+    let mut last_cursor = None;
+    let mut last_rollup = None;
+    loop {
+        log::info!("stat thing: sleeping");
+        tokio::time::sleep(std::time::Duration::from_secs_f64(4.)).await;
+        log::info!("stat thing: slept, getting info");
+        match read_store.get_consumer_info().await {
+            Err(e) => log::warn!("failed to get jetstream consumer info: {e:?}"),
+            Ok(ConsumerInfo::Jetstream {
+                latest_cursor,
+                rollup_cursor,
+                ..
+            }) => {
+                log::info!("stat thing: got info, reporting");
+                let now = std::time::SystemTime::now();
+                let latest_cursor = latest_cursor.map(Cursor::from_raw_u64);
+                let rollup_cursor = rollup_cursor.map(Cursor::from_raw_u64);
+                backfill_info(
+                    latest_cursor,
+                    rollup_cursor,
+                    last_cursor,
+                    last_rollup,
+                    last_at,
+                    first_cursor,
+                    first_rollup,
+                    started_at,
+                    now,
+                );
+                first_cursor = first_cursor.or(latest_cursor);
+                first_rollup = first_rollup.or(rollup_cursor);
+                last_cursor = latest_cursor;
+                last_rollup = rollup_cursor;
+                last_at = now;
+            }
+        }
+    }
+}
+
+fn nice_duration(dt: Duration) -> String {
+    let secs = dt.as_secs_f64();
+    if secs < 1. {
+        return format!("{:.0}ms", secs * 1000.);
+    }
+    if secs < 60. {
+        return format!("{secs:.02}s");
+    }
+    let mins = (secs / 60.).floor();
+    let rsecs = secs - (mins * 60.);
+    if mins < 60. {
+        return format!("{mins:.0}m{rsecs:.0}s");
+    }
+    let hrs = (mins / 60.).floor();
+    let rmins = mins - (hrs * 60.);
+    if hrs < 24. {
+        return format!("{hrs:.0}h{rmins:.0}m{rsecs:.0}s");
+    }
+    let days = (hrs / 24.).floor();
+    let rhrs = hrs - (days * 24.);
+    format!("{days:.0}d{rhrs:.0}h{rmins:.0}m{rsecs:.0}s")
+}
+
+fn nice_dt_two_maybes(earlier: Option<Cursor>, later: Option<Cursor>) -> String {
+    match (earlier, later) {
+        (Some(earlier), Some(later)) => match later.duration_since(&earlier) {
+            Ok(dt) => nice_duration(dt),
+            Err(e) => {
+                let rev_dt = e.duration();
+                format!("+{}", nice_duration(rev_dt))
+            }
+        },
+        _ => "unknown".to_string(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn backfill_info(
+    latest_cursor: Option<Cursor>,
+    rollup_cursor: Option<Cursor>,
+    last_cursor: Option<Cursor>,
+    last_rollup: Option<Cursor>,
+    last_at: SystemTime,
+    first_cursor: Option<Cursor>,
+    first_rollup: Option<Cursor>,
+    started_at: SystemTime,
+    now: SystemTime,
+) {
+    let dt_real = now
+        .duration_since(last_at)
+        .unwrap_or(Duration::from_millis(1));
+
+    let dt_real_total = now
+        .duration_since(started_at)
+        .unwrap_or(Duration::from_millis(1));
+
+    let cursor_rate = latest_cursor
+        .zip(last_cursor)
+        .map(|(latest, last)| {
+            latest
+                .duration_since(&last)
+                .unwrap_or(Duration::from_millis(1))
+        })
+        .map(|dtc| format!("{:.2}", dtc.as_secs_f64() / dt_real.as_secs_f64()))
+        .unwrap_or("??".into());
+
+    let cursor_avg = latest_cursor
+        .zip(first_cursor)
+        .map(|(latest, first)| {
+            latest
+                .duration_since(&first)
+                .unwrap_or(Duration::from_millis(1))
+        })
+        .map(|dtc| format!("{:.2}", dtc.as_secs_f64() / dt_real_total.as_secs_f64()))
+        .unwrap_or("??".into());
+
+    let rollup_rate = rollup_cursor
+        .zip(last_rollup)
+        .map(|(latest, last)| {
+            latest
+                .duration_since(&last)
+                .unwrap_or(Duration::from_millis(1))
+        })
+        .map(|dtc| format!("{:.2}", dtc.as_secs_f64() / dt_real.as_secs_f64()))
+        .unwrap_or("??".into());
+
+    let rollup_avg = rollup_cursor
+        .zip(first_rollup)
+        .map(|(latest, first)| {
+            latest
+                .duration_since(&first)
+                .unwrap_or(Duration::from_millis(1))
+        })
+        .map(|dtc| format!("{:.2}", dtc.as_secs_f64() / dt_real_total.as_secs_f64()))
+        .unwrap_or("??".into());
+
+    log::info!(
+        "cursor: {} behind (→{}, {cursor_rate}x, {cursor_avg}x avg). rollup: {} behind (→{}, {rollup_rate}x, {rollup_avg}x avg).",
+        latest_cursor.map(|c| c.elapsed().map(nice_duration).unwrap_or("++".to_string())).unwrap_or("?".to_string()),
+        nice_dt_two_maybes(last_cursor, latest_cursor),
+        rollup_cursor.map(|c| c.elapsed().map(nice_duration).unwrap_or("++".to_string())).unwrap_or("?".to_string()),
+        nice_dt_two_maybes(last_rollup, rollup_cursor),
+    );
 }

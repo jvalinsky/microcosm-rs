@@ -19,7 +19,10 @@ async fn read_jsonl(f: File, sender: Sender<JetstreamEvent>) -> Result<()> {
             return Err(JetstreamEventError::ReceiverClosedError.into());
         }
     }
-    Ok(())
+    log::info!("reached end of jsonl file, looping on noop to keep server alive.");
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs_f64(10.)).await;
+    }
 }
 
 pub async fn consume(

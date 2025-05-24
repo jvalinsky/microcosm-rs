@@ -53,7 +53,8 @@ where
 
     fn step_rollup(&mut self) -> StorageResult<(usize, HashSet<Nsid>)>;
 
-    fn trim_collection(&mut self, collection: &Nsid, limit: usize) -> StorageResult<()>;
+    fn trim_collection(&mut self, collection: &Nsid, limit: usize)
+        -> StorageResult<(usize, usize)>;
 
     fn delete_account(&mut self, did: &Did) -> StorageResult<usize>;
 }

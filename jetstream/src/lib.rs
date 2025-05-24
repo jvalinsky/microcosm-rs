@@ -439,7 +439,7 @@ async fn websocket_task(
 
                         if let Some(last) = last_cursor {
                             if event_cursor <= *last {
-                                log::warn!("event cursor {event_cursor:?} was older than the last one: {last:?}. dropping event.");
+                                log::warn!("event cursor {event_cursor:?} was not newer than the last one: {last:?}. dropping event.");
                                 continue;
                             }
                         }
@@ -475,7 +475,7 @@ async fn websocket_task(
 
                         if let Some(last) = last_cursor {
                             if event_cursor <= *last {
-                                log::warn!("event cursor {event_cursor:?} was older than the last one: {last:?}. dropping event.");
+                                log::warn!("event cursor {event_cursor:?} was not newer than the last one: {last:?}. dropping event.");
                                 continue;
                             }
                         }

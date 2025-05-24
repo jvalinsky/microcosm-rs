@@ -230,6 +230,7 @@ pub enum ConsumerInfo {
         endpoint: String,
         started_at: u64,
         latest_cursor: Option<u64>,
+        rollup_cursor: Option<u64>,
     },
 }
 
