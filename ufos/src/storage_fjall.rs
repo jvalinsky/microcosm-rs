@@ -372,6 +372,27 @@ impl FjallReader {
         })
     }
 
+    fn get_all_collections(&self, period: QueryPeriod) -> StorageResult<Vec<Count>> {
+        Ok(if period.is_all_time() {
+            let snapshot = self.rollups.snapshot();
+            let mut out = Vec::new();
+            let prefix = AllTimeRollupKey::from_prefix_to_db_bytes(&Default::default())?;
+            for kv in snapshot.prefix(prefix) {
+                let (key_bytes, val_bytes) = kv?;
+                let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
+                let db_counts = db_complete::<CountsValue>(&val_bytes)?;
+                out.push(Count {
+                    thing: key.collection().to_string(),
+                    records: db_counts.records(),
+                    dids_estimate: db_counts.dids().estimate() as u64,
+                });
+            }
+            out
+        } else {
+            todo!()
+        })
+    }
+
     fn get_top_collections_by_count(
         &self,
         limit: usize,
@@ -572,6 +593,10 @@ impl StoreReader for FjallReader {
     async fn get_consumer_info(&self) -> StorageResult<ConsumerInfo> {
         let s = self.clone();
         tokio::task::spawn_blocking(move || FjallReader::get_consumer_info(&s)).await?
+    }
+    async fn get_all_collections(&self, period: QueryPeriod) -> StorageResult<Vec<Count>> {
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || FjallReader::get_all_collections(&s, period)).await?
     }
     async fn get_top_collections_by_count(
         &self,

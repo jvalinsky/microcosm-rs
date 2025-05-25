@@ -213,6 +213,23 @@ async fn get_records_total_seen(
     ok_cors(seen_by_collection)
 }
 
+/// Get all collections
+///
+/// TODO: paginate
+#[endpoint {
+    method = GET,
+    path = "/collections/all"
+}]
+async fn get_all_collections(ctx: RequestContext<Context>) -> OkCorsResponse<Vec<Count>> {
+    let Context { storage, .. } = ctx.context();
+    let collections = storage
+        .get_all_collections(QueryPeriod::all_time())
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
+
+    ok_cors(collections)
+}
+
 /// Get top collections by record count
 #[endpoint {
     method = GET,
@@ -274,6 +291,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_meta_info).unwrap();
     api.register(get_records_by_collections).unwrap();
     api.register(get_records_total_seen).unwrap();
+    api.register(get_all_collections).unwrap();
     api.register(get_top_collections_by_count).unwrap();
     api.register(get_top_collections_by_dids).unwrap();
     api.register(get_top_collections).unwrap();

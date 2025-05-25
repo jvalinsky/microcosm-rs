@@ -72,6 +72,8 @@ pub trait StoreReader: Send + Sync {
 
     async fn get_consumer_info(&self) -> StorageResult<ConsumerInfo>;
 
+    async fn get_all_collections(&self, period: QueryPeriod) -> StorageResult<Vec<Count>>;
+
     async fn get_top_collections_by_count(
         &self,
         limit: usize,

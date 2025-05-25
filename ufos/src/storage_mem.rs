@@ -594,6 +594,9 @@ impl StoreReader for MemReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || MemReader::get_top_collections(&s)).await?
     }
+    async fn get_all_collections(&self, _: QueryPeriod) -> StorageResult<Vec<Count>> {
+        todo!()
+    }
     async fn get_top_collections_by_count(
         &self,
         _: usize,
