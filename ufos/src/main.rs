@@ -169,9 +169,7 @@ async fn do_update_stuff(read_store: impl StoreReader, actually: bool) {
     let mut last_cursor = None;
     let mut last_rollup = None;
     loop {
-        log::info!("stat thing: sleeping");
         tokio::time::sleep(std::time::Duration::from_secs_f64(4.)).await;
-        log::info!("stat thing: slept, getting info");
         match read_store.get_consumer_info().await {
             Err(e) => log::warn!("failed to get jetstream consumer info: {e:?}"),
             Ok(ConsumerInfo::Jetstream {
@@ -179,7 +177,6 @@ async fn do_update_stuff(read_store: impl StoreReader, actually: bool) {
                 rollup_cursor,
                 ..
             }) => {
-                log::info!("stat thing: got info, reporting");
                 let now = std::time::SystemTime::now();
                 let latest_cursor = latest_cursor.map(Cursor::from_raw_u64);
                 let rollup_cursor = rollup_cursor.map(Cursor::from_raw_u64);

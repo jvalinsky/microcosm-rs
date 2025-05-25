@@ -979,7 +979,11 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         let mut live_records_found = 0;
         let mut latest_expired_feed_cursor = None;
         let mut batch = self.keyspace.batch();
-        for kv in self.feeds.range(live_range).rev() {
+        for (i, kv) in self.feeds.range(live_range).rev().enumerate() {
+            if i > 1_000_000 {
+                log::info!("stopping collection trim early: already scanned 1M elements");
+                break;
+            }
             let (key_bytes, val_bytes) = kv?;
             let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
             let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
@@ -1068,7 +1072,7 @@ impl StoreBackground for FjallBackground {
         rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         let mut trim =
-            tokio::time::interval(Duration::from_millis(if backfill { 12_000 } else { 6_000 }));
+            tokio::time::interval(Duration::from_millis(if backfill { 3_000 } else { 6_000 }));
         trim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -1090,6 +1094,10 @@ impl StoreBackground for FjallBackground {
                         let (danglers, deleted) = self.0.trim_collection(collection, 512).inspect_err(|e| log::error!("trim error: {e:?}"))?;
                         total_danglers += danglers;
                         total_deleted += deleted;
+                        if total_deleted > 1_000_000 {
+                            log::info!("trim stopped early, more than 1M records already deleted.");
+                            break;
+                        }
                     }
                     log::info!("finished trimming {n} nsids in {:?}: {total_danglers} dangling and {total_deleted} total removed.", t0.elapsed());
                     dirty_nsids.clear();

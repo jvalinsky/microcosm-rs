@@ -8,7 +8,7 @@ use jetstream::{
 use std::mem;
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::time::timeout;
+use tokio::time::{timeout, Interval};
 
 use crate::error::{BatchInsertError, FirehoseEventError};
 use crate::{DeleteAccount, EventBatch, UFOsCommit};
@@ -35,6 +35,7 @@ pub struct Batcher {
     batch_sender: Sender<LimitedBatch>,
     current_batch: CurrentBatch,
     sketch_secret: SketchSecretPrefix,
+    rate_limit: Interval,
 }
 
 pub async fn consume(
@@ -65,7 +66,10 @@ pub async fn consume(
         .await?;
     let (batch_sender, batch_reciever) = channel::<LimitedBatch>(BATCH_QUEUE_SIZE);
     let mut batcher = Batcher::new(jetstream_receiver, batch_sender, sketch_secret);
-    tokio::task::spawn(async move { batcher.run().await });
+    tokio::task::spawn(async move {
+        let r = batcher.run().await;
+        log::info!("batcher ended: {r:?}");
+    });
     Ok(batch_reciever)
 }
 
@@ -75,15 +79,19 @@ impl Batcher {
         batch_sender: Sender<LimitedBatch>,
         sketch_secret: SketchSecretPrefix,
     ) -> Self {
+        let mut rate_limit = tokio::time::interval(std::time::Duration::from_micros(3_900));
+        rate_limit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         Self {
             jetstream_receiver,
             batch_sender,
             current_batch: Default::default(),
             sketch_secret,
+            rate_limit,
         }
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        // TODO: report errors *from here* probably, since this gets shipped off into a spawned task that might just vanish
         loop {
             match timeout(Duration::from_millis(9_000), self.jetstream_receiver.recv()).await {
                 Err(_elapsed) => self.no_events_step().await?,
@@ -191,6 +199,7 @@ impl Batcher {
             self.batch_sender.capacity(),
         );
         let current = mem::take(&mut self.current_batch);
+        self.rate_limit.tick().await;
         self.batch_sender
             .send_timeout(current.batch, Duration::from_secs_f64(SEND_TIMEOUT_S))
             .await?;

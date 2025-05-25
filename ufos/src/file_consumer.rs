@@ -12,11 +12,18 @@ use tokio::{
 async fn read_jsonl(f: File, sender: Sender<JetstreamEvent>) -> Result<()> {
     let mut lines = BufReader::new(f).lines();
     while let Some(line) = lines.next_line().await? {
-        let event: JetstreamEvent =
-            serde_json::from_str(&line).map_err(JetstreamEventError::ReceivedMalformedJSON)?;
-        if sender.send(event).await.is_err() {
-            log::warn!("All receivers for the jsonl fixture have been dropped, bye.");
-            return Err(JetstreamEventError::ReceiverClosedError.into());
+        match serde_json::from_str::<JetstreamEvent>(&line) {
+            Ok(event) => match sender.send(event).await {
+                Ok(_) => {}
+                Err(e) => {
+                    log::warn!("All receivers for the jsonl fixture have been dropped, bye: {e:?}");
+                    return Err(JetstreamEventError::ReceiverClosedError.into());
+                }
+            },
+            Err(parse_err) => {
+                log::warn!("failed to parse event: {parse_err:?} from event:\n{line}");
+                continue;
+            }
         }
     }
     log::info!("reached end of jsonl file, looping on noop to keep server alive.");
@@ -33,7 +40,13 @@ pub async fn consume(
     let (jsonl_sender, jsonl_receiver) = channel::<JetstreamEvent>(16);
     let (batch_sender, batch_reciever) = channel::<LimitedBatch>(BATCH_QUEUE_SIZE);
     let mut batcher = Batcher::new(jsonl_receiver, batch_sender, sketch_secret);
-    tokio::task::spawn(async move { read_jsonl(f, jsonl_sender).await });
-    tokio::task::spawn(async move { batcher.run().await });
+    tokio::task::spawn(async move {
+        let r = read_jsonl(f, jsonl_sender).await;
+        log::info!("read_jsonl finished: {r:?}");
+    });
+    tokio::task::spawn(async move {
+        let r = batcher.run().await;
+        log::info!("batcher finished: {r:?}");
+    });
     Ok(batch_reciever)
 }
