@@ -441,10 +441,15 @@ impl MemReader {
             get_snapshot_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?
                 .map(|c| c.to_raw_u64());
 
+        let rollup_cursor =
+            get_snapshot_static_neu::<NewRollupCursorKey, JetstreamCursorValue>(&global)?
+                .map(|c| c.to_raw_u64());
+
         Ok(ConsumerInfo::Jetstream {
             endpoint,
             started_at,
             latest_cursor,
+            rollup_cursor,
         })
     }
 
@@ -797,7 +802,7 @@ impl MemWriter {
 }
 
 impl StoreWriter<MemBackground> for MemWriter {
-    fn background_tasks(&mut self) -> StorageResult<MemBackground> {
+    fn background_tasks(&mut self, _reroll: bool) -> StorageResult<MemBackground> {
         Ok(MemBackground {})
     }
 
@@ -959,7 +964,7 @@ impl StoreWriter<MemBackground> for MemWriter {
         collection: &Nsid,
         limit: usize,
         // TODO: could add a start cursor limit to avoid iterating deleted stuff at the start (/end)
-    ) -> StorageResult<()> {
+    ) -> StorageResult<(usize, usize)> {
         let mut dangling_feed_keys_cleaned = 0;
         let mut records_deleted = 0;
 
@@ -1015,7 +1020,7 @@ impl StoreWriter<MemBackground> for MemWriter {
         batch.commit()?;
 
         log::info!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
-        Ok(())
+        Ok((dangling_feed_keys_cleaned, records_deleted))
     }
 
     fn delete_account(&mut self, did: &Did) -> Result<usize, StorageError> {
@@ -1040,7 +1045,7 @@ pub struct MemBackground;
 
 #[async_trait]
 impl StoreBackground for MemBackground {
-    async fn run(mut self) -> StorageResult<()> {
+    async fn run(mut self, _backfill: bool) -> StorageResult<()> {
         // noop for mem (is there a nicer way to do this?)
         loop {
             tokio::time::sleep(std::time::Duration::from_secs_f64(10.)).await;

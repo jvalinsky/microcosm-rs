@@ -149,8 +149,8 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
         let keyspace = {
             let config = Config::new(path);
 
-            #[cfg(not(test))]
-            let config = config.fsync_ms(Some(4_000));
+            // #[cfg(not(test))]
+            // let config = config.fsync_ms(Some(4_000));
 
             config.open()?
         };
@@ -187,7 +187,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
                     )?;
                 } else {
                     return Err(StorageError::InitError(format!(
-                        "stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start.")));
+                        "stored js_endpoint {stored:?} differs from provided {endpoint:?}, refusing to start without --jetstream-force.")));
                 }
             }
             stored_secret
@@ -360,10 +360,15 @@ impl FjallReader {
             get_snapshot_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?
                 .map(|c| c.to_raw_u64());
 
+        let rollup_cursor =
+            get_snapshot_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&global)?
+                .map(|c| c.to_raw_u64());
+
         Ok(ConsumerInfo::Jetstream {
             endpoint,
             started_at,
             latest_cursor,
+            rollup_cursor,
         })
     }
 
@@ -801,10 +806,13 @@ impl FjallWriter {
 }
 
 impl StoreWriter<FjallBackground> for FjallWriter {
-    fn background_tasks(&mut self) -> StorageResult<FjallBackground> {
+    fn background_tasks(&mut self, reroll: bool) -> StorageResult<FjallBackground> {
         if self.bg_taken.swap(true, Ordering::SeqCst) {
             Err(StorageError::BackgroundAlreadyStarted)
         } else {
+            if reroll {
+                insert_static_neu::<NewRollupCursorKey>(&self.global, Cursor::from_start())?;
+            }
             Ok(FjallBackground(self.clone()))
         }
     }
@@ -948,7 +956,11 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         Ok((cursors_stepped, dirty_nsids))
     }
 
-    fn trim_collection(&mut self, collection: &Nsid, limit: usize) -> StorageResult<()> {
+    fn trim_collection(
+        &mut self,
+        collection: &Nsid,
+        limit: usize,
+    ) -> StorageResult<(usize, usize)> {
         let mut dangling_feed_keys_cleaned = 0;
         let mut records_deleted = 0;
 
@@ -967,7 +979,11 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         let mut live_records_found = 0;
         let mut latest_expired_feed_cursor = None;
         let mut batch = self.keyspace.batch();
-        for kv in self.feeds.range(live_range).rev() {
+        for (i, kv) in self.feeds.range(live_range).rev().enumerate() {
+            if i > 1_000_000 {
+                log::info!("stopping collection trim early: already scanned 1M elements");
+                break;
+            }
             let (key_bytes, val_bytes) = kv?;
             let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
             let feed_val = db_complete::<NsidRecordFeedVal>(&val_bytes)?;
@@ -1022,8 +1038,8 @@ impl StoreWriter<FjallBackground> for FjallWriter {
 
         batch.commit()?;
 
-        log::info!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
-        Ok(())
+        log::trace!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
+        Ok((dangling_feed_keys_cleaned, records_deleted))
     }
 
     fn delete_account(&mut self, did: &Did) -> Result<usize, StorageError> {
@@ -1048,13 +1064,15 @@ pub struct FjallBackground(FjallWriter);
 
 #[async_trait]
 impl StoreBackground for FjallBackground {
-    async fn run(mut self) -> StorageResult<()> {
+    async fn run(mut self, backfill: bool) -> StorageResult<()> {
         let mut dirty_nsids = HashSet::new();
 
-        let mut rollup = tokio::time::interval(Duration::from_millis(81));
+        let mut rollup =
+            tokio::time::interval(Duration::from_millis(if backfill { 1 } else { 81 }));
         rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let mut trim = tokio::time::interval(Duration::from_millis(6_000));
+        let mut trim =
+            tokio::time::interval(Duration::from_millis(if backfill { 3_000 } else { 6_000 }));
         trim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -1065,15 +1083,23 @@ impl StoreBackground for FjallBackground {
                         rollup.reset_after(Duration::from_millis(1_200)); // we're caught up, take a break
                     }
                     dirty_nsids.extend(dirty);
-                    log::info!("rolled up {n} items ({} collections now dirty)", dirty_nsids.len());
+                    log::trace!("rolled up {n} items ({} collections now dirty)", dirty_nsids.len());
                 },
                 _ = trim.tick() => {
-                    log::info!("trimming {} nsids: {dirty_nsids:?}", dirty_nsids.len());
+                    let n = dirty_nsids.len();
+                    log::trace!("trimming {n} nsids: {dirty_nsids:?}");
                     let t0 = Instant::now();
+                    let (mut total_danglers, mut total_deleted) = (0, 0);
                     for collection in &dirty_nsids {
-                        self.0.trim_collection(collection, 512).inspect_err(|e| log::error!("trim error: {e:?}"))?;
+                        let (danglers, deleted) = self.0.trim_collection(collection, 512).inspect_err(|e| log::error!("trim error: {e:?}"))?;
+                        total_danglers += danglers;
+                        total_deleted += deleted;
+                        if total_deleted > 1_000_000 {
+                            log::info!("trim stopped early, more than 1M records already deleted.");
+                            break;
+                        }
                     }
-                    log::info!("finished trimming in {:?}", t0.elapsed());
+                    log::info!("finished trimming {n} nsids in {:?}: {total_danglers} dangling and {total_deleted} total removed.", t0.elapsed());
                     dirty_nsids.clear();
                 },
             };
@@ -1154,18 +1180,6 @@ pub struct StorageInfo {
 }
 
 ////////// temp stuff to remove:
-
-// fn summarize_batch<const LIMIT: usize>(batch: &EventBatch<LIMIT>) -> String {
-//     format!(
-//         "batch of {: >3} samples from {: >4} records in {: >2} collections from ~{: >4} DIDs, {} acct removes, cursor {: <12?}",
-//         batch.total_records(),
-//         batch.total_seen(),
-//         batch.total_collections(),
-//         batch.estimate_dids(),
-//         batch.account_removes(),
-//         batch.latest_cursor().map(|c| c.elapsed()),
-//     )
-// }
 
 #[cfg(test)]
 mod tests {

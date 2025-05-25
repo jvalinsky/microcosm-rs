@@ -8,6 +8,7 @@ use jetstream::{
 use std::mem;
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::time::{timeout, Interval};
 
 use crate::error::{BatchInsertError, FirehoseEventError};
 use crate::{DeleteAccount, EventBatch, UFOsCommit};
@@ -34,6 +35,7 @@ pub struct Batcher {
     batch_sender: Sender<LimitedBatch>,
     current_batch: CurrentBatch,
     sketch_secret: SketchSecretPrefix,
+    rate_limit: Interval,
 }
 
 pub async fn consume(
@@ -64,7 +66,10 @@ pub async fn consume(
         .await?;
     let (batch_sender, batch_reciever) = channel::<LimitedBatch>(BATCH_QUEUE_SIZE);
     let mut batcher = Batcher::new(jetstream_receiver, batch_sender, sketch_secret);
-    tokio::task::spawn(async move { batcher.run().await });
+    tokio::task::spawn(async move {
+        let r = batcher.run().await;
+        log::info!("batcher ended: {r:?}");
+    });
     Ok(batch_reciever)
 }
 
@@ -74,29 +79,43 @@ impl Batcher {
         batch_sender: Sender<LimitedBatch>,
         sketch_secret: SketchSecretPrefix,
     ) -> Self {
+        let mut rate_limit = tokio::time::interval(std::time::Duration::from_millis(5));
+        rate_limit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         Self {
             jetstream_receiver,
             batch_sender,
             current_batch: Default::default(),
             sketch_secret,
+            rate_limit,
         }
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        // TODO: report errors *from here* probably, since this gets shipped off into a spawned task that might just vanish
         loop {
-            if let Some(event) = self.jetstream_receiver.recv().await {
-                self.handle_event(event).await?
-            } else {
-                anyhow::bail!("channel closed");
+            match timeout(Duration::from_millis(9_000), self.jetstream_receiver.recv()).await {
+                Err(_elapsed) => self.no_events_step().await?,
+                Ok(Some(event)) => self.handle_event(event).await?,
+                Ok(None) => anyhow::bail!("channel closed"),
             }
         }
+    }
+
+    async fn no_events_step(&mut self) -> anyhow::Result<()> {
+        let empty = self.current_batch.batch.is_empty();
+        log::info!("no events received, stepping batcher (empty? {empty})");
+        if !empty {
+            self.send_current_batch_now(true, "no events step").await?;
+        }
+        Ok(())
     }
 
     async fn handle_event(&mut self, event: JetstreamEvent) -> anyhow::Result<()> {
         if let Some(earliest) = &self.current_batch.initial_cursor {
             if event.cursor.duration_since(earliest)? > Duration::from_secs_f64(MAX_BATCH_SPAN_SECS)
             {
-                self.send_current_batch_now(false).await?;
+                self.send_current_batch_now(false, "time since event")
+                    .await?;
             }
         } else {
             self.current_batch.initial_cursor = Some(event.cursor);
@@ -126,7 +145,7 @@ impl Batcher {
             if event.cursor.duration_since(earliest)?.as_secs_f64() > MIN_BATCH_SPAN_SECS
                 && self.batch_sender.capacity() == BATCH_QUEUE_SIZE
             {
-                self.send_current_batch_now(true).await?;
+                self.send_current_batch_now(true, "available queue").await?;
             }
         }
         Ok(())
@@ -141,7 +160,7 @@ impl Batcher {
         );
 
         if let Err(BatchInsertError::BatchFull(commit)) = optimistic_res {
-            self.send_current_batch_now(false).await?;
+            self.send_current_batch_now(false, "handle commit").await?;
             self.current_batch.batch.insert_commit_by_nsid(
                 &collection,
                 commit,
@@ -157,7 +176,7 @@ impl Batcher {
 
     async fn handle_delete_account(&mut self, did: Did, cursor: Cursor) -> anyhow::Result<()> {
         if self.current_batch.batch.account_removes.len() >= MAX_ACCOUNT_REMOVES {
-            self.send_current_batch_now(false).await?;
+            self.send_current_batch_now(false, "delete account").await?;
         }
         self.current_batch
             .batch
@@ -168,18 +187,19 @@ impl Batcher {
 
     // holds up all consumer progress until it can send to the channel
     // use this when the current batch is too full to add more to it
-    async fn send_current_batch_now(&mut self, small: bool) -> anyhow::Result<()> {
+    async fn send_current_batch_now(&mut self, small: bool, referrer: &str) -> anyhow::Result<()> {
         let beginning = match self.current_batch.initial_cursor.map(|c| c.elapsed()) {
             None => "unknown".to_string(),
             Some(Ok(t)) => format!("{:?}", t),
             Some(Err(e)) => format!("+{:?}", e.duration()),
         };
-        log::info!(
-            "sending batch now from {beginning}, {}, queue capacity: {}",
+        log::trace!(
+            "sending batch now from {beginning}, {}, queue capacity: {}, referrer: {referrer}",
             if small { "small" } else { "full" },
             self.batch_sender.capacity(),
         );
         let current = mem::take(&mut self.current_batch);
+        self.rate_limit.tick().await;
         self.batch_sender
             .send_timeout(current.batch, Duration::from_secs_f64(SEND_TIMEOUT_S))
             .await?;

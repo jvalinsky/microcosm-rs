@@ -225,9 +225,8 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atrium-api"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d4eb9b4787aba546015c8ccda1d3924c157cee13d67848997fba74ac8144a07"
+version = "0.25.3"
+source = "git+https://github.com/uniphil/atrium?branch=fix%2Fnsid-allow-nonleading-name-digits#c4364f318d337bbc3e3e3aaf97c9f971e95f5f7e"
 dependencies = [
  "atrium-common",
  "atrium-xrpc",
@@ -245,9 +244,8 @@ dependencies = [
 
 [[package]]
 name = "atrium-common"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba30d2f9e1a8b3db8fc97d0a5f91ee5a28f8acdddb771ad74c1b08eda357ca3d"
+version = "0.1.2"
+source = "git+https://github.com/uniphil/atrium?branch=fix%2Fnsid-allow-nonleading-name-digits#c4364f318d337bbc3e3e3aaf97c9f971e95f5f7e"
 dependencies = [
  "dashmap",
  "lru",
@@ -260,9 +258,8 @@ dependencies = [
 
 [[package]]
 name = "atrium-xrpc"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18a9e526cb2ed3e0a2ca78c3ce2a943d9041a68e067dadf42923b523771e07df"
+version = "0.12.3"
+source = "git+https://github.com/uniphil/atrium?branch=fix%2Fnsid-allow-nonleading-name-digits#c4364f318d337bbc3e3e3aaf97c9f971e95f5f7e"
 dependencies = [
  "http",
  "serde",

@@ -26,7 +26,7 @@ pub trait StoreWriter<B: StoreBackground>: Send + Sync
 where
     Self: 'static,
 {
-    fn background_tasks(&mut self) -> StorageResult<B>;
+    fn background_tasks(&mut self, reroll: bool) -> StorageResult<B>;
 
     fn receive_batches<const LIMIT: usize>(
         mut self,
@@ -53,14 +53,15 @@ where
 
     fn step_rollup(&mut self) -> StorageResult<(usize, HashSet<Nsid>)>;
 
-    fn trim_collection(&mut self, collection: &Nsid, limit: usize) -> StorageResult<()>;
+    fn trim_collection(&mut self, collection: &Nsid, limit: usize)
+        -> StorageResult<(usize, usize)>;
 
     fn delete_account(&mut self, did: &Did) -> StorageResult<usize>;
 }
 
 #[async_trait]
 pub trait StoreBackground: Send + Sync {
-    async fn run(mut self) -> StorageResult<()>;
+    async fn run(mut self, backfill: bool) -> StorageResult<()>;
 }
 
 #[async_trait]
