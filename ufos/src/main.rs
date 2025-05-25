@@ -142,7 +142,7 @@ async fn go<B: StoreBackground>(
     let rolling = write_store.background_tasks(reroll)?.run(backfill);
     let storing = write_store.receive_batches(batches);
 
-    let stating = do_update_stuff(read_store, backfill);
+    let stating = do_update_stuff(read_store);
 
     tokio::select! {
         z = serving => log::warn!("serve task ended: {z:?}"),
@@ -156,12 +156,7 @@ async fn go<B: StoreBackground>(
     Ok(())
 }
 
-async fn do_update_stuff(read_store: impl StoreReader, actually: bool) {
-    if !actually {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs_f64(4.)).await;
-        }
-    }
+async fn do_update_stuff(read_store: impl StoreReader) {
     let started_at = std::time::SystemTime::now();
     let mut first_cursor = None;
     let mut first_rollup = None;
@@ -201,42 +196,6 @@ async fn do_update_stuff(read_store: impl StoreReader, actually: bool) {
     }
 }
 
-fn nice_duration(dt: Duration) -> String {
-    let secs = dt.as_secs_f64();
-    if secs < 1. {
-        return format!("{:.0}ms", secs * 1000.);
-    }
-    if secs < 60. {
-        return format!("{secs:.02}s");
-    }
-    let mins = (secs / 60.).floor();
-    let rsecs = secs - (mins * 60.);
-    if mins < 60. {
-        return format!("{mins:.0}m{rsecs:.0}s");
-    }
-    let hrs = (mins / 60.).floor();
-    let rmins = mins - (hrs * 60.);
-    if hrs < 24. {
-        return format!("{hrs:.0}h{rmins:.0}m{rsecs:.0}s");
-    }
-    let days = (hrs / 24.).floor();
-    let rhrs = hrs - (days * 24.);
-    format!("{days:.0}d{rhrs:.0}h{rmins:.0}m{rsecs:.0}s")
-}
-
-fn nice_dt_two_maybes(earlier: Option<Cursor>, later: Option<Cursor>) -> String {
-    match (earlier, later) {
-        (Some(earlier), Some(later)) => match later.duration_since(&earlier) {
-            Ok(dt) => nice_duration(dt),
-            Err(e) => {
-                let rev_dt = e.duration();
-                format!("+{}", nice_duration(rev_dt))
-            }
-        },
-        _ => "unknown".to_string(),
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn backfill_info(
     latest_cursor: Option<Cursor>,
@@ -249,6 +208,53 @@ fn backfill_info(
     started_at: SystemTime,
     now: SystemTime,
 ) {
+    let nice_duration = |dt: Duration| {
+        let secs = dt.as_secs_f64();
+        if secs < 1. {
+            return format!("{:.0}ms", secs * 1000.);
+        }
+        if secs < 60. {
+            return format!("{secs:.02}s");
+        }
+        let mins = (secs / 60.).floor();
+        let rsecs = secs - (mins * 60.);
+        if mins < 60. {
+            return format!("{mins:.0}m{rsecs:.0}s");
+        }
+        let hrs = (mins / 60.).floor();
+        let rmins = mins - (hrs * 60.);
+        if hrs < 24. {
+            return format!("{hrs:.0}h{rmins:.0}m{rsecs:.0}s");
+        }
+        let days = (hrs / 24.).floor();
+        let rhrs = hrs - (days * 24.);
+        format!("{days:.0}d{rhrs:.0}h{rmins:.0}m{rsecs:.0}s")
+    };
+
+    let nice_dt_two_maybes = |earlier: Option<Cursor>, later: Option<Cursor>| match (earlier, later)
+    {
+        (Some(earlier), Some(later)) => match later.duration_since(&earlier) {
+            Ok(dt) => nice_duration(dt),
+            Err(e) => {
+                let rev_dt = e.duration();
+                format!("+{}", nice_duration(rev_dt))
+            }
+        },
+        _ => "unknown".to_string(),
+    };
+
+    let rate = |mlatest: Option<Cursor>, msince: Option<Cursor>, real: Duration| {
+        mlatest
+            .zip(msince)
+            .map(|(latest, since)| {
+                latest
+                    .duration_since(&since)
+                    .unwrap_or(Duration::from_millis(1))
+            })
+            .map(|dtc| format!("{:.2}", dtc.as_secs_f64() / real.as_secs_f64()))
+            .unwrap_or("??".into())
+    };
+
     let dt_real = now
         .duration_since(last_at)
         .unwrap_or(Duration::from_millis(1));
@@ -257,45 +263,11 @@ fn backfill_info(
         .duration_since(started_at)
         .unwrap_or(Duration::from_millis(1));
 
-    let cursor_rate = latest_cursor
-        .zip(last_cursor)
-        .map(|(latest, last)| {
-            latest
-                .duration_since(&last)
-                .unwrap_or(Duration::from_millis(1))
-        })
-        .map(|dtc| format!("{:.2}", dtc.as_secs_f64() / dt_real.as_secs_f64()))
-        .unwrap_or("??".into());
+    let cursor_rate = rate(latest_cursor, last_cursor, dt_real);
+    let cursor_avg = rate(latest_cursor, first_cursor, dt_real_total);
 
-    let cursor_avg = latest_cursor
-        .zip(first_cursor)
-        .map(|(latest, first)| {
-            latest
-                .duration_since(&first)
-                .unwrap_or(Duration::from_millis(1))
-        })
-        .map(|dtc| format!("{:.2}", dtc.as_secs_f64() / dt_real_total.as_secs_f64()))
-        .unwrap_or("??".into());
-
-    let rollup_rate = rollup_cursor
-        .zip(last_rollup)
-        .map(|(latest, last)| {
-            latest
-                .duration_since(&last)
-                .unwrap_or(Duration::from_millis(1))
-        })
-        .map(|dtc| format!("{:.2}", dtc.as_secs_f64() / dt_real.as_secs_f64()))
-        .unwrap_or("??".into());
-
-    let rollup_avg = rollup_cursor
-        .zip(first_rollup)
-        .map(|(latest, first)| {
-            latest
-                .duration_since(&first)
-                .unwrap_or(Duration::from_millis(1))
-        })
-        .map(|dtc| format!("{:.2}", dtc.as_secs_f64() / dt_real_total.as_secs_f64()))
-        .unwrap_or("??".into());
+    let rollup_rate = rate(rollup_cursor, last_rollup, dt_real);
+    let rollup_avg = rate(rollup_cursor, first_rollup, dt_real_total);
 
     log::info!(
         "cursor: {} behind (→{}, {cursor_rate}x, {cursor_avg}x avg). rollup: {} behind (→{}, {rollup_rate}x, {rollup_avg}x avg).",

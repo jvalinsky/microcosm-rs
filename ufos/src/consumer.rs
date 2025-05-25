@@ -79,7 +79,7 @@ impl Batcher {
         batch_sender: Sender<LimitedBatch>,
         sketch_secret: SketchSecretPrefix,
     ) -> Self {
-        let mut rate_limit = tokio::time::interval(std::time::Duration::from_micros(3_900));
+        let mut rate_limit = tokio::time::interval(std::time::Duration::from_millis(5));
         rate_limit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         Self {
             jetstream_receiver,
