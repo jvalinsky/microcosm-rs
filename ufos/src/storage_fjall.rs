@@ -836,7 +836,22 @@ impl StoreWriter<FjallBackground> for FjallWriter {
             Err(StorageError::BackgroundAlreadyStarted)
         } else {
             if reroll {
+                log::info!("reroll: resetting rollup cursor...");
                 insert_static_neu::<NewRollupCursorKey>(&self.global, Cursor::from_start())?;
+                log::info!("reroll: clearing trim cursors...");
+                let mut batch = self.keyspace.batch();
+                for kv in self
+                    .global
+                    .prefix(TrimCollectionCursorKey::from_prefix_to_db_bytes(
+                        &Default::default(),
+                    )?)
+                {
+                    let (k, _) = kv?;
+                    batch.remove(&self.global, k);
+                }
+                let n = batch.len();
+                batch.commit()?;
+                log::info!("reroll: cleared {n} trim cursors.");
             }
             Ok(FjallBackground(self.clone()))
         }
@@ -985,28 +1000,35 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         &mut self,
         collection: &Nsid,
         limit: usize,
+        full_scan: bool,
     ) -> StorageResult<(usize, usize)> {
         let mut dangling_feed_keys_cleaned = 0;
         let mut records_deleted = 0;
 
-        let feed_trim_cursor_key =
-            TrimCollectionCursorKey::new(collection.clone()).to_db_bytes()?;
-        let trim_cursor = self
-            .global
-            .get(&feed_trim_cursor_key)?
-            .map(|value_bytes| db_complete(&value_bytes))
-            .transpose()?
-            .unwrap_or(Cursor::from_start());
-
-        let live_range =
-            NsidRecordFeedKey::from_pair(collection.clone(), trim_cursor).range_to_prefix_end()?;
+        let live_range = if full_scan {
+            let start = NsidRecordFeedKey::from_prefix_to_db_bytes(collection)?;
+            let end = NsidRecordFeedKey::prefix_range_end(collection)?;
+            start..end
+        } else {
+            let feed_trim_cursor_key =
+                TrimCollectionCursorKey::new(collection.clone()).to_db_bytes()?;
+            let trim_cursor = self
+                .global
+                .get(&feed_trim_cursor_key)?
+                .map(|value_bytes| db_complete(&value_bytes))
+                .transpose()?
+                .unwrap_or(Cursor::from_start());
+            NsidRecordFeedKey::from_pair(collection.clone(), trim_cursor).range_to_prefix_end()?
+        };
 
         let mut live_records_found = 0;
-        let mut latest_expired_feed_cursor = None;
+        let mut candidate_new_feed_lower_cursor = None;
+        let mut ended_early = false;
         let mut batch = self.keyspace.batch();
         for (i, kv) in self.feeds.range(live_range).rev().enumerate() {
-            if i > 1_000_000 {
+            if !full_scan && i > 1_000_000 {
                 log::info!("stopping collection trim early: already scanned 1M elements");
+                ended_early = true;
                 break;
             }
             let (key_bytes, val_bytes) = kv?;
@@ -1047,13 +1069,9 @@ impl StoreWriter<FjallBackground> for FjallWriter {
             live_records_found += 1;
             if live_records_found <= limit {
                 continue;
-            } else if latest_expired_feed_cursor.is_none() {
-                latest_expired_feed_cursor = Some(feed_key.cursor());
-                batch.insert(
-                    &self.global,
-                    &TrimCollectionCursorKey::new(collection.clone()).to_db_bytes()?,
-                    &feed_key.cursor().to_db_bytes()?,
-                );
+            }
+            if candidate_new_feed_lower_cursor.is_none() {
+                candidate_new_feed_lower_cursor = Some(feed_key.cursor());
             }
 
             batch.remove(&self.feeds, key_bytes);
@@ -1061,9 +1079,19 @@ impl StoreWriter<FjallBackground> for FjallWriter {
             records_deleted += 1;
         }
 
+        if !ended_early {
+            if let Some(new_cursor) = candidate_new_feed_lower_cursor {
+                batch.insert(
+                    &self.global,
+                    &TrimCollectionCursorKey::new(collection.clone()).to_db_bytes()?,
+                    &new_cursor.to_db_bytes()?,
+                );
+            }
+        }
+
         batch.commit()?;
 
-        log::trace!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
+        log::trace!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records (ended early? {ended_early})");
         Ok((dangling_feed_keys_cleaned, records_deleted))
     }
 
@@ -1116,7 +1144,7 @@ impl StoreBackground for FjallBackground {
                     let t0 = Instant::now();
                     let (mut total_danglers, mut total_deleted) = (0, 0);
                     for collection in &dirty_nsids {
-                        let (danglers, deleted) = self.0.trim_collection(collection, 512).inspect_err(|e| log::error!("trim error: {e:?}"))?;
+                        let (danglers, deleted) = self.0.trim_collection(collection, 512, false).inspect_err(|e| log::error!("trim error: {e:?}"))?;
                         total_danglers += danglers;
                         total_deleted += deleted;
                         if total_deleted > 1_000_000 {
@@ -1666,10 +1694,10 @@ mod tests {
         )?;
         assert_eq!(records.len(), 0);
 
-        write.trim_collection(&Nsid::new("a.a.a".to_string()).unwrap(), 6)?;
-        write.trim_collection(&Nsid::new("a.a.b".to_string()).unwrap(), 6)?;
-        write.trim_collection(&Nsid::new("a.a.c".to_string()).unwrap(), 6)?;
-        write.trim_collection(&Nsid::new("a.a.d".to_string()).unwrap(), 6)?;
+        write.trim_collection(&Nsid::new("a.a.a".to_string()).unwrap(), 6, false)?;
+        write.trim_collection(&Nsid::new("a.a.b".to_string()).unwrap(), 6, false)?;
+        write.trim_collection(&Nsid::new("a.a.c".to_string()).unwrap(), 6, false)?;
+        write.trim_collection(&Nsid::new("a.a.d".to_string()).unwrap(), 6, false)?;
 
         let records = read.get_records_by_collections(
             &[Nsid::new("a.a.a".to_string()).unwrap()],

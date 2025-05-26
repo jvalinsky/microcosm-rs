@@ -966,6 +966,7 @@ impl StoreWriter<MemBackground> for MemWriter {
         &mut self,
         collection: &Nsid,
         limit: usize,
+        _full_scan: bool,
         // TODO: could add a start cursor limit to avoid iterating deleted stuff at the start (/end)
     ) -> StorageResult<(usize, usize)> {
         let mut dangling_feed_keys_cleaned = 0;
@@ -1510,10 +1511,10 @@ mod tests {
         )?;
         assert_eq!(records.len(), 0);
 
-        write.trim_collection(&Nsid::new("a.a.a".to_string()).unwrap(), 6)?;
-        write.trim_collection(&Nsid::new("a.a.b".to_string()).unwrap(), 6)?;
-        write.trim_collection(&Nsid::new("a.a.c".to_string()).unwrap(), 6)?;
-        write.trim_collection(&Nsid::new("a.a.d".to_string()).unwrap(), 6)?;
+        write.trim_collection(&Nsid::new("a.a.a".to_string()).unwrap(), 6, false)?;
+        write.trim_collection(&Nsid::new("a.a.b".to_string()).unwrap(), 6, false)?;
+        write.trim_collection(&Nsid::new("a.a.c".to_string()).unwrap(), 6, false)?;
+        write.trim_collection(&Nsid::new("a.a.d".to_string()).unwrap(), 6, false)?;
 
         let records = read.get_records_by_collections(
             &[Nsid::new("a.a.a".to_string()).unwrap()],
