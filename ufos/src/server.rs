@@ -216,6 +216,8 @@ async fn get_records_total_seen(
 /// Get all collections
 ///
 /// TODO: paginate
+///
+/// WARNING: this endpoint will return an object instead of array when pagination is added
 #[endpoint {
     method = GET,
     path = "/collections/all"
@@ -265,7 +267,11 @@ async fn get_top_collections_by_dids(ctx: RequestContext<Context>) -> OkCorsResp
 /// The format of this API response will be changing soon.
 #[endpoint {
     method = GET,
-    path = "/collections"
+    path = "/collections",
+    /*
+     * this is going away
+     */
+    unpublished = true,
 }]
 async fn get_top_collections(ctx: RequestContext<Context>) -> OkCorsResponse<TopCollections> {
     let Context { storage, .. } = ctx.context();
