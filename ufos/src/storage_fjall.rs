@@ -11,13 +11,14 @@ use crate::store_types::{
     WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey,
 };
 use crate::{
-    CommitAction, ConsumerInfo, Count, Did, EventBatch, Nsid, QueryPeriod, TopCollections,
+    CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, QueryPeriod, TopCollections,
     UFOsRecord,
 };
 use async_trait::async_trait;
 use fjall::{Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle};
 use jetstream::events::Cursor;
 use std::collections::{HashMap, HashSet};
+use std::ops::Bound;
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -372,22 +373,52 @@ impl FjallReader {
         })
     }
 
-    fn get_all_collections(&self, period: QueryPeriod) -> StorageResult<Vec<Count>> {
+    fn get_all_collections(
+        &self,
+        period: QueryPeriod,
+        limit: usize,
+        cursor: Option<Vec<u8>>,
+    ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
         Ok(if period.is_all_time() {
             let snapshot = self.rollups.snapshot();
+
+            let start = if let Some(cursor_bytes) = cursor {
+                let nsid = db_complete::<Nsid>(&cursor_bytes)?; // TODO: bubble a *client* error type
+                Bound::Excluded(
+                    AllTimeRollupKey::from_pair(Default::default(), nsid).to_db_bytes()?,
+                )
+            } else {
+                Bound::Included(AllTimeRollupKey::from_prefix_to_db_bytes(
+                    &Default::default(),
+                )?)
+            };
+
+            let end_bytes = AllTimeRollupKey::prefix_range_end(&Default::default())?;
+            let end = Bound::Excluded(end_bytes.clone());
+
             let mut out = Vec::new();
-            let prefix = AllTimeRollupKey::from_prefix_to_db_bytes(&Default::default())?;
-            for kv in snapshot.prefix(prefix) {
+            let mut next_cursor = None;
+            log::warn!(
+                "ranging snapshot with limit: {limit}, end: {:?}",
+                str::from_utf8(&end_bytes)
+            );
+            for (i, kv) in snapshot.range((start, end)).take(limit).enumerate() {
                 let (key_bytes, val_bytes) = kv?;
                 let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
                 let db_counts = db_complete::<CountsValue>(&val_bytes)?;
-                out.push(Count {
-                    thing: key.collection().to_string(),
+                out.push(NsidCount {
+                    nsid: key.collection().to_string(),
                     records: db_counts.records(),
                     dids_estimate: db_counts.dids().estimate() as u64,
                 });
+                if i == limit - 1 {
+                    log::warn!("reached limit, setting next cursor");
+                    let nsid_bytes = key.collection().to_db_bytes()?;
+                    next_cursor = Some(nsid_bytes);
+                }
             }
-            out
+
+            (out, next_cursor)
         } else {
             todo!()
         })
@@ -397,7 +428,7 @@ impl FjallReader {
         &self,
         limit: usize,
         period: QueryPeriod,
-    ) -> StorageResult<Vec<Count>> {
+    ) -> StorageResult<Vec<NsidCount>> {
         Ok(if period.is_all_time() {
             let snapshot = self.rollups.snapshot();
             let mut out = Vec::with_capacity(limit);
@@ -411,8 +442,8 @@ impl FjallReader {
                 );
                 let db_counts = db_complete::<CountsValue>(&db_count_bytes)?;
                 assert_eq!(db_counts.records(), key.count());
-                out.push(Count {
-                    thing: key.collection().to_string(),
+                out.push(NsidCount {
+                    nsid: key.collection().to_string(),
                     records: db_counts.records(),
                     dids_estimate: db_counts.dids().estimate() as u64,
                 });
@@ -427,7 +458,7 @@ impl FjallReader {
         &self,
         limit: usize,
         period: QueryPeriod,
-    ) -> StorageResult<Vec<Count>> {
+    ) -> StorageResult<Vec<NsidCount>> {
         Ok(if period.is_all_time() {
             let snapshot = self.rollups.snapshot();
             let mut out = Vec::with_capacity(limit);
@@ -441,8 +472,8 @@ impl FjallReader {
                 );
                 let db_counts = db_complete::<CountsValue>(&db_count_bytes)?;
                 assert_eq!(db_counts.dids().estimate() as u64, key.count());
-                out.push(Count {
-                    thing: key.collection().to_string(),
+                out.push(NsidCount {
+                    nsid: key.collection().to_string(),
                     records: db_counts.records(),
                     dids_estimate: db_counts.dids().estimate() as u64,
                 });
@@ -594,15 +625,23 @@ impl StoreReader for FjallReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || FjallReader::get_consumer_info(&s)).await?
     }
-    async fn get_all_collections(&self, period: QueryPeriod) -> StorageResult<Vec<Count>> {
+    async fn get_all_collections(
+        &self,
+        period: QueryPeriod,
+        limit: usize,
+        cursor: Option<Vec<u8>>,
+    ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
         let s = self.clone();
-        tokio::task::spawn_blocking(move || FjallReader::get_all_collections(&s, period)).await?
+        tokio::task::spawn_blocking(move || {
+            FjallReader::get_all_collections(&s, period, limit, cursor)
+        })
+        .await?
     }
     async fn get_top_collections_by_count(
         &self,
         limit: usize,
         period: QueryPeriod,
-    ) -> StorageResult<Vec<Count>> {
+    ) -> StorageResult<Vec<NsidCount>> {
         let s = self.clone();
         tokio::task::spawn_blocking(move || {
             FjallReader::get_top_collections_by_count(&s, limit, period)
@@ -613,7 +652,7 @@ impl StoreReader for FjallReader {
         &self,
         limit: usize,
         period: QueryPeriod,
-    ) -> StorageResult<Vec<Count>> {
+    ) -> StorageResult<Vec<NsidCount>> {
         let s = self.clone();
         tokio::task::spawn_blocking(move || {
             FjallReader::get_top_collections_by_dids(&s, limit, period)

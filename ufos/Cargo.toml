@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.97"
 async-trait = "0.1.88"
+base64 = "0.22.1"
 bincode = { version = "2.0.1", features = ["serde"] }
 cardinality-estimator-safe = { version = "4.0.1", features = ["with_serde", "with_digest"] }
 clap = { version = "4.5.31", features = ["derive"] }

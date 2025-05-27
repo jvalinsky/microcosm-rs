@@ -1,6 +1,7 @@
 use crate::index_html::INDEX_HTML;
 use crate::storage::StoreReader;
-use crate::{ConsumerInfo, Count, Nsid, QueryPeriod, TopCollections, UFOsRecord};
+use crate::{ConsumerInfo, Nsid, NsidCount, QueryPeriod, TopCollections, UFOsRecord};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
 use dropshot::Body;
@@ -213,23 +214,73 @@ async fn get_records_total_seen(
     ok_cors(seen_by_collection)
 }
 
-/// Get all collections
-///
-/// TODO: paginate
-///
-/// WARNING: this endpoint will return an object instead of array when pagination is added
+#[derive(Debug, Serialize, JsonSchema)]
+struct CollectionsResponse {
+    /// Each known collection and its associated statistics
+    ///
+    /// The order is unspecified.
+    collections: Vec<NsidCount>,
+    /// Include in a follow-up request to get the next page of results, if more are available
+    cursor: Option<String>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AllCollectionsQuery {
+    /// The maximum number of collections to return in one request.
+    #[schemars(range(min = 1, max = 200), default = "all_collections_default_limit")]
+    limit: usize,
+    /// Always omit the cursor for the first request. If more collections than the limit are available, the response will contain a non-null `cursor` to include with the next request.
+    cursor: Option<String>,
+}
+fn all_collections_default_limit() -> usize {
+    100
+}
 #[endpoint {
     method = GET,
     path = "/collections/all"
 }]
-async fn get_all_collections(ctx: RequestContext<Context>) -> OkCorsResponse<Vec<Count>> {
+/// Get all collections
+///
+/// There have been a lot of collections seen in the ATmosphere, well over 400 at time of writing, so you *will* need to make a series of paginaged requests using the `cursor` response property and request parameter to get them all.
+///
+/// The set of collections across multiple requests is not guaranteed to be a perfectly consistent snapshot:
+///
+/// - all collection NSIDs observed before the first request will be included in the results
+///
+/// - *new* NSIDs observed in the firehose *while paging* might be included or excluded from the final set
+///
+/// - no duplicate NSIDs will occur in the combined results
+///
+/// In practice this is close enough for most use-cases to not worry about.
+async fn get_all_collections(
+    ctx: RequestContext<Context>,
+    query: Query<AllCollectionsQuery>,
+) -> OkCorsResponse<CollectionsResponse> {
     let Context { storage, .. } = ctx.context();
-    let collections = storage
-        .get_all_collections(QueryPeriod::all_time())
+    let q = query.into_inner();
+
+    if !(1..=200).contains(&q.limit) {
+        let msg = format!("limit not in 1..=200: {}", q.limit);
+        return Err(HttpError::for_bad_request(None, msg));
+    }
+
+    let cursor = q
+        .cursor
+        .and_then(|c| if c.is_empty() { None } else { Some(c) })
+        .map(|c| URL_SAFE_NO_PAD.decode(&c))
+        .transpose()
+        .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
+
+    let (collections, next_cursor) = storage
+        .get_all_collections(QueryPeriod::all_time(), q.limit, cursor)
         .await
         .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
 
-    ok_cors(collections)
+    let next_cursor = next_cursor.map(|c| URL_SAFE_NO_PAD.encode(c));
+
+    ok_cors(CollectionsResponse {
+        collections,
+        cursor: next_cursor,
+    })
 }
 
 /// Get top collections by record count
@@ -237,7 +288,9 @@ async fn get_all_collections(ctx: RequestContext<Context>) -> OkCorsResponse<Vec
     method = GET,
     path = "/collections/by-count"
 }]
-async fn get_top_collections_by_count(ctx: RequestContext<Context>) -> OkCorsResponse<Vec<Count>> {
+async fn get_top_collections_by_count(
+    ctx: RequestContext<Context>,
+) -> OkCorsResponse<Vec<NsidCount>> {
     let Context { storage, .. } = ctx.context();
     let collections = storage
         .get_top_collections_by_count(100, QueryPeriod::all_time())
@@ -252,7 +305,9 @@ async fn get_top_collections_by_count(ctx: RequestContext<Context>) -> OkCorsRes
     method = GET,
     path = "/collections/by-dids"
 }]
-async fn get_top_collections_by_dids(ctx: RequestContext<Context>) -> OkCorsResponse<Vec<Count>> {
+async fn get_top_collections_by_dids(
+    ctx: RequestContext<Context>,
+) -> OkCorsResponse<Vec<NsidCount>> {
     let Context { storage, .. } = ctx.context();
     let collections = storage
         .get_top_collections_by_dids(100, QueryPeriod::all_time())

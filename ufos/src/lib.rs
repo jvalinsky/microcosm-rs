@@ -279,8 +279,8 @@ impl QueryPeriod {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct Count {
-    thing: String,
+pub struct NsidCount {
+    nsid: String,
     records: u64,
     dids_estimate: u64,
 }

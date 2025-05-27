@@ -13,7 +13,7 @@ use crate::store_types::{
     TakeoffValue, WeekTruncatedCursor, WeeklyRollupKey,
 };
 use crate::{
-    CommitAction, ConsumerInfo, Count, Did, EventBatch, Nsid, QueryPeriod, TopCollections,
+    CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, QueryPeriod, TopCollections,
     UFOsRecord,
 };
 use async_trait::async_trait;
@@ -594,21 +594,26 @@ impl StoreReader for MemReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || MemReader::get_top_collections(&s)).await?
     }
-    async fn get_all_collections(&self, _: QueryPeriod) -> StorageResult<Vec<Count>> {
+    async fn get_all_collections(
+        &self,
+        _: QueryPeriod,
+        _: usize,
+        _: Option<Vec<u8>>,
+    ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
         todo!()
     }
     async fn get_top_collections_by_count(
         &self,
         _: usize,
         _: QueryPeriod,
-    ) -> StorageResult<Vec<Count>> {
+    ) -> StorageResult<Vec<NsidCount>> {
         todo!()
     }
     async fn get_top_collections_by_dids(
         &self,
         _: usize,
         _: QueryPeriod,
-    ) -> StorageResult<Vec<Count>> {
+    ) -> StorageResult<Vec<NsidCount>> {
         todo!()
     }
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
