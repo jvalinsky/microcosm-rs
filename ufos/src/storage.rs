@@ -1,4 +1,4 @@
-use crate::store_types::SketchSecretPrefix;
+use crate::store_types::{HourTruncatedCursor, SketchSecretPrefix};
 use crate::{
     error::StorageError, ConsumerInfo, Cursor, EventBatch, NsidCount, QueryPeriod, TopCollections,
     UFOsRecord,
@@ -78,9 +78,10 @@ pub trait StoreReader: Send + Sync {
 
     async fn get_all_collections(
         &self,
-        period: QueryPeriod,
         limit: usize,
         cursor: Option<Vec<u8>>,
+        since: Option<HourTruncatedCursor>,
+        until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)>;
 
     async fn get_top_collections_by_count(

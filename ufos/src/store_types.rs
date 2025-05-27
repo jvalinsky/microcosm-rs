@@ -400,6 +400,10 @@ impl<const MOD: u64> TruncatedCursor<MOD> {
     pub fn try_from_cursor(cursor: Cursor) -> Result<Self, EncodingError> {
         Self::try_from_raw_u64(cursor.to_raw_u64())
     }
+    pub fn truncate_raw_u64(raw: u64) -> Self {
+        let truncated = Self::truncate(raw);
+        Self(truncated)
+    }
     pub fn truncate_cursor(cursor: Cursor) -> Self {
         let raw = cursor.to_raw_u64();
         let truncated = Self::truncate(raw);

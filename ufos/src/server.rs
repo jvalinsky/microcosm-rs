@@ -1,7 +1,9 @@
 use crate::index_html::INDEX_HTML;
 use crate::storage::StoreReader;
+use crate::store_types::HourTruncatedCursor;
 use crate::{ConsumerInfo, Nsid, NsidCount, QueryPeriod, TopCollections, UFOsRecord};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use chrono::{DateTime, Utc};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
 use dropshot::Body;
@@ -23,6 +25,15 @@ use std::sync::Arc;
 struct Context {
     pub spec: Arc<serde_json::Value>,
     storage: Box<dyn StoreReader>,
+}
+
+fn dt_to_cursor(dt: DateTime<Utc>) -> Result<HourTruncatedCursor, HttpError> {
+    let t = dt.timestamp_micros();
+    if t < 0 {
+        Err(HttpError::for_bad_request(None, "timestamp too old".into()))
+    } else {
+        Ok(HourTruncatedCursor::truncate_raw_u64(t as u64))
+    }
 }
 
 /// Serve index page as html
@@ -230,6 +241,10 @@ struct AllCollectionsQuery {
     limit: usize,
     /// Always omit the cursor for the first request. If more collections than the limit are available, the response will contain a non-null `cursor` to include with the next request.
     cursor: Option<String>,
+    /// Limit collections and statistics to those seen after this UTC datetime
+    since: Option<DateTime<Utc>>,
+    /// Limit collections and statistics to those seen before this UTC datetime
+    until: Option<DateTime<Utc>>,
 }
 fn all_collections_default_limit() -> usize {
     100
@@ -240,7 +255,7 @@ fn all_collections_default_limit() -> usize {
 }]
 /// Get all collections
 ///
-/// There have been a lot of collections seen in the ATmosphere, well over 400 at time of writing, so you *will* need to make a series of paginaged requests using the `cursor` response property and request parameter to get them all.
+/// There have been a lot of collections seen in the ATmosphere, well over 400 at time of writing, so you *will* need to make a series of paginaged requests with `cursor`s to get them all.
 ///
 /// The set of collections across multiple requests is not guaranteed to be a perfectly consistent snapshot:
 ///
@@ -251,6 +266,8 @@ fn all_collections_default_limit() -> usize {
 /// - no duplicate NSIDs will occur in the combined results
 ///
 /// In practice this is close enough for most use-cases to not worry about.
+///
+/// Statistics are bucketed hourly, so the most granular effecitve time boundary for `since` and `until` is one hour.
 async fn get_all_collections(
     ctx: RequestContext<Context>,
     query: Query<AllCollectionsQuery>,
@@ -270,8 +287,11 @@ async fn get_all_collections(
         .transpose()
         .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
 
+    let since = q.since.map(dt_to_cursor).transpose()?;
+    let until = q.until.map(dt_to_cursor).transpose()?;
+
     let (collections, next_cursor) = storage
-        .get_all_collections(QueryPeriod::all_time(), q.limit, cursor)
+        .get_all_collections(q.limit, cursor, since, until)
         .await
         .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
 

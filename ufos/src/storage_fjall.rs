@@ -375,11 +375,12 @@ impl FjallReader {
 
     fn get_all_collections(
         &self,
-        period: QueryPeriod,
         limit: usize,
         cursor: Option<Vec<u8>>,
+        _since: Option<HourTruncatedCursor>,
+        _until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
-        Ok(if period.is_all_time() {
+        Ok(if true {
             let snapshot = self.rollups.snapshot();
 
             let start = if let Some(cursor_bytes) = cursor {
@@ -627,13 +628,14 @@ impl StoreReader for FjallReader {
     }
     async fn get_all_collections(
         &self,
-        period: QueryPeriod,
         limit: usize,
         cursor: Option<Vec<u8>>,
+        since: Option<HourTruncatedCursor>,
+        until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
         let s = self.clone();
         tokio::task::spawn_blocking(move || {
-            FjallReader::get_all_collections(&s, period, limit, cursor)
+            FjallReader::get_all_collections(&s, limit, cursor, since, until)
         })
         .await?
     }

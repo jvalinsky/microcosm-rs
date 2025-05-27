@@ -596,9 +596,10 @@ impl StoreReader for MemReader {
     }
     async fn get_all_collections(
         &self,
-        _: QueryPeriod,
         _: usize,
         _: Option<Vec<u8>>,
+        _: Option<HourTruncatedCursor>,
+        _: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
         todo!()
     }
