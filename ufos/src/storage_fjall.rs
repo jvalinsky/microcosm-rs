@@ -399,10 +399,6 @@ impl FjallReader {
 
             let mut out = Vec::new();
             let mut next_cursor = None;
-            log::warn!(
-                "ranging snapshot with limit: {limit}, end: {:?}",
-                str::from_utf8(&end_bytes)
-            );
             for (i, kv) in snapshot.range((start, end)).take(limit).enumerate() {
                 let (key_bytes, val_bytes) = kv?;
                 let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
