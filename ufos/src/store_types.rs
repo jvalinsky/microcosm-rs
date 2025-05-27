@@ -387,7 +387,7 @@ pub type AllTimeDidsKey = AllTimeRankRecordsKey<_AllTimeDidsStaticStr>;
 #[derive(Debug, Copy, Clone, PartialEq, Hash, PartialOrd, Eq)]
 pub struct TruncatedCursor<const MOD: u64>(u64);
 impl<const MOD: u64> TruncatedCursor<MOD> {
-    fn truncate(raw: u64) -> u64 {
+    pub fn truncate(raw: u64) -> u64 {
         (raw / MOD) * MOD
     }
     pub fn try_from_raw_u64(time_us: u64) -> Result<Self, EncodingError> {
@@ -408,6 +408,21 @@ impl<const MOD: u64> TruncatedCursor<MOD> {
         let raw = cursor.to_raw_u64();
         let truncated = Self::truncate(raw);
         Self(truncated)
+    }
+    pub fn to_raw_u64(&self) -> u64 {
+        self.0
+    }
+    pub fn try_as<const MOD_B: u64>(&self) -> Result<TruncatedCursor<MOD_B>, EncodingError> {
+        TruncatedCursor::<MOD_B>::try_from_raw_u64(self.0)
+    }
+    pub fn cycles_until(&self, other: Self) -> u64 {
+        if other < *self {
+            panic!("other must be greater than or equal to self");
+        }
+        (other.0 - self.0) / MOD
+    }
+    pub fn next(&self) -> Self {
+        Self(self.0 + MOD)
     }
 }
 impl<const MOD: u64> From<TruncatedCursor<MOD>> for Cursor {
@@ -438,11 +453,42 @@ pub type HourTruncatedCursor = TruncatedCursor<HOUR_IN_MICROS>;
 const WEEK_IN_MICROS: u64 = HOUR_IN_MICROS * 24 * 7;
 pub type WeekTruncatedCursor = TruncatedCursor<WEEK_IN_MICROS>;
 
+#[derive(Debug, PartialEq)]
+pub enum CursorBucket {
+    Hour(HourTruncatedCursor),
+    Week(WeekTruncatedCursor),
+}
+
+impl CursorBucket {
+    pub fn buckets_spanning(
+        since: HourTruncatedCursor,
+        until: HourTruncatedCursor,
+    ) -> Vec<CursorBucket> {
+        if until <= since {
+            return vec![];
+        }
+        let mut out = vec![];
+        let mut current_lower = since;
+        while current_lower < until {
+            if current_lower.cycles_until(until) >= (WEEK_IN_MICROS / HOUR_IN_MICROS) {
+                if let Ok(week) = current_lower.try_as::<WEEK_IN_MICROS>() {
+                    out.push(CursorBucket::Week(week));
+                    current_lower = week.next().try_as().unwrap();
+                    continue;
+                }
+            }
+            out.push(CursorBucket::Hour(current_lower));
+            current_lower = current_lower.next();
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::{
-        CountsValue, Cursor, Did, EncodingError, HourTruncatedCursor, HourlyRollupKey, Nsid,
-        Sketch, HOUR_IN_MICROS,
+        CountsValue, Cursor, CursorBucket, Did, EncodingError, HourTruncatedCursor,
+        HourlyRollupKey, Nsid, Sketch, HOUR_IN_MICROS, WEEK_IN_MICROS,
     };
     use crate::db_types::DbBytes;
     use cardinality_estimator_safe::Element;
@@ -513,5 +559,77 @@ mod test {
         assert_eq!(back, us);
         let diff = us.to_raw_u64() - back.to_raw_u64();
         assert_eq!(diff, 0);
+    }
+
+    #[test]
+    fn test_spanning_nothing() {
+        let from = Cursor::from_raw_u64(1_743_775_200_000_000).into();
+        let until = Cursor::from_raw_u64(1_743_775_200_000_000).into();
+        assert!(CursorBucket::buckets_spanning(from, until).is_empty());
+        let until = Cursor::from_raw_u64(0).into();
+        assert!(CursorBucket::buckets_spanning(from, until).is_empty());
+    }
+
+    #[test]
+    fn test_spanning_low_hours() {
+        let from = HourTruncatedCursor::truncate_cursor(Cursor::from_start());
+        let until = from.next();
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, until),
+            vec![CursorBucket::Hour(from)]
+        );
+        let until2 = until.next();
+        let until3 = until2.next();
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, until3),
+            vec![
+                CursorBucket::Hour(from),
+                CursorBucket::Hour(until),
+                CursorBucket::Hour(until2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_spanning_week_aligned() {
+        let from = HourTruncatedCursor::truncate_cursor(Cursor::from_start());
+        let until = HourTruncatedCursor::truncate_cursor(Cursor::from_raw_u64(WEEK_IN_MICROS));
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, until),
+            vec![CursorBucket::Week(from.try_as().unwrap()),]
+        );
+        let next_hour = until.next();
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, next_hour),
+            vec![
+                CursorBucket::Week(from.try_as().unwrap()),
+                CursorBucket::Hour(until),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_spanning_week_unaligned() {
+        let from = HourTruncatedCursor::truncate_cursor(Cursor::from_raw_u64(
+            WEEK_IN_MICROS - HOUR_IN_MICROS,
+        ));
+        let until = HourTruncatedCursor::truncate_cursor(Cursor::from_raw_u64(
+            from.to_raw_u64() + WEEK_IN_MICROS,
+        ));
+        let span = CursorBucket::buckets_spanning(from, until);
+        assert_eq!(span.len(), 168);
+        for b in &span {
+            let CursorBucket::Hour(_) = b else {
+                panic!("found week bucket in a span that should only have hourlies");
+            };
+        }
+        let until2 = until.next();
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, until2),
+            vec![
+                CursorBucket::Hour(from),
+                CursorBucket::Week(from.next().try_as().unwrap()),
+            ]
+        );
     }
 }

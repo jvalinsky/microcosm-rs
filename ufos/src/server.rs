@@ -21,6 +21,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 struct Context {
     pub spec: Arc<serde_json::Value>,
@@ -32,7 +33,17 @@ fn dt_to_cursor(dt: DateTime<Utc>) -> Result<HourTruncatedCursor, HttpError> {
     if t < 0 {
         Err(HttpError::for_bad_request(None, "timestamp too old".into()))
     } else {
-        Ok(HourTruncatedCursor::truncate_raw_u64(t as u64))
+        let t = t as u64;
+        let t_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        const ONE_HOUR: u64 = 60 * 60 * 1_000_000;
+        if t < t_now || (t - t_now <= 2 * ONE_HOUR) {
+            Err(HttpError::for_bad_request(None, "future timestamp".into()))
+        } else {
+            Ok(HourTruncatedCursor::truncate_raw_u64(t))
+        }
     }
 }
 
