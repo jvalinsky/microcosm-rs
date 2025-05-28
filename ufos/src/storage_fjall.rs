@@ -11,7 +11,9 @@ use crate::store_types::{
     SketchSecretPrefix, TakeoffKey, TakeoffValue, TrimCollectionCursorKey, WeekTruncatedCursor,
     WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey,
 };
-use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, UFOsRecord};
+use crate::{
+    CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord,
+};
 use async_trait::async_trait;
 use fjall::Snapshot;
 use fjall::{Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle};
@@ -385,10 +387,10 @@ impl FjallReader {
         Ok(cursor)
     }
 
-    fn get_all_collections(
+    fn get_collections(
         &self,
         limit: usize,
-        cursor: Option<Vec<u8>>,
+        order: OrderCollectionsBy,
         since: Option<HourTruncatedCursor>,
         until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
@@ -405,6 +407,10 @@ impl FjallReader {
             }
             let upper = until.unwrap_or_else(|| Cursor::at(SystemTime::now()).into());
             CursorBucket::buckets_spanning(lower, upper)
+        };
+
+        let OrderCollectionsBy::Lexi { cursor } = order else {
+            todo!()
         };
 
         let cursor_nsid = cursor.as_deref().map(db_complete::<Nsid>).transpose()?; // TODO: bubble a *client* error type
@@ -670,16 +676,16 @@ impl StoreReader for FjallReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || FjallReader::get_consumer_info(&s)).await?
     }
-    async fn get_all_collections(
+    async fn get_collections(
         &self,
         limit: usize,
-        cursor: Option<Vec<u8>>,
+        order: OrderCollectionsBy,
         since: Option<HourTruncatedCursor>,
         until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
         let s = self.clone();
         tokio::task::spawn_blocking(move || {
-            FjallReader::get_all_collections(&s, limit, cursor, since, until)
+            FjallReader::get_collections(&s, limit, order, since, until)
         })
         .await?
     }

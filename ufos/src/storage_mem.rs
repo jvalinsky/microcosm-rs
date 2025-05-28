@@ -12,7 +12,9 @@ use crate::store_types::{
     RecordLocationMeta, RecordLocationVal, RecordRawValue, SketchSecretPrefix, TakeoffKey,
     TakeoffValue, WeekTruncatedCursor, WeeklyRollupKey,
 };
-use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, UFOsRecord};
+use crate::{
+    CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord,
+};
 use async_trait::async_trait;
 use jetstream::events::Cursor;
 use lsm_tree::range::prefix_to_range;
@@ -545,10 +547,10 @@ impl StoreReader for MemReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || MemReader::get_consumer_info(&s)).await?
     }
-    async fn get_all_collections(
+    async fn get_collections(
         &self,
         _: usize,
-        _: Option<Vec<u8>>,
+        _: OrderCollectionsBy,
         _: Option<HourTruncatedCursor>,
         _: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {

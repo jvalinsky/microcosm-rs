@@ -444,6 +444,12 @@ impl<const MOD: u64> TruncatedCursor<MOD> {
     pub fn next(&self) -> Self {
         Self(self.0 + MOD)
     }
+    pub fn prev(&self) -> Self {
+        if self.0 < MOD {
+            panic!("underflow: previous truncation start would be less than zero");
+        }
+        Self(self.0 - MOD)
+    }
 }
 impl<const MOD: u64> From<TruncatedCursor<MOD>> for Cursor {
     fn from(truncated: TruncatedCursor<MOD>) -> Self {

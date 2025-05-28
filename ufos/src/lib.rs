@@ -241,6 +241,18 @@ pub struct NsidCount {
     dids_estimate: u64,
 }
 
+#[derive(Debug)]
+pub enum OrderCollectionsBy {
+    Lexi { cursor: Option<Vec<u8>> },
+    RecordsCreated,
+    DidsEstimate,
+}
+impl Default for OrderCollectionsBy {
+    fn default() -> Self {
+        Self::Lexi { cursor: None }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

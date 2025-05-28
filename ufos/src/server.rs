@@ -1,7 +1,7 @@
 use crate::index_html::INDEX_HTML;
 use crate::storage::StoreReader;
 use crate::store_types::{HourTruncatedCursor, WeekTruncatedCursor};
-use crate::{ConsumerInfo, Cursor, Nsid, NsidCount, UFOsRecord};
+use crate::{ConsumerInfo, Cursor, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Utc};
 use dropshot::endpoint;
@@ -166,7 +166,12 @@ async fn get_records_by_collections(
         let min_time_ago = SystemTime::now() - Duration::from_secs(86_400 * 3); // we want at least 3 days of data
         let since: WeekTruncatedCursor = Cursor::at(min_time_ago).into();
         let (collections, _) = storage
-            .get_all_collections(1000, None, Some(since.try_as().unwrap()), None)
+            .get_collections(
+                1000,
+                Default::default(),
+                Some(since.try_as().unwrap()),
+                None,
+            )
             .await
             .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
         collections
@@ -240,30 +245,50 @@ struct CollectionsResponse {
     cursor: Option<String>,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
-struct AllCollectionsQuery {
+#[serde(rename_all = "kebab-case")]
+pub enum CollectionsQueryOrder {
+    RecordsCreated,
+    DidsEstimate,
+}
+impl From<&CollectionsQueryOrder> for OrderCollectionsBy {
+    fn from(q: &CollectionsQueryOrder) -> Self {
+        match q {
+            CollectionsQueryOrder::RecordsCreated => OrderCollectionsBy::RecordsCreated,
+            CollectionsQueryOrder::DidsEstimate => OrderCollectionsBy::DidsEstimate,
+        }
+    }
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CollectionsQuery {
     /// The maximum number of collections to return in one request.
     ///
-    /// Default: 100
-    #[schemars(range(min = 1, max = 200), default = "all_collections_default_limit")]
-    #[serde(default = "all_collections_default_limit")]
-    limit: usize,
+    /// Default: `100` normally, `32` if `order` is specified.
+    #[schemars(range(min = 1, max = 200))]
+    limit: Option<usize>,
+    /// Get a paginated response with more collections.
+    ///
     /// Always omit the cursor for the first request. If more collections than the limit are available, the response will contain a non-null `cursor` to include with the next request.
+    ///
+    /// `cursor` is mutually exclusive with `order`.
     cursor: Option<String>,
     /// Limit collections and statistics to those seen after this UTC datetime
     since: Option<DateTime<Utc>>,
     /// Limit collections and statistics to those seen before this UTC datetime
     until: Option<DateTime<Utc>>,
-}
-fn all_collections_default_limit() -> usize {
-    100
+    /// Get a limited, sorted list
+    ///
+    /// Mutually exclusive with `cursor` -- sorted results cannot be paged.
+    order: Option<CollectionsQueryOrder>,
 }
 #[endpoint {
     method = GET,
-    path = "/collections/all"
+    path = "/collections"
 }]
-/// Get all collections
+/// Get a list of collection NSIDs with statistics
 ///
-/// There have been a lot of collections seen in the ATmosphere, well over 400 at time of writing, so you *will* need to make a series of paginaged requests with `cursor`s to get them all.
+/// ## To fetch a full list:
+///
+/// Omit the `order` parameter and page through the results using the `cursor`. There have been a lot of collections seen in the ATmosphere, well over 400 at time of writing, so you *will* need to make a series of paginaged requests with `cursor`s to get them all.
 ///
 /// The set of collections across multiple requests is not guaranteed to be a perfectly consistent snapshot:
 ///
@@ -275,31 +300,51 @@ fn all_collections_default_limit() -> usize {
 ///
 /// In practice this is close enough for most use-cases to not worry about.
 ///
-/// Statistics are bucketed hourly, so the most granular effecitve time boundary for `since` and `until` is one hour.
-async fn get_all_collections(
+/// ## To fetch the top collection NSIDs:
+///
+/// Specify the `order` parameter (must be either `records-created` or `did-estimate`). Note that ordered results cannot be paged.
+///
+/// All statistics are bucketed hourly, so the most granular effecitve time boundary for `since` and `until` is one hour.
+async fn get_collections(
     ctx: RequestContext<Context>,
-    query: Query<AllCollectionsQuery>,
+    query: Query<CollectionsQuery>,
 ) -> OkCorsResponse<CollectionsResponse> {
     let Context { storage, .. } = ctx.context();
     let q = query.into_inner();
 
-    if !(1..=200).contains(&q.limit) {
-        let msg = format!("limit not in 1..=200: {}", q.limit);
-        return Err(HttpError::for_bad_request(None, msg));
+    if q.cursor.is_some() && q.order.is_some() {
+        let msg = "`cursor` is mutually exclusive with `order`. ordered results cannot be paged.";
+        return Err(HttpError::for_bad_request(None, msg.to_string()));
     }
 
-    let cursor = q
-        .cursor
-        .and_then(|c| if c.is_empty() { None } else { Some(c) })
-        .map(|c| URL_SAFE_NO_PAD.decode(&c))
-        .transpose()
-        .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
+    let order = if let Some(ref o) = q.order {
+        o.into()
+    } else {
+        let cursor = q
+            .cursor
+            .and_then(|c| if c.is_empty() { None } else { Some(c) })
+            .map(|c| URL_SAFE_NO_PAD.decode(&c))
+            .transpose()
+            .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
+        OrderCollectionsBy::Lexi { cursor }
+    };
+
+    let limit = match (q.limit, q.order) {
+        (Some(limit), _) => limit,
+        (None, Some(_)) => 32,
+        (None, None) => 100,
+    };
+
+    if !(1..=200).contains(&limit) {
+        let msg = format!("limit not in 1..=200: {}", limit);
+        return Err(HttpError::for_bad_request(None, msg));
+    }
 
     let since = q.since.map(dt_to_cursor).transpose()?;
     let until = q.until.map(dt_to_cursor).transpose()?;
 
     let (collections, next_cursor) = storage
-        .get_all_collections(q.limit, cursor, since, until)
+        .get_collections(limit, order, since, until)
         .await
         .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
 
@@ -311,6 +356,23 @@ async fn get_all_collections(
     })
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TopByQuery {
+    /// The maximum number of collections to return in one request.
+    ///
+    /// Default: 32
+    #[schemars(range(min = 1, max = 200), default = "top_collections_default_limit")]
+    #[serde(default = "top_collections_default_limit")]
+    limit: usize,
+    /// Limit collections and statistics to those seen after this UTC datetime
+    since: Option<DateTime<Utc>>,
+    /// Limit collections and statistics to those seen before this UTC datetime
+    until: Option<DateTime<Utc>>,
+}
+fn top_collections_default_limit() -> usize {
+    32
+}
+
 /// Get top collections by record count
 #[endpoint {
     method = GET,
@@ -318,10 +380,21 @@ async fn get_all_collections(
 }]
 async fn get_top_collections_by_count(
     ctx: RequestContext<Context>,
+    query: Query<TopByQuery>,
 ) -> OkCorsResponse<Vec<NsidCount>> {
     let Context { storage, .. } = ctx.context();
+    let q = query.into_inner();
+
+    if !(1..=200).contains(&q.limit) {
+        let msg = format!("limit not in 1..=200: {}", q.limit);
+        return Err(HttpError::for_bad_request(None, msg));
+    }
+
+    let since = q.since.map(dt_to_cursor).transpose()?;
+    let until = q.until.map(dt_to_cursor).transpose()?;
+
     let collections = storage
-        .get_top_collections_by_count(100, None, None)
+        .get_top_collections_by_count(100, since, until)
         .await
         .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
 
@@ -335,10 +408,21 @@ async fn get_top_collections_by_count(
 }]
 async fn get_top_collections_by_dids(
     ctx: RequestContext<Context>,
+    query: Query<TopByQuery>,
 ) -> OkCorsResponse<Vec<NsidCount>> {
     let Context { storage, .. } = ctx.context();
+    let q = query.into_inner();
+
+    if !(1..=200).contains(&q.limit) {
+        let msg = format!("limit not in 1..=200: {}", q.limit);
+        return Err(HttpError::for_bad_request(None, msg));
+    }
+
+    let since = q.since.map(dt_to_cursor).transpose()?;
+    let until = q.until.map(dt_to_cursor).transpose()?;
+
     let collections = storage
-        .get_top_collections_by_dids(100, None, None)
+        .get_top_collections_by_dids(100, since, until)
         .await
         .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
 
@@ -359,7 +443,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_meta_info).unwrap();
     api.register(get_records_by_collections).unwrap();
     api.register(get_records_total_seen).unwrap();
-    api.register(get_all_collections).unwrap();
+    api.register(get_collections).unwrap();
     api.register(get_top_collections_by_count).unwrap();
     api.register(get_top_collections_by_dids).unwrap();
 

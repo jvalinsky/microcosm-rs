@@ -1,5 +1,8 @@
 use crate::store_types::{HourTruncatedCursor, SketchSecretPrefix};
-use crate::{error::StorageError, ConsumerInfo, Cursor, EventBatch, NsidCount, UFOsRecord};
+use crate::{
+    error::StorageError, ConsumerInfo, Cursor, EventBatch, NsidCount, OrderCollectionsBy,
+    UFOsRecord,
+};
 use async_trait::async_trait;
 use jetstream::exports::{Did, Nsid};
 use std::collections::HashSet;
@@ -73,10 +76,10 @@ pub trait StoreReader: Send + Sync {
 
     async fn get_consumer_info(&self) -> StorageResult<ConsumerInfo>;
 
-    async fn get_all_collections(
+    async fn get_collections(
         &self,
         limit: usize,
-        cursor: Option<Vec<u8>>,
+        order: OrderCollectionsBy,
         since: Option<HourTruncatedCursor>,
         until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)>;
