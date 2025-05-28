@@ -414,23 +414,50 @@ impl FjallReader {
 
         type Item = StorageResult<(Nsid, fjall::Slice)>;
         let mut iters = Vec::with_capacity(buckets.len());
-        for bucket in buckets {
+        for bucket in &buckets {
             match bucket {
-                CursorBucket::Hour(_hour) => todo!(),
-                CursorBucket::Week(_week) => todo!(),
-                CursorBucket::AllTime => {
+                CursorBucket::Hour(hour) => {
+                    let prefix = HourlyRollupKey::week_prefix(*hour);
                     let start = if let Some(ref nsid) = cursor_nsid {
-                        Bound::Excluded(
-                            AllTimeRollupKey::from_pair(Default::default(), nsid.clone())
-                                .to_db_bytes()?,
-                        )
+                        Bound::Excluded(HourlyRollupKey::new(*hour, &nsid.clone()).to_db_bytes()?)
                     } else {
-                        Bound::Included(AllTimeRollupKey::from_prefix_to_db_bytes(
-                            &Default::default(),
-                        )?)
+                        Bound::Included(HourlyRollupKey::from_prefix_to_db_bytes(&prefix)?)
                     };
-                    let end =
-                        Bound::Excluded(AllTimeRollupKey::prefix_range_end(&Default::default())?);
+                    let end = Bound::Excluded(HourlyRollupKey::prefix_range_end(&prefix)?);
+                    let it = snapshot.range((start, end)).map(|kv| match kv {
+                        Ok((k_bytes, v_bytes)) => db_complete::<HourlyRollupKey>(&k_bytes)
+                            .map(|key| (key.collection().clone(), v_bytes))
+                            .map_err(|e| e.into()),
+                        Err(e) => Err(e.into()), // lsm-tree error into fjall error
+                    });
+                    let boxed: Box<dyn Iterator<Item = Item>> = Box::new(it);
+                    iters.push(boxed.peekable());
+                }
+                CursorBucket::Week(week) => {
+                    let prefix = WeeklyRollupKey::week_prefix(*week);
+                    let start = if let Some(ref nsid) = cursor_nsid {
+                        Bound::Excluded(WeeklyRollupKey::new(*week, &nsid.clone()).to_db_bytes()?)
+                    } else {
+                        Bound::Included(WeeklyRollupKey::from_prefix_to_db_bytes(&prefix)?)
+                    };
+                    let end = Bound::Excluded(WeeklyRollupKey::prefix_range_end(&prefix)?);
+                    let it = snapshot.range((start, end)).map(|kv| match kv {
+                        Ok((k_bytes, v_bytes)) => db_complete::<WeeklyRollupKey>(&k_bytes)
+                            .map(|key| (key.collection().clone(), v_bytes))
+                            .map_err(|e| e.into()),
+                        Err(e) => Err(e.into()), // lsm-tree error into fjall error
+                    });
+                    let boxed: Box<dyn Iterator<Item = Item>> = Box::new(it);
+                    iters.push(boxed.peekable());
+                }
+                CursorBucket::AllTime => {
+                    let prefix = Default::default();
+                    let start = if let Some(ref nsid) = cursor_nsid {
+                        Bound::Excluded(AllTimeRollupKey::new(nsid).to_db_bytes()?)
+                    } else {
+                        Bound::Included(AllTimeRollupKey::from_prefix_to_db_bytes(&prefix)?)
+                    };
+                    let end = Bound::Excluded(AllTimeRollupKey::prefix_range_end(&prefix)?);
                     let it = snapshot.range((start, end)).map(|kv| match kv {
                         Ok((k_bytes, v_bytes)) => db_complete::<AllTimeRollupKey>(&k_bytes)
                             .map(|key| (key.collection().clone(), v_bytes))

@@ -39,7 +39,7 @@ fn dt_to_cursor(dt: DateTime<Utc>) -> Result<HourTruncatedCursor, HttpError> {
             .unwrap()
             .as_micros() as u64;
         const ONE_HOUR: u64 = 60 * 60 * 1_000_000;
-        if t < t_now || (t - t_now <= 2 * ONE_HOUR) {
+        if t > t_now && (t - t_now > 2 * ONE_HOUR) {
             Err(HttpError::for_bad_request(None, "future timestamp".into()))
         } else {
             Ok(HourTruncatedCursor::truncate_raw_u64(t))

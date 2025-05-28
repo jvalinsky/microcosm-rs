@@ -310,16 +310,23 @@ where
 
 static_str!("hourly_counts", _HourlyRollupStaticStr);
 pub type HourlyRollupStaticPrefix = DbStaticStr<_HourlyRollupStaticStr>;
-pub type HourlyRollupKey = DbConcat<DbConcat<HourlyRollupStaticPrefix, HourTruncatedCursor>, Nsid>;
+pub type HourlyRollupKeyHourPrefix = DbConcat<HourlyRollupStaticPrefix, HourTruncatedCursor>;
+pub type HourlyRollupKey = DbConcat<HourlyRollupKeyHourPrefix, Nsid>;
 impl HourlyRollupKey {
-    pub fn new(hourly_cursor: HourTruncatedCursor, nsid: &Nsid) -> Self {
+    pub fn new(cursor: HourTruncatedCursor, nsid: &Nsid) -> Self {
         Self::from_pair(
-            DbConcat::from_pair(Default::default(), hourly_cursor),
+            DbConcat::from_pair(Default::default(), cursor),
             nsid.clone(),
         )
     }
+    pub fn week_prefix(cursor: HourTruncatedCursor) -> HourlyRollupKeyHourPrefix {
+        HourlyRollupKeyHourPrefix::from_pair(Default::default(), cursor)
+    }
     pub fn cursor(&self) -> HourTruncatedCursor {
         self.prefix.suffix
+    }
+    pub fn collection(&self) -> &Nsid {
+        &self.suffix
     }
 }
 pub type HourlyRollupVal = CountsValue;
@@ -332,13 +339,23 @@ pub type HourlyDidsKey = BucketedRankRecordsKey<_HourlyDidsStaticStr, HourTrunca
 
 static_str!("weekly_counts", _WeeklyRollupStaticStr);
 pub type WeeklyRollupStaticPrefix = DbStaticStr<_WeeklyRollupStaticStr>;
-pub type WeeklyRollupKey = DbConcat<DbConcat<WeeklyRollupStaticPrefix, WeekTruncatedCursor>, Nsid>;
+pub type WeeklyRollupKeyWeekPrefix = DbConcat<WeeklyRollupStaticPrefix, WeekTruncatedCursor>;
+pub type WeeklyRollupKey = DbConcat<WeeklyRollupKeyWeekPrefix, Nsid>;
 impl WeeklyRollupKey {
-    pub fn new(weekly_cursor: WeekTruncatedCursor, nsid: &Nsid) -> Self {
+    pub fn new(cursor: WeekTruncatedCursor, nsid: &Nsid) -> Self {
         Self::from_pair(
-            DbConcat::from_pair(Default::default(), weekly_cursor),
+            DbConcat::from_pair(Default::default(), cursor),
             nsid.clone(),
         )
+    }
+    pub fn week_prefix(cursor: WeekTruncatedCursor) -> WeeklyRollupKeyWeekPrefix {
+        WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), cursor)
+    }
+    pub fn cursor(&self) -> WeekTruncatedCursor {
+        self.prefix.suffix
+    }
+    pub fn collection(&self) -> &Nsid {
+        &self.suffix
     }
 }
 pub type WeeklyRollupVal = CountsValue;
