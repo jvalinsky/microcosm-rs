@@ -248,7 +248,10 @@ struct CollectionsResponse {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct AllCollectionsQuery {
     /// The maximum number of collections to return in one request.
+    ///
+    /// Default: 100
     #[schemars(range(min = 1, max = 200), default = "all_collections_default_limit")]
+    #[serde(default = "all_collections_default_limit")]
     limit: usize,
     /// Always omit the cursor for the first request. If more collections than the limit are available, the response will contain a non-null `cursor` to include with the next request.
     cursor: Option<String>,
