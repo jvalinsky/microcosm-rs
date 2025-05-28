@@ -12,10 +12,7 @@ use crate::store_types::{
     RecordLocationMeta, RecordLocationVal, RecordRawValue, SketchSecretPrefix, TakeoffKey,
     TakeoffValue, WeekTruncatedCursor, WeeklyRollupKey,
 };
-use crate::{
-    CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, QueryPeriod, TopCollections,
-    UFOsRecord,
-};
+use crate::{CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, UFOsRecord};
 use async_trait::async_trait;
 use jetstream::events::Cursor;
 use lsm_tree::range::prefix_to_range;
@@ -453,48 +450,6 @@ impl MemReader {
         })
     }
 
-    fn get_top_collections(&self) -> Result<TopCollections, StorageError> {
-        // TODO: limit nsid traversal depth
-        // TODO: limit nsid traversal breadth
-        // TODO: be serious about anything
-
-        // TODO: probably use a stack of segments to reduce to ~log-n merges
-
-        #[derive(Default)]
-        struct Blah {
-            counts: CountsValue,
-            children: HashMap<String, Blah>,
-        }
-        impl From<&Blah> for TopCollections {
-            fn from(bla: &Blah) -> Self {
-                Self {
-                    total_records: bla.counts.records(),
-                    dids_estimate: bla.counts.dids().estimate() as u64,
-                    nsid_child_segments: HashMap::from_iter(
-                        bla.children.iter().map(|(k, v)| (k.to_string(), v.into())),
-                    ),
-                }
-            }
-        }
-
-        let mut b = Blah::default();
-        let prefix = AllTimeRollupKey::from_prefix_to_db_bytes(&Default::default())?;
-        for kv in self.rollups.prefix(&prefix.to_db_bytes()?) {
-            let (key_bytes, val_bytes) = kv?;
-            let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
-            let val = db_complete::<CountsValue>(&val_bytes)?;
-
-            let mut node = &mut b;
-            node.counts.merge(&val);
-            for segment in key.collection().split('.') {
-                node = node.children.entry(segment.to_string()).or_default();
-                node.counts.merge(&val);
-            }
-        }
-
-        Ok((&b).into())
-    }
-
     fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
         // 0. grab a snapshot in case rollups happen while we're working
         let instant = self.keyspace.instant();
@@ -533,7 +488,7 @@ impl MemReader {
 
     fn get_records_by_collections(
         &self,
-        collections: &[Nsid],
+        collections: HashSet<Nsid>,
         limit: usize,
         _expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>> {
@@ -542,7 +497,7 @@ impl MemReader {
         }
         let mut record_iterators = Vec::new();
         for collection in collections {
-            let iter = RecordIterator::new(&self.feeds, self.records.clone(), collection, limit)?;
+            let iter = RecordIterator::new(&self.feeds, self.records.clone(), &collection, limit)?;
             record_iterators.push(iter.peekable());
         }
         let mut merged = Vec::new();
@@ -590,10 +545,6 @@ impl StoreReader for MemReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || MemReader::get_consumer_info(&s)).await?
     }
-    async fn get_top_collections(&self) -> StorageResult<TopCollections> {
-        let s = self.clone();
-        tokio::task::spawn_blocking(move || MemReader::get_top_collections(&s)).await?
-    }
     async fn get_all_collections(
         &self,
         _: usize,
@@ -606,14 +557,16 @@ impl StoreReader for MemReader {
     async fn get_top_collections_by_count(
         &self,
         _: usize,
-        _: QueryPeriod,
+        _: Option<HourTruncatedCursor>,
+        _: Option<HourTruncatedCursor>,
     ) -> StorageResult<Vec<NsidCount>> {
         todo!()
     }
     async fn get_top_collections_by_dids(
         &self,
         _: usize,
-        _: QueryPeriod,
+        _: Option<HourTruncatedCursor>,
+        _: Option<HourTruncatedCursor>,
     ) -> StorageResult<Vec<NsidCount>> {
         todo!()
     }
@@ -625,14 +578,13 @@ impl StoreReader for MemReader {
     }
     async fn get_records_by_collections(
         &self,
-        collections: &[Nsid],
+        collections: HashSet<Nsid>,
         limit: usize,
         expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>> {
         let s = self.clone();
-        let collections = collections.to_vec();
         tokio::task::spawn_blocking(move || {
-            MemReader::get_records_by_collections(&s, &collections, limit, expand_each_collection)
+            MemReader::get_records_by_collections(&s, collections, limit, expand_each_collection)
         })
         .await?
     }
@@ -1301,14 +1253,17 @@ mod tests {
         assert_eq!(records, 0);
         assert_eq!(dids, 0);
 
-        let records = read.get_records_by_collections(&[collection], 2, false)?;
+        let records = read.get_records_by_collections(HashSet::from([collection]), 2, false)?;
         assert_eq!(records.len(), 1);
         let rec = &records[0];
         assert_eq!(rec.record.get(), "{}");
         assert!(!rec.is_update);
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("d.e.f".to_string()).unwrap()], 2, false)?;
+        let records = read.get_records_by_collections(
+            HashSet::from([Nsid::new("d.e.f".to_string()).unwrap()]),
+            2,
+            false,
+        )?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1349,11 +1304,11 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         let records = read.get_records_by_collections(
-            &[
+            HashSet::from([
                 Nsid::new("a.a.a".to_string()).unwrap(),
                 Nsid::new("a.a.b".to_string()).unwrap(),
                 Nsid::new("a.a.c".to_string()).unwrap(),
-            ],
+            ]),
             100,
             false,
         )?;
@@ -1409,7 +1364,7 @@ mod tests {
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
 
-        let records = read.get_records_by_collections(&[collection], 2, false)?;
+        let records = read.get_records_by_collections(HashSet::from([collection]), 2, false)?;
         assert_eq!(records.len(), 1);
         let rec = &records[0];
         assert_eq!(rec.record.get(), r#"{"ch":  "ch-ch-ch-changes"}"#);
@@ -1447,7 +1402,7 @@ mod tests {
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
 
-        let records = read.get_records_by_collections(&[collection], 2, false)?;
+        let records = read.get_records_by_collections(HashSet::from([collection]), 2, false)?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1493,25 +1448,25 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.a".to_string()).unwrap()]),
             100,
             false,
         )?;
         assert_eq!(records.len(), 1);
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.b".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.b".to_string()).unwrap()]),
             100,
             false,
         )?;
         assert_eq!(records.len(), 10);
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.c".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.c".to_string()).unwrap()]),
             100,
             false,
         )?;
         assert_eq!(records.len(), 1);
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.d".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.d".to_string()).unwrap()]),
             100,
             false,
         )?;
@@ -1523,25 +1478,25 @@ mod tests {
         write.trim_collection(&Nsid::new("a.a.d".to_string()).unwrap(), 6, false)?;
 
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.a".to_string()).unwrap()]),
             100,
             false,
         )?;
         assert_eq!(records.len(), 1);
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.b".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.b".to_string()).unwrap()]),
             100,
             false,
         )?;
         assert_eq!(records.len(), 6);
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.c".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.c".to_string()).unwrap()]),
             100,
             false,
         )?;
         assert_eq!(records.len(), 1);
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.d".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.d".to_string()).unwrap()]),
             100,
             false,
         )?;
@@ -1578,7 +1533,7 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.a".to_string()).unwrap()]),
             100,
             false,
         )?;
@@ -1589,7 +1544,7 @@ mod tests {
         assert_eq!(records_deleted, 2);
 
         let records = read.get_records_by_collections(
-            &[Nsid::new("a.a.a".to_string()).unwrap()],
+            HashSet::from([Nsid::new("a.a.a".to_string()).unwrap()]),
             100,
             false,
         )?;
@@ -1620,8 +1575,11 @@ mod tests {
 
         write.step_rollup()?;
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
+        let records = read.get_records_by_collections(
+            HashSet::from([Nsid::new("a.a.a".to_string()).unwrap()]),
+            1,
+            false,
+        )?;
         assert_eq!(records.len(), 0);
 
         Ok(())
@@ -1650,15 +1608,21 @@ mod tests {
         batch.delete_account("did:plc:person-a", 10_001);
         write.insert_batch(batch.batch)?;
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
+        let records = read.get_records_by_collections(
+            HashSet::from([Nsid::new("a.a.a".to_string()).unwrap()]),
+            1,
+            false,
+        )?;
         assert_eq!(records.len(), 1);
 
         let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
-        let records =
-            read.get_records_by_collections(&[Nsid::new("a.a.a".to_string()).unwrap()], 1, false)?;
+        let records = read.get_records_by_collections(
+            HashSet::from([Nsid::new("a.a.a".to_string()).unwrap()]),
+            1,
+            false,
+        )?;
         assert_eq!(records.len(), 0);
 
         let mut batch = TestBatch::default();
@@ -1786,112 +1750,6 @@ mod tests {
         let (n, _) = write.step_rollup()?;
         assert_eq!(n, 0);
 
-        Ok(())
-    }
-
-    #[test]
-    fn get_top_collections() -> anyhow::Result<()> {
-        let (read, mut write) = fjall_db();
-
-        let mut batch = TestBatch::default();
-        batch.create(
-            "did:plc:person-a",
-            "a.a.a",
-            "rkey-aaa",
-            "{}",
-            Some("rev-aaa"),
-            None,
-            10_000,
-        );
-        batch.create(
-            "did:plc:person-b",
-            "a.a.b",
-            "rkey-bbb",
-            "{}",
-            Some("rev-bbb"),
-            None,
-            10_001,
-        );
-        batch.create(
-            "did:plc:person-c",
-            "a.b.c",
-            "rkey-ccc",
-            "{}",
-            Some("rev-ccc"),
-            None,
-            10_002,
-        );
-        batch.create(
-            "did:plc:person-a",
-            "a.a.a",
-            "rkey-aaa-2",
-            "{}",
-            Some("rev-aaa-2"),
-            None,
-            10_003,
-        );
-        write.insert_batch(batch.batch)?;
-
-        let (n, _) = write.step_rollup()?;
-        assert_eq!(n, 3); // 3 collections
-
-        let tops = read.get_top_collections()?;
-        assert_eq!(
-            tops,
-            TopCollections {
-                total_records: 4,
-                dids_estimate: 3,
-                nsid_child_segments: HashMap::from([(
-                    "a".to_string(),
-                    TopCollections {
-                        total_records: 4,
-                        dids_estimate: 3,
-                        nsid_child_segments: HashMap::from([
-                            (
-                                "a".to_string(),
-                                TopCollections {
-                                    total_records: 3,
-                                    dids_estimate: 2,
-                                    nsid_child_segments: HashMap::from([
-                                        (
-                                            "a".to_string(),
-                                            TopCollections {
-                                                total_records: 2,
-                                                dids_estimate: 1,
-                                                nsid_child_segments: HashMap::from([]),
-                                            },
-                                        ),
-                                        (
-                                            "b".to_string(),
-                                            TopCollections {
-                                                total_records: 1,
-                                                dids_estimate: 1,
-                                                nsid_child_segments: HashMap::from([]),
-                                            }
-                                        ),
-                                    ]),
-                                },
-                            ),
-                            (
-                                "b".to_string(),
-                                TopCollections {
-                                    total_records: 1,
-                                    dids_estimate: 1,
-                                    nsid_child_segments: HashMap::from([(
-                                        "c".to_string(),
-                                        TopCollections {
-                                            total_records: 1,
-                                            dids_estimate: 1,
-                                            nsid_child_segments: HashMap::from([]),
-                                        },
-                                    ),]),
-                                },
-                            ),
-                        ]),
-                    },
-                ),]),
-            }
-        );
         Ok(())
     }
 }

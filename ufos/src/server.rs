@@ -1,7 +1,7 @@
 use crate::index_html::INDEX_HTML;
 use crate::storage::StoreReader;
-use crate::store_types::HourTruncatedCursor;
-use crate::{ConsumerInfo, Nsid, NsidCount, QueryPeriod, TopCollections, UFOsRecord};
+use crate::store_types::{HourTruncatedCursor, WeekTruncatedCursor};
+use crate::{ConsumerInfo, Cursor, Nsid, NsidCount, UFOsRecord};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Utc};
 use dropshot::endpoint;
@@ -19,9 +19,9 @@ use dropshot::ServerBuilder;
 use http::{Response, StatusCode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 struct Context {
     pub spec: Arc<serde_json::Value>,
@@ -109,13 +109,13 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
         consumer,
     })
 }
-fn to_multiple_nsids(s: &str) -> Result<Vec<Nsid>, String> {
-    let mut out = Vec::new();
+fn to_multiple_nsids(s: &str) -> Result<HashSet<Nsid>, String> {
+    let mut out = HashSet::new();
     for collection in s.split(',') {
         let Ok(nsid) = Nsid::new(collection.to_string()) else {
             return Err(format!("collection {collection:?} was not a valid NSID"));
         };
-        out.push(nsid);
+        out.insert(nsid);
     }
     Ok(out)
 }
@@ -162,27 +162,21 @@ async fn get_records_by_collections(
         to_multiple_nsids(&provided_collection)
             .map_err(|reason| HttpError::for_bad_request(None, reason))?
     } else {
-        let all_collections_should_be_nsids: Vec<String> = storage
-            .get_top_collections()
-            .await
-            .map_err(|e| {
-                HttpError::for_internal_error(format!("failed to get top collections: {e:?}"))
-            })?
-            .into();
-        let mut all_collections = Vec::with_capacity(all_collections_should_be_nsids.len());
-        for raw_nsid in all_collections_should_be_nsids {
-            let nsid = Nsid::new(raw_nsid).map_err(|e| {
-                HttpError::for_internal_error(format!("failed to parse nsid: {e:?}"))
-            })?;
-            all_collections.push(nsid);
-        }
-
         limit = 12;
-        all_collections
+        let min_time_ago = SystemTime::now() - Duration::from_secs(86_400 * 3); // we want at least 3 days of data
+        let since: WeekTruncatedCursor = Cursor::at(min_time_ago).into();
+        let (collections, _) = storage
+            .get_all_collections(1000, None, Some(since.try_as().unwrap()), None)
+            .await
+            .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
+        collections
+            .into_iter()
+            .map(|c| Nsid::new(c.nsid).unwrap())
+            .collect()
     };
 
     let records = storage
-        .get_records_by_collections(&collections, limit, true)
+        .get_records_by_collections(collections, limit, true)
         .await
         .map_err(|e| HttpError::for_internal_error(e.to_string()))?
         .into_iter()
@@ -327,7 +321,7 @@ async fn get_top_collections_by_count(
 ) -> OkCorsResponse<Vec<NsidCount>> {
     let Context { storage, .. } = ctx.context();
     let collections = storage
-        .get_top_collections_by_count(100, QueryPeriod::all_time())
+        .get_top_collections_by_count(100, None, None)
         .await
         .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
 
@@ -344,30 +338,9 @@ async fn get_top_collections_by_dids(
 ) -> OkCorsResponse<Vec<NsidCount>> {
     let Context { storage, .. } = ctx.context();
     let collections = storage
-        .get_top_collections_by_dids(100, QueryPeriod::all_time())
+        .get_top_collections_by_dids(100, None, None)
         .await
         .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
-
-    ok_cors(collections)
-}
-
-/// Get top collections
-///
-/// The format of this API response will be changing soon.
-#[endpoint {
-    method = GET,
-    path = "/collections",
-    /*
-     * this is going away
-     */
-    unpublished = true,
-}]
-async fn get_top_collections(ctx: RequestContext<Context>) -> OkCorsResponse<TopCollections> {
-    let Context { storage, .. } = ctx.context();
-    let collections = storage
-        .get_top_collections()
-        .await
-        .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
     ok_cors(collections)
 }
@@ -389,7 +362,6 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_all_collections).unwrap();
     api.register(get_top_collections_by_count).unwrap();
     api.register(get_top_collections_by_dids).unwrap();
-    api.register(get_top_collections).unwrap();
 
     let context = Context {
         spec: Arc::new(

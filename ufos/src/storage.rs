@@ -1,8 +1,5 @@
 use crate::store_types::{HourTruncatedCursor, SketchSecretPrefix};
-use crate::{
-    error::StorageError, ConsumerInfo, Cursor, EventBatch, NsidCount, QueryPeriod, TopCollections,
-    UFOsRecord,
-};
+use crate::{error::StorageError, ConsumerInfo, Cursor, EventBatch, NsidCount, UFOsRecord};
 use async_trait::async_trait;
 use jetstream::exports::{Did, Nsid};
 use std::collections::HashSet;
@@ -87,22 +84,22 @@ pub trait StoreReader: Send + Sync {
     async fn get_top_collections_by_count(
         &self,
         limit: usize,
-        period: QueryPeriod,
+        since: Option<HourTruncatedCursor>,
+        until: Option<HourTruncatedCursor>,
     ) -> StorageResult<Vec<NsidCount>>;
 
     async fn get_top_collections_by_dids(
         &self,
         limit: usize,
-        period: QueryPeriod,
+        since: Option<HourTruncatedCursor>,
+        until: Option<HourTruncatedCursor>,
     ) -> StorageResult<Vec<NsidCount>>;
-
-    async fn get_top_collections(&self) -> StorageResult<TopCollections>;
 
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)>;
 
     async fn get_records_by_collections(
         &self,
-        collections: &[Nsid],
+        collections: HashSet<Nsid>,
         limit: usize,
         expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>>;
