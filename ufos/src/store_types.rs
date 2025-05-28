@@ -1,10 +1,11 @@
 use crate::db_types::{
-    DbBytes, DbConcat, DbStaticStr, EncodingError, SerdeBytes, StaticStr, UseBincodePlz,
+    DbBytes, DbConcat, DbStaticStr, EncodingError, EncodingResult, SerdeBytes, StaticStr,
+    UseBincodePlz,
 };
 use crate::{Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
 use bincode::{Decode, Encode};
 use cardinality_estimator_safe::Sketch;
-use std::ops::Range;
+use std::ops::{Bound, Range};
 
 macro_rules! static_str {
     ($prefix:expr, $name:ident) => {
@@ -62,6 +63,10 @@ impl DbBytes for JetstreamEndpointValue {
         let s = std::str::from_utf8(bytes)?.to_string();
         Ok((Self(s), bytes.len()))
     }
+}
+
+pub trait WithCollection {
+    fn collection(&self) -> &Nsid;
 }
 
 pub type NsidRecordFeedKey = DbConcat<Nsid, Cursor>;
@@ -186,7 +191,9 @@ impl LiveCountsKey {
     pub fn cursor(&self) -> Cursor {
         self.prefix.suffix
     }
-    pub fn collection(&self) -> &Nsid {
+}
+impl WithCollection for LiveCountsKey {
+    fn collection(&self) -> &Nsid {
         &self.suffix
     }
 }
@@ -319,13 +326,24 @@ impl HourlyRollupKey {
             nsid.clone(),
         )
     }
-    pub fn week_prefix(cursor: HourTruncatedCursor) -> HourlyRollupKeyHourPrefix {
-        HourlyRollupKeyHourPrefix::from_pair(Default::default(), cursor)
-    }
     pub fn cursor(&self) -> HourTruncatedCursor {
         self.prefix.suffix
     }
-    pub fn collection(&self) -> &Nsid {
+    pub fn start(hour: HourTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = HourlyRollupKeyHourPrefix::from_pair(Default::default(), hour);
+        let prefix_bytes = Self::from_prefix_to_db_bytes(&prefix)?;
+        Ok(Bound::Included(prefix_bytes))
+    }
+    pub fn after_nsid(hour: HourTruncatedCursor, nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(Self::new(hour, nsid).to_db_bytes()?))
+    }
+    pub fn end(hour: HourTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = HourlyRollupKeyHourPrefix::from_pair(Default::default(), hour);
+        Ok(Bound::Excluded(Self::prefix_range_end(&prefix)?))
+    }
+}
+impl WithCollection for HourlyRollupKey {
+    fn collection(&self) -> &Nsid {
         &self.suffix
     }
 }
@@ -348,13 +366,24 @@ impl WeeklyRollupKey {
             nsid.clone(),
         )
     }
-    pub fn week_prefix(cursor: WeekTruncatedCursor) -> WeeklyRollupKeyWeekPrefix {
-        WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), cursor)
-    }
     pub fn cursor(&self) -> WeekTruncatedCursor {
         self.prefix.suffix
     }
-    pub fn collection(&self) -> &Nsid {
+    pub fn start(hour: WeekTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), hour);
+        let prefix_bytes = Self::from_prefix_to_db_bytes(&prefix)?;
+        Ok(Bound::Included(prefix_bytes))
+    }
+    pub fn after_nsid(hour: WeekTruncatedCursor, nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(Self::new(hour, nsid).to_db_bytes()?))
+    }
+    pub fn end(hour: WeekTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), hour);
+        Ok(Bound::Excluded(Self::prefix_range_end(&prefix)?))
+    }
+}
+impl WithCollection for WeeklyRollupKey {
+    fn collection(&self) -> &Nsid {
         &self.suffix
     }
 }
@@ -373,7 +402,22 @@ impl AllTimeRollupKey {
     pub fn new(nsid: &Nsid) -> Self {
         Self::from_pair(Default::default(), nsid.clone())
     }
-    pub fn collection(&self) -> &Nsid {
+    pub fn start() -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Included(Self::from_prefix_to_db_bytes(
+            &Default::default(),
+        )?))
+    }
+    pub fn after_nsid(nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(Self::new(nsid).to_db_bytes()?))
+    }
+    pub fn end() -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::prefix_range_end(&Default::default())?,
+        ))
+    }
+}
+impl WithCollection for AllTimeRollupKey {
+    fn collection(&self) -> &Nsid {
         &self.suffix
     }
 }
@@ -393,7 +437,9 @@ where
     pub fn count(&self) -> u64 {
         self.suffix.prefix.0
     }
-    pub fn collection(&self) -> &Nsid {
+}
+impl<P: StaticStr> WithCollection for AllTimeRankRecordsKey<P> {
+    fn collection(&self) -> &Nsid {
         &self.suffix.suffix
     }
 }

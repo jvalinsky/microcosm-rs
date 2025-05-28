@@ -9,16 +9,18 @@ use crate::store_types::{
     NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
     RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, SketchSecretKey,
     SketchSecretPrefix, TakeoffKey, TakeoffValue, TrimCollectionCursorKey, WeekTruncatedCursor,
-    WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey,
+    WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey, WithCollection,
 };
 use crate::{
     CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord,
 };
 use async_trait::async_trait;
-use fjall::Snapshot;
-use fjall::{Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle};
+use fjall::{
+    Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Snapshot,
+};
 use jetstream::events::Cursor;
 use std::collections::{HashMap, HashSet};
+use std::iter::Peekable;
 use std::ops::Bound;
 use std::path::Path;
 use std::sync::{
@@ -328,6 +330,23 @@ impl Iterator for RecordIterator {
     }
 }
 
+type GetCounts = Box<dyn FnOnce() -> StorageResult<CountsValue>>;
+type GetByterCounts = StorageResult<(Nsid, GetCounts)>;
+type NsidCounter = Box<dyn Iterator<Item = GetByterCounts>>;
+fn get_lexi_iter<T: WithCollection + DbBytes + 'static>(
+    snapshot: &Snapshot,
+    start: Bound<Vec<u8>>,
+    end: Bound<Vec<u8>>,
+) -> StorageResult<NsidCounter> {
+    Ok(Box::new(snapshot.range((start, end)).map(|kv| {
+        let (k_bytes, v_bytes) = kv?;
+        let key = db_complete::<T>(&k_bytes)?;
+        let nsid = key.collection().clone();
+        let get_counts: GetCounts = Box::new(move || Ok(db_complete::<CountsValue>(&v_bytes)?));
+        Ok((nsid, get_counts))
+    })))
+}
+
 impl FjallReader {
     fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let rollup_cursor =
@@ -409,68 +428,43 @@ impl FjallReader {
             CursorBucket::buckets_spanning(lower, upper)
         };
 
-        let OrderCollectionsBy::Lexi { cursor } = order else {
-            todo!()
-        };
+        let mut iters: Vec<Peekable<NsidCounter>> = Vec::with_capacity(buckets.len());
 
-        let cursor_nsid = cursor.as_deref().map(db_complete::<Nsid>).transpose()?; // TODO: bubble a *client* error type
-
-        type Item = StorageResult<(Nsid, fjall::Slice)>;
-        let mut iters = Vec::with_capacity(buckets.len());
-        for bucket in &buckets {
-            match bucket {
-                CursorBucket::Hour(hour) => {
-                    let prefix = HourlyRollupKey::week_prefix(*hour);
-                    let start = if let Some(ref nsid) = cursor_nsid {
-                        Bound::Excluded(HourlyRollupKey::new(*hour, &nsid.clone()).to_db_bytes()?)
-                    } else {
-                        Bound::Included(HourlyRollupKey::from_prefix_to_db_bytes(&prefix)?)
+        match order {
+            OrderCollectionsBy::Lexi { cursor } => {
+                let cursor_nsid = cursor.as_deref().map(db_complete::<Nsid>).transpose()?;
+                for bucket in &buckets {
+                    let it: NsidCounter = match bucket {
+                        CursorBucket::Hour(t) => {
+                            let start = cursor_nsid
+                                .as_ref()
+                                .map(|nsid| HourlyRollupKey::after_nsid(*t, nsid))
+                                .unwrap_or_else(|| HourlyRollupKey::start(*t))?;
+                            let end = HourlyRollupKey::end(*t)?;
+                            get_lexi_iter::<HourlyRollupKey>(&snapshot, start, end)?
+                        }
+                        CursorBucket::Week(t) => {
+                            let start = cursor_nsid
+                                .as_ref()
+                                .map(|nsid| WeeklyRollupKey::after_nsid(*t, nsid))
+                                .unwrap_or_else(|| WeeklyRollupKey::start(*t))?;
+                            let end = WeeklyRollupKey::end(*t)?;
+                            get_lexi_iter::<WeeklyRollupKey>(&snapshot, start, end)?
+                        }
+                        CursorBucket::AllTime => {
+                            let start = cursor_nsid
+                                .as_ref()
+                                .map(AllTimeRollupKey::after_nsid)
+                                .unwrap_or_else(AllTimeRollupKey::start)?;
+                            let end = AllTimeRollupKey::end()?;
+                            get_lexi_iter::<AllTimeRollupKey>(&snapshot, start, end)?
+                        }
                     };
-                    let end = Bound::Excluded(HourlyRollupKey::prefix_range_end(&prefix)?);
-                    let it = snapshot.range((start, end)).map(|kv| match kv {
-                        Ok((k_bytes, v_bytes)) => db_complete::<HourlyRollupKey>(&k_bytes)
-                            .map(|key| (key.collection().clone(), v_bytes))
-                            .map_err(|e| e.into()),
-                        Err(e) => Err(e.into()), // lsm-tree error into fjall error
-                    });
-                    let boxed: Box<dyn Iterator<Item = Item>> = Box::new(it);
-                    iters.push(boxed.peekable());
-                }
-                CursorBucket::Week(week) => {
-                    let prefix = WeeklyRollupKey::week_prefix(*week);
-                    let start = if let Some(ref nsid) = cursor_nsid {
-                        Bound::Excluded(WeeklyRollupKey::new(*week, &nsid.clone()).to_db_bytes()?)
-                    } else {
-                        Bound::Included(WeeklyRollupKey::from_prefix_to_db_bytes(&prefix)?)
-                    };
-                    let end = Bound::Excluded(WeeklyRollupKey::prefix_range_end(&prefix)?);
-                    let it = snapshot.range((start, end)).map(|kv| match kv {
-                        Ok((k_bytes, v_bytes)) => db_complete::<WeeklyRollupKey>(&k_bytes)
-                            .map(|key| (key.collection().clone(), v_bytes))
-                            .map_err(|e| e.into()),
-                        Err(e) => Err(e.into()), // lsm-tree error into fjall error
-                    });
-                    let boxed: Box<dyn Iterator<Item = Item>> = Box::new(it);
-                    iters.push(boxed.peekable());
-                }
-                CursorBucket::AllTime => {
-                    let prefix = Default::default();
-                    let start = if let Some(ref nsid) = cursor_nsid {
-                        Bound::Excluded(AllTimeRollupKey::new(nsid).to_db_bytes()?)
-                    } else {
-                        Bound::Included(AllTimeRollupKey::from_prefix_to_db_bytes(&prefix)?)
-                    };
-                    let end = Bound::Excluded(AllTimeRollupKey::prefix_range_end(&prefix)?);
-                    let it = snapshot.range((start, end)).map(|kv| match kv {
-                        Ok((k_bytes, v_bytes)) => db_complete::<AllTimeRollupKey>(&k_bytes)
-                            .map(|key| (key.collection().clone(), v_bytes))
-                            .map_err(|e| e.into()),
-                        Err(e) => Err(e.into()), // lsm-tree error into fjall error
-                    });
-                    let boxed: Box<dyn Iterator<Item = Item>> = Box::new(it);
-                    iters.push(boxed.peekable());
+                    iters.push(it.peekable());
                 }
             }
+            OrderCollectionsBy::RecordsCreated => todo!(),
+            OrderCollectionsBy::DidsEstimate => todo!(),
         }
 
         let mut out = Vec::new();
@@ -498,9 +492,8 @@ impl FjallReader {
             let mut merged = CountsValue::default();
             for iter in &mut iters {
                 // unwrap: potential fjall error was already checked & bailed over when peeking in the first loop
-                if let Some(Ok((_, count_bytes))) = iter.next_if(|v| v.as_ref().unwrap().0 == nsid)
-                {
-                    let counts = db_complete::<CountsValue>(&count_bytes)?;
+                if let Some(Ok((_, get_counts))) = iter.next_if(|v| v.as_ref().unwrap().0 == nsid) {
+                    let counts = get_counts()?;
                     merged.merge(&counts);
                 }
             }

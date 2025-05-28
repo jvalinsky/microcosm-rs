@@ -10,7 +10,7 @@ use crate::store_types::{
     JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey, NewRollupCursorKey,
     NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey,
     RecordLocationMeta, RecordLocationVal, RecordRawValue, SketchSecretPrefix, TakeoffKey,
-    TakeoffValue, WeekTruncatedCursor, WeeklyRollupKey,
+    TakeoffValue, WeekTruncatedCursor, WeeklyRollupKey, WithCollection,
 };
 use crate::{
     CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord,

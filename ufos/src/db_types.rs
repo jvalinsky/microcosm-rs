@@ -48,6 +48,8 @@ pub enum EncodingError {
     InvalidTruncated(u64, u64),
 }
 
+pub type EncodingResult<T> = Result<T, EncodingError>;
+
 fn bincode_conf() -> impl Config {
     standard()
         .with_big_endian()
