@@ -2,10 +2,11 @@ use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use crate::store_types::{
-    AllTimeDidsKey, AllTimeRecordsKey, AllTimeRollupKey, CountsValue, DeleteAccountQueueKey,
-    DeleteAccountQueueVal, HourTruncatedCursor, HourlyDidsKey, HourlyRecordsKey, HourlyRollupKey,
-    JetstreamCursorKey, JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue,
-    LiveCountsKey, NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
+    AllTimeDidsKey, AllTimeRecordsKey, AllTimeRollupKey, CountsValue, CursorBucket,
+    DeleteAccountQueueKey, DeleteAccountQueueVal, HourTruncatedCursor, HourlyDidsKey,
+    HourlyRecordsKey, HourlyRollupKey, HourlyRollupStaticPrefix, JetstreamCursorKey,
+    JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey,
+    NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
     RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, SketchSecretKey,
     SketchSecretPrefix, TakeoffKey, TakeoffValue, TrimCollectionCursorKey, WeekTruncatedCursor,
     WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey,
@@ -15,6 +16,7 @@ use crate::{
     UFOsRecord,
 };
 use async_trait::async_trait;
+use fjall::Snapshot;
 use fjall::{Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle};
 use jetstream::events::Cursor;
 use std::collections::{HashMap, HashSet};
@@ -373,52 +375,114 @@ impl FjallReader {
         })
     }
 
+    fn get_earliest_hour(&self, rollups: Option<&Snapshot>) -> StorageResult<HourTruncatedCursor> {
+        let cursor = rollups
+            .unwrap_or(&self.rollups.snapshot())
+            .prefix(HourlyRollupStaticPrefix::default().to_db_bytes()?)
+            .next()
+            .transpose()?
+            .map(|(key_bytes, _)| db_complete::<HourlyRollupKey>(&key_bytes))
+            .transpose()?
+            .map(|key| key.cursor())
+            .unwrap_or_else(|| Cursor::from_start().into());
+        Ok(cursor)
+    }
+
     fn get_all_collections(
         &self,
         limit: usize,
         cursor: Option<Vec<u8>>,
-        _since: Option<HourTruncatedCursor>,
-        _until: Option<HourTruncatedCursor>,
+        since: Option<HourTruncatedCursor>,
+        until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
-        Ok(if true {
-            let snapshot = self.rollups.snapshot();
+        let snapshot = self.rollups.snapshot();
 
-            let start = if let Some(cursor_bytes) = cursor {
-                let nsid = db_complete::<Nsid>(&cursor_bytes)?; // TODO: bubble a *client* error type
-                Bound::Excluded(
-                    AllTimeRollupKey::from_pair(Default::default(), nsid).to_db_bytes()?,
-                )
-            } else {
-                Bound::Included(AllTimeRollupKey::from_prefix_to_db_bytes(
-                    &Default::default(),
-                )?)
-            };
-
-            let end_bytes = AllTimeRollupKey::prefix_range_end(&Default::default())?;
-            let end = Bound::Excluded(end_bytes.clone());
-
-            let mut out = Vec::new();
-            let mut next_cursor = None;
-            for (i, kv) in snapshot.range((start, end)).take(limit).enumerate() {
-                let (key_bytes, val_bytes) = kv?;
-                let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
-                let db_counts = db_complete::<CountsValue>(&val_bytes)?;
-                out.push(NsidCount {
-                    nsid: key.collection().to_string(),
-                    records: db_counts.records(),
-                    dids_estimate: db_counts.dids().estimate() as u64,
-                });
-                if i == limit - 1 {
-                    log::warn!("reached limit, setting next cursor");
-                    let nsid_bytes = key.collection().to_db_bytes()?;
-                    next_cursor = Some(nsid_bytes);
+        let buckets = if let (None, None) = (since, until) {
+            vec![CursorBucket::AllTime]
+        } else {
+            let mut lower = self.get_earliest_hour(Some(&snapshot))?;
+            if let Some(specified) = since {
+                if specified > lower {
+                    lower = specified;
                 }
             }
+            let upper = until.unwrap_or_else(|| Cursor::at(SystemTime::now()).into());
+            CursorBucket::buckets_spanning(lower, upper)
+        };
 
-            (out, next_cursor)
-        } else {
-            todo!()
-        })
+        let cursor_nsid = cursor.as_deref().map(db_complete::<Nsid>).transpose()?; // TODO: bubble a *client* error type
+
+        type Item = StorageResult<(Nsid, fjall::Slice)>;
+        let mut iters = Vec::with_capacity(buckets.len());
+        for bucket in buckets {
+            match bucket {
+                CursorBucket::Hour(_hour) => todo!(),
+                CursorBucket::Week(_week) => todo!(),
+                CursorBucket::AllTime => {
+                    let start = if let Some(ref nsid) = cursor_nsid {
+                        Bound::Excluded(
+                            AllTimeRollupKey::from_pair(Default::default(), nsid.clone())
+                                .to_db_bytes()?,
+                        )
+                    } else {
+                        Bound::Included(AllTimeRollupKey::from_prefix_to_db_bytes(
+                            &Default::default(),
+                        )?)
+                    };
+                    let end =
+                        Bound::Excluded(AllTimeRollupKey::prefix_range_end(&Default::default())?);
+                    let it = snapshot.range((start, end)).map(|kv| match kv {
+                        Ok((k_bytes, v_bytes)) => db_complete::<AllTimeRollupKey>(&k_bytes)
+                            .map(|key| (key.collection().clone(), v_bytes))
+                            .map_err(|e| e.into()),
+                        Err(e) => Err(e.into()), // lsm-tree error into fjall error
+                    });
+                    let boxed: Box<dyn Iterator<Item = Item>> = Box::new(it);
+                    iters.push(boxed.peekable());
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        let mut current_nsid = None;
+        for _ in 0..limit {
+            // double-scan the iters for each element: this could be eliminated but we're starting simple.
+            // first scan: find the lowest nsid
+            // second scan: take + merge, and advance all iters with lowest nsid
+            let mut lowest: Option<Nsid> = None;
+            for iter in &mut iters {
+                if let Some(bla) = iter.peek_mut() {
+                    let (nsid, _) = match bla {
+                        Ok(v) => v,
+                        Err(e) => Err(std::mem::replace(e, StorageError::Stolen))?,
+                    };
+                    lowest = match lowest {
+                        Some(ref current) if nsid.as_str() > current.as_str() => lowest,
+                        _ => Some(nsid.clone()),
+                    };
+                }
+            }
+            current_nsid = lowest.clone();
+            let Some(nsid) = lowest else { break };
+
+            let mut merged = CountsValue::default();
+            for iter in &mut iters {
+                // unwrap: potential fjall error was already checked & bailed over when peeking in the first loop
+                if let Some(Ok((_, count_bytes))) = iter.next_if(|v| v.as_ref().unwrap().0 == nsid)
+                {
+                    let counts = db_complete::<CountsValue>(&count_bytes)?;
+                    merged.merge(&counts);
+                }
+            }
+            out.push(NsidCount {
+                nsid: nsid.to_string(),
+                records: merged.records(),
+                dids_estimate: merged.dids().estimate() as u64,
+            });
+        }
+
+        let next_cursor = current_nsid.map(|s| s.to_db_bytes()).transpose()?;
+        Ok((out, next_cursor))
     }
 
     fn get_top_collections_by_count(

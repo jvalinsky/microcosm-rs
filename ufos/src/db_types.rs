@@ -276,6 +276,7 @@ impl DbBytes for Did {
     }
 }
 
+// BUG: this needs to use the null-terminating string thing!!!!!!!!!!!!!! the whole point of all of this!!!!
 impl DbBytes for Nsid {
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
         let (s, n) = decode_from_slice(bytes, bincode_conf())?;

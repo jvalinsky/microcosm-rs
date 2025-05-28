@@ -318,6 +318,9 @@ impl HourlyRollupKey {
             nsid.clone(),
         )
     }
+    pub fn cursor(&self) -> HourTruncatedCursor {
+        self.prefix.suffix
+    }
 }
 pub type HourlyRollupVal = CountsValue;
 
@@ -457,6 +460,7 @@ pub type WeekTruncatedCursor = TruncatedCursor<WEEK_IN_MICROS>;
 pub enum CursorBucket {
     Hour(HourTruncatedCursor),
     Week(WeekTruncatedCursor),
+    AllTime,
 }
 
 impl CursorBucket {
