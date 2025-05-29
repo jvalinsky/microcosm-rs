@@ -69,6 +69,10 @@ pub trait WithCollection {
     fn collection(&self) -> &Nsid;
 }
 
+pub trait WithRank {
+    fn rank(&self) -> u64;
+}
+
 pub type NsidRecordFeedKey = DbConcat<Nsid, Cursor>;
 impl NsidRecordFeedKey {
     pub fn collection(&self) -> &Nsid {
@@ -313,6 +317,24 @@ where
     pub fn with_rank(&self, new_rank: KeyRank) -> Self {
         Self::new(self.prefix.suffix.clone(), new_rank, &self.suffix.suffix)
     }
+    pub fn start(cursor: C) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix: DbConcat<DbStaticStr<P>, C> = DbConcat::from_pair(Default::default(), cursor);
+        Ok(Bound::Included(Self::from_prefix_to_db_bytes(&prefix)?))
+    }
+    pub fn end(cursor: C) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix: DbConcat<DbStaticStr<P>, C> = DbConcat::from_pair(Default::default(), cursor);
+        Ok(Bound::Excluded(Self::prefix_range_end(&prefix)?))
+    }
+}
+impl<P: StaticStr, C: DbBytes> WithCollection for BucketedRankRecordsKey<P, C> {
+    fn collection(&self) -> &Nsid {
+        &self.suffix.suffix
+    }
+}
+impl<P: StaticStr, C: DbBytes> WithRank for BucketedRankRecordsKey<P, C> {
+    fn rank(&self) -> u64 {
+        self.suffix.prefix.into()
+    }
 }
 
 static_str!("hourly_counts", _HourlyRollupStaticStr);
@@ -437,10 +459,25 @@ where
     pub fn count(&self) -> u64 {
         self.suffix.prefix.0
     }
+    pub fn start() -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Included(Self::from_prefix_to_db_bytes(
+            &Default::default(),
+        )?))
+    }
+    pub fn end() -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::prefix_range_end(&Default::default())?,
+        ))
+    }
 }
 impl<P: StaticStr> WithCollection for AllTimeRankRecordsKey<P> {
     fn collection(&self) -> &Nsid {
         &self.suffix.suffix
+    }
+}
+impl<P: StaticStr> WithRank for AllTimeRankRecordsKey<P> {
+    fn rank(&self) -> u64 {
+        self.suffix.prefix.into()
     }
 }
 

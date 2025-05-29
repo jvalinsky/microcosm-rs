@@ -84,20 +84,6 @@ pub trait StoreReader: Send + Sync {
         until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)>;
 
-    async fn get_top_collections_by_count(
-        &self,
-        limit: usize,
-        since: Option<HourTruncatedCursor>,
-        until: Option<HourTruncatedCursor>,
-    ) -> StorageResult<Vec<NsidCount>>;
-
-    async fn get_top_collections_by_dids(
-        &self,
-        limit: usize,
-        since: Option<HourTruncatedCursor>,
-        until: Option<HourTruncatedCursor>,
-    ) -> StorageResult<Vec<NsidCount>>;
-
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)>;
 
     async fn get_records_by_collections(

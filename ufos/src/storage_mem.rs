@@ -556,22 +556,6 @@ impl StoreReader for MemReader {
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
         todo!()
     }
-    async fn get_top_collections_by_count(
-        &self,
-        _: usize,
-        _: Option<HourTruncatedCursor>,
-        _: Option<HourTruncatedCursor>,
-    ) -> StorageResult<Vec<NsidCount>> {
-        todo!()
-    }
-    async fn get_top_collections_by_dids(
-        &self,
-        _: usize,
-        _: Option<HourTruncatedCursor>,
-        _: Option<HourTruncatedCursor>,
-    ) -> StorageResult<Vec<NsidCount>> {
-        todo!()
-    }
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
         let s = self.clone();
         let collection = collection.clone();

@@ -1,4 +1,4 @@
-use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
+use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingResult, StaticStr};
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use crate::store_types::{
@@ -9,7 +9,7 @@ use crate::store_types::{
     NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
     RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, SketchSecretKey,
     SketchSecretPrefix, TakeoffKey, TakeoffValue, TrimCollectionCursorKey, WeekTruncatedCursor,
-    WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey, WithCollection,
+    WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey, WithCollection, WithRank,
 };
 use crate::{
     CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord,
@@ -346,6 +346,33 @@ fn get_lexi_iter<T: WithCollection + DbBytes + 'static>(
         Ok((nsid, get_counts))
     })))
 }
+type GetRollupKey = Arc<dyn Fn(&Nsid) -> EncodingResult<Vec<u8>>>;
+fn get_lookup_iter<T: WithCollection + WithRank + DbBytes + 'static>(
+    snapshot: lsm_tree::Snapshot,
+    start: Bound<Vec<u8>>,
+    end: Bound<Vec<u8>>,
+    get_rollup_key: GetRollupKey,
+) -> StorageResult<NsidCounter> {
+    Ok(Box::new(snapshot.range((start, end)).rev().map(
+        move |kv| {
+            let (k_bytes, _) = kv?;
+            let key = db_complete::<T>(&k_bytes)?;
+            let nsid = key.collection().clone();
+            let get_counts: GetCounts = Box::new({
+                let nsid = nsid.clone();
+                let snapshot = snapshot.clone();
+                let get_rollup_key = get_rollup_key.clone();
+                move || {
+                    let db_count_bytes = snapshot.get(get_rollup_key(&nsid)?)?.expect(
+                    "integrity: all-time rank rollup must have corresponding all-time count rollup",
+                );
+                    Ok(db_complete::<CountsValue>(&db_count_bytes)?)
+                }
+            });
+            Ok((nsid, get_counts))
+        },
+    )))
+}
 
 impl FjallReader {
     fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
@@ -406,65 +433,43 @@ impl FjallReader {
         Ok(cursor)
     }
 
-    fn get_collections(
+    fn get_lexi_collections(
         &self,
+        snapshot: Snapshot,
         limit: usize,
-        order: OrderCollectionsBy,
-        since: Option<HourTruncatedCursor>,
-        until: Option<HourTruncatedCursor>,
+        cursor: Option<Vec<u8>>,
+        buckets: Vec<CursorBucket>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
-        let snapshot = self.rollups.snapshot();
-
-        let buckets = if let (None, None) = (since, until) {
-            vec![CursorBucket::AllTime]
-        } else {
-            let mut lower = self.get_earliest_hour(Some(&snapshot))?;
-            if let Some(specified) = since {
-                if specified > lower {
-                    lower = specified;
-                }
-            }
-            let upper = until.unwrap_or_else(|| Cursor::at(SystemTime::now()).into());
-            CursorBucket::buckets_spanning(lower, upper)
-        };
-
+        let cursor_nsid = cursor.as_deref().map(db_complete::<Nsid>).transpose()?;
         let mut iters: Vec<Peekable<NsidCounter>> = Vec::with_capacity(buckets.len());
-
-        match order {
-            OrderCollectionsBy::Lexi { cursor } => {
-                let cursor_nsid = cursor.as_deref().map(db_complete::<Nsid>).transpose()?;
-                for bucket in &buckets {
-                    let it: NsidCounter = match bucket {
-                        CursorBucket::Hour(t) => {
-                            let start = cursor_nsid
-                                .as_ref()
-                                .map(|nsid| HourlyRollupKey::after_nsid(*t, nsid))
-                                .unwrap_or_else(|| HourlyRollupKey::start(*t))?;
-                            let end = HourlyRollupKey::end(*t)?;
-                            get_lexi_iter::<HourlyRollupKey>(&snapshot, start, end)?
-                        }
-                        CursorBucket::Week(t) => {
-                            let start = cursor_nsid
-                                .as_ref()
-                                .map(|nsid| WeeklyRollupKey::after_nsid(*t, nsid))
-                                .unwrap_or_else(|| WeeklyRollupKey::start(*t))?;
-                            let end = WeeklyRollupKey::end(*t)?;
-                            get_lexi_iter::<WeeklyRollupKey>(&snapshot, start, end)?
-                        }
-                        CursorBucket::AllTime => {
-                            let start = cursor_nsid
-                                .as_ref()
-                                .map(AllTimeRollupKey::after_nsid)
-                                .unwrap_or_else(AllTimeRollupKey::start)?;
-                            let end = AllTimeRollupKey::end()?;
-                            get_lexi_iter::<AllTimeRollupKey>(&snapshot, start, end)?
-                        }
-                    };
-                    iters.push(it.peekable());
+        for bucket in &buckets {
+            let it: NsidCounter = match bucket {
+                CursorBucket::Hour(t) => {
+                    let start = cursor_nsid
+                        .as_ref()
+                        .map(|nsid| HourlyRollupKey::after_nsid(*t, nsid))
+                        .unwrap_or_else(|| HourlyRollupKey::start(*t))?;
+                    let end = HourlyRollupKey::end(*t)?;
+                    get_lexi_iter::<HourlyRollupKey>(&snapshot, start, end)?
                 }
-            }
-            OrderCollectionsBy::RecordsCreated => todo!(),
-            OrderCollectionsBy::DidsEstimate => todo!(),
+                CursorBucket::Week(t) => {
+                    let start = cursor_nsid
+                        .as_ref()
+                        .map(|nsid| WeeklyRollupKey::after_nsid(*t, nsid))
+                        .unwrap_or_else(|| WeeklyRollupKey::start(*t))?;
+                    let end = WeeklyRollupKey::end(*t)?;
+                    get_lexi_iter::<WeeklyRollupKey>(&snapshot, start, end)?
+                }
+                CursorBucket::AllTime => {
+                    let start = cursor_nsid
+                        .as_ref()
+                        .map(AllTimeRollupKey::after_nsid)
+                        .unwrap_or_else(AllTimeRollupKey::start)?;
+                    let end = AllTimeRollupKey::end()?;
+                    get_lexi_iter::<AllTimeRollupKey>(&snapshot, start, end)?
+                }
+            };
+            iters.push(it.peekable());
         }
 
         let mut out = Vec::new();
@@ -508,66 +513,143 @@ impl FjallReader {
         Ok((out, next_cursor))
     }
 
-    fn get_top_collections_by_count(
+    fn get_ordered_collections(
         &self,
+        snapshot: Snapshot,
         limit: usize,
-        since: Option<HourTruncatedCursor>,
-        until: Option<HourTruncatedCursor>,
+        order: OrderCollectionsBy,
+        buckets: Vec<CursorBucket>,
     ) -> StorageResult<Vec<NsidCount>> {
-        Ok(if since.is_none() && until.is_none() {
-            let snapshot = self.rollups.snapshot();
-            let mut out = Vec::with_capacity(limit);
-            let prefix = AllTimeRecordsKey::from_prefix_to_db_bytes(&Default::default())?;
-            for kv in snapshot.prefix(prefix).rev().take(limit) {
-                let (key_bytes, _) = kv?;
-                let key = db_complete::<AllTimeRecordsKey>(&key_bytes)?;
-                let rollup_key = AllTimeRollupKey::new(key.collection());
-                let db_count_bytes = snapshot.get(rollup_key.to_db_bytes()?)?.expect(
-                    "integrity: all-time rank rollup must have corresponding all-time count rollup",
-                );
-                let db_counts = db_complete::<CountsValue>(&db_count_bytes)?;
-                assert_eq!(db_counts.records(), key.count());
-                out.push(NsidCount {
-                    nsid: key.collection().to_string(),
-                    records: db_counts.records(),
-                    dids_estimate: db_counts.dids().estimate() as u64,
-                });
+        let mut iters: Vec<NsidCounter> = Vec::with_capacity(buckets.len());
+
+        for bucket in buckets {
+            let it: NsidCounter = match (&order, bucket) {
+                (OrderCollectionsBy::RecordsCreated, CursorBucket::Hour(t)) => {
+                    get_lookup_iter::<HourlyRecordsKey>(
+                        snapshot.clone(),
+                        HourlyRecordsKey::start(t)?,
+                        HourlyRecordsKey::end(t)?,
+                        Arc::new({
+                            move |collection| HourlyRollupKey::new(t, collection).to_db_bytes()
+                        }),
+                    )?
+                }
+                (OrderCollectionsBy::DidsEstimate, CursorBucket::Hour(t)) => {
+                    get_lookup_iter::<HourlyDidsKey>(
+                        snapshot.clone(),
+                        HourlyDidsKey::start(t)?,
+                        HourlyDidsKey::end(t)?,
+                        Arc::new({
+                            move |collection| HourlyRollupKey::new(t, collection).to_db_bytes()
+                        }),
+                    )?
+                }
+                (OrderCollectionsBy::RecordsCreated, CursorBucket::Week(t)) => {
+                    get_lookup_iter::<WeeklyRecordsKey>(
+                        snapshot.clone(),
+                        WeeklyRecordsKey::start(t)?,
+                        WeeklyRecordsKey::end(t)?,
+                        Arc::new({
+                            move |collection| WeeklyRollupKey::new(t, collection).to_db_bytes()
+                        }),
+                    )?
+                }
+                (OrderCollectionsBy::DidsEstimate, CursorBucket::Week(t)) => {
+                    get_lookup_iter::<WeeklyDidsKey>(
+                        snapshot.clone(),
+                        WeeklyDidsKey::start(t)?,
+                        WeeklyDidsKey::end(t)?,
+                        Arc::new({
+                            move |collection| WeeklyRollupKey::new(t, collection).to_db_bytes()
+                        }),
+                    )?
+                }
+                (OrderCollectionsBy::RecordsCreated, CursorBucket::AllTime) => {
+                    get_lookup_iter::<AllTimeRecordsKey>(
+                        snapshot.clone(),
+                        AllTimeRecordsKey::start()?,
+                        AllTimeRecordsKey::end()?,
+                        Arc::new(|collection| AllTimeRollupKey::new(collection).to_db_bytes()),
+                    )?
+                }
+                (OrderCollectionsBy::DidsEstimate, CursorBucket::AllTime) => {
+                    get_lookup_iter::<AllTimeDidsKey>(
+                        snapshot.clone(),
+                        AllTimeDidsKey::start()?,
+                        AllTimeDidsKey::end()?,
+                        Arc::new(|collection| AllTimeRollupKey::new(collection).to_db_bytes()),
+                    )?
+                }
+                (OrderCollectionsBy::Lexi { .. }, _) => unreachable!(),
+            };
+            iters.push(it);
+        }
+
+        // overfetch by taking a bit more than the limit
+        // merge by collection
+        // sort by requested order, take limit, discard all remaining
+        //
+        // this isn't guaranteed to be correct, but it will hopefully be close most of the time:
+        // - it's possible that some NSIDs might score low during some time-buckets, and miss being merged
+        // - overfetching hopefully helps a bit by catching nsids near the threshold more often, but. yeah.
+        //
+        // this thing is heavy, there's probably a better way
+        let mut ranked: HashMap<Nsid, CountsValue> = HashMap::with_capacity(limit * 2);
+        for iter in iters {
+            for pair in iter.take((limit as f64 * 1.3).ceil() as usize) {
+                let (nsid, get_counts) = pair?;
+                let counts = get_counts()?;
+                ranked.entry(nsid).or_default().merge(&counts);
             }
-            out
-        } else {
-            todo!()
-        })
+        }
+        let mut ranked: Vec<(Nsid, CountsValue)> = ranked.into_iter().collect();
+        match order {
+            OrderCollectionsBy::RecordsCreated => ranked.sort_by_key(|(_, c)| c.records()),
+            OrderCollectionsBy::DidsEstimate => ranked.sort_by_key(|(_, c)| c.dids().estimate()),
+            OrderCollectionsBy::Lexi { .. } => unreachable!(),
+        }
+        let counts = ranked
+            .into_iter()
+            .rev()
+            .take(limit)
+            .map(|(nsid, cv)| NsidCount {
+                nsid: nsid.to_string(),
+                records: cv.records(),
+                dids_estimate: cv.dids().estimate() as u64,
+            })
+            .collect();
+        Ok(counts)
     }
 
-    fn get_top_collections_by_dids(
+    fn get_collections(
         &self,
         limit: usize,
+        order: OrderCollectionsBy,
         since: Option<HourTruncatedCursor>,
         until: Option<HourTruncatedCursor>,
-    ) -> StorageResult<Vec<NsidCount>> {
-        Ok(if since.is_none() && until.is_none() {
-            let snapshot = self.rollups.snapshot();
-            let mut out = Vec::with_capacity(limit);
-            let prefix = AllTimeDidsKey::from_prefix_to_db_bytes(&Default::default())?;
-            for kv in snapshot.prefix(prefix).rev().take(limit) {
-                let (key_bytes, _) = kv?;
-                let key = db_complete::<AllTimeDidsKey>(&key_bytes)?;
-                let rollup_key = AllTimeRollupKey::new(key.collection());
-                let db_count_bytes = snapshot.get(rollup_key.to_db_bytes()?)?.expect(
-                    "integrity: all-time rank rollup must have corresponding all-time count rollup",
-                );
-                let db_counts = db_complete::<CountsValue>(&db_count_bytes)?;
-                assert_eq!(db_counts.dids().estimate() as u64, key.count());
-                out.push(NsidCount {
-                    nsid: key.collection().to_string(),
-                    records: db_counts.records(),
-                    dids_estimate: db_counts.dids().estimate() as u64,
-                });
-            }
-            out
+    ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
+        let snapshot = self.rollups.snapshot();
+        let buckets = if let (None, None) = (since, until) {
+            vec![CursorBucket::AllTime]
         } else {
-            todo!()
-        })
+            let mut lower = self.get_earliest_hour(Some(&snapshot))?;
+            if let Some(specified) = since {
+                if specified > lower {
+                    lower = specified;
+                }
+            }
+            let upper = until.unwrap_or_else(|| Cursor::at(SystemTime::now()).into());
+            CursorBucket::buckets_spanning(lower, upper)
+        };
+        match order {
+            OrderCollectionsBy::Lexi { cursor } => {
+                self.get_lexi_collections(snapshot, limit, cursor, buckets)
+            }
+            _ => Ok((
+                self.get_ordered_collections(snapshot, limit, order, buckets)?,
+                None,
+            )),
+        }
     }
 
     fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
@@ -679,30 +761,6 @@ impl StoreReader for FjallReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || {
             FjallReader::get_collections(&s, limit, order, since, until)
-        })
-        .await?
-    }
-    async fn get_top_collections_by_count(
-        &self,
-        limit: usize,
-        since: Option<HourTruncatedCursor>,
-        until: Option<HourTruncatedCursor>,
-    ) -> StorageResult<Vec<NsidCount>> {
-        let s = self.clone();
-        tokio::task::spawn_blocking(move || {
-            FjallReader::get_top_collections_by_count(&s, limit, since, until)
-        })
-        .await?
-    }
-    async fn get_top_collections_by_dids(
-        &self,
-        limit: usize,
-        since: Option<HourTruncatedCursor>,
-        until: Option<HourTruncatedCursor>,
-    ) -> StorageResult<Vec<NsidCount>> {
-        let s = self.clone();
-        tokio::task::spawn_blocking(move || {
-            FjallReader::get_top_collections_by_dids(&s, limit, since, until)
         })
         .await?
     }

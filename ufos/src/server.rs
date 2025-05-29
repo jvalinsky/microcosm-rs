@@ -284,7 +284,7 @@ struct CollectionsQuery {
     method = GET,
     path = "/collections"
 }]
-/// Get a list of collection NSIDs with statistics
+/// Get collection with statistics
 ///
 /// ## To fetch a full list:
 ///
@@ -356,79 +356,6 @@ async fn get_collections(
     })
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-struct TopByQuery {
-    /// The maximum number of collections to return in one request.
-    ///
-    /// Default: 32
-    #[schemars(range(min = 1, max = 200), default = "top_collections_default_limit")]
-    #[serde(default = "top_collections_default_limit")]
-    limit: usize,
-    /// Limit collections and statistics to those seen after this UTC datetime
-    since: Option<DateTime<Utc>>,
-    /// Limit collections and statistics to those seen before this UTC datetime
-    until: Option<DateTime<Utc>>,
-}
-fn top_collections_default_limit() -> usize {
-    32
-}
-
-/// Get top collections by record count
-#[endpoint {
-    method = GET,
-    path = "/collections/by-count"
-}]
-async fn get_top_collections_by_count(
-    ctx: RequestContext<Context>,
-    query: Query<TopByQuery>,
-) -> OkCorsResponse<Vec<NsidCount>> {
-    let Context { storage, .. } = ctx.context();
-    let q = query.into_inner();
-
-    if !(1..=200).contains(&q.limit) {
-        let msg = format!("limit not in 1..=200: {}", q.limit);
-        return Err(HttpError::for_bad_request(None, msg));
-    }
-
-    let since = q.since.map(dt_to_cursor).transpose()?;
-    let until = q.until.map(dt_to_cursor).transpose()?;
-
-    let collections = storage
-        .get_top_collections_by_count(100, since, until)
-        .await
-        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
-
-    ok_cors(collections)
-}
-
-/// Get top collections by estimated unique DIDs
-#[endpoint {
-    method = GET,
-    path = "/collections/by-dids"
-}]
-async fn get_top_collections_by_dids(
-    ctx: RequestContext<Context>,
-    query: Query<TopByQuery>,
-) -> OkCorsResponse<Vec<NsidCount>> {
-    let Context { storage, .. } = ctx.context();
-    let q = query.into_inner();
-
-    if !(1..=200).contains(&q.limit) {
-        let msg = format!("limit not in 1..=200: {}", q.limit);
-        return Err(HttpError::for_bad_request(None, msg));
-    }
-
-    let since = q.since.map(dt_to_cursor).transpose()?;
-    let until = q.until.map(dt_to_cursor).transpose()?;
-
-    let collections = storage
-        .get_top_collections_by_dids(100, since, until)
-        .await
-        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
-
-    ok_cors(collections)
-}
-
 pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     let log = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
@@ -444,8 +371,6 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_records_by_collections).unwrap();
     api.register(get_records_total_seen).unwrap();
     api.register(get_collections).unwrap();
-    api.register(get_top_collections_by_count).unwrap();
-    api.register(get_top_collections_by_dids).unwrap();
 
     let context = Context {
         spec: Arc::new(
