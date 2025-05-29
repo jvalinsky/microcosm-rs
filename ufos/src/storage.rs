@@ -1,11 +1,11 @@
-use crate::store_types::{HourTruncatedCursor, SketchSecretPrefix};
+use crate::store_types::{CountsValue, HourTruncatedCursor, SketchSecretPrefix};
 use crate::{
     error::StorageError, ConsumerInfo, Cursor, EventBatch, NsidCount, OrderCollectionsBy,
     UFOsRecord,
 };
 use async_trait::async_trait;
 use jetstream::exports::{Did, Nsid};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tokio::sync::mpsc::Receiver;
 
@@ -83,6 +83,14 @@ pub trait StoreReader: Send + Sync {
         since: Option<HourTruncatedCursor>,
         until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)>;
+
+    async fn get_timeseries(
+        &self,
+        collections: Vec<Nsid>,
+        since: HourTruncatedCursor,
+        until: Option<HourTruncatedCursor>,
+        step: u64,
+    ) -> StorageResult<(Vec<HourTruncatedCursor>, HashMap<Nsid, Vec<CountsValue>>)>;
 
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)>;
 

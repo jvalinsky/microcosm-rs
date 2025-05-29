@@ -9,7 +9,8 @@ use crate::store_types::{
     NewRollupCursorKey, NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal,
     RecordLocationKey, RecordLocationMeta, RecordLocationVal, RecordRawValue, SketchSecretKey,
     SketchSecretPrefix, TakeoffKey, TakeoffValue, TrimCollectionCursorKey, WeekTruncatedCursor,
-    WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey, WithCollection, WithRank,
+    WeeklyDidsKey, WeeklyRecordsKey, WeeklyRollupKey, WithCollection, WithRank, HOUR_IN_MICROS,
+    WEEK_IN_MICROS,
 };
 use crate::{
     CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord,
@@ -374,6 +375,8 @@ fn get_lookup_iter<T: WithCollection + WithRank + DbBytes + 'static>(
     )))
 }
 
+type CollectionSerieses = HashMap<Nsid, Vec<CountsValue>>;
+
 impl FjallReader {
     fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let rollup_cursor =
@@ -652,6 +655,66 @@ impl FjallReader {
         }
     }
 
+    /// - step: output series time step, in seconds
+    fn get_timeseries(
+        &self,
+        collections: Vec<Nsid>,
+        since: HourTruncatedCursor,
+        until: Option<HourTruncatedCursor>,
+        step: u64,
+    ) -> StorageResult<(Vec<HourTruncatedCursor>, CollectionSerieses)> {
+        if step > WEEK_IN_MICROS {
+            panic!("week-stepping is todo");
+        }
+        let until = until.unwrap_or_else(|| Cursor::at(SystemTime::now()).into());
+        let Ok(dt) = Cursor::from(until).duration_since(&Cursor::from(since)) else {
+            return Ok((
+                // empty: until < since
+                vec![],
+                collections.into_iter().map(|c| (c, vec![])).collect(),
+            ));
+        };
+        let n_hours = (dt.as_micros() as u64) / HOUR_IN_MICROS;
+        let mut counts_by_hour = Vec::with_capacity(n_hours as usize);
+        let snapshot = self.rollups.snapshot();
+        for hour in (0..n_hours).map(|i| since.nth_next(i)) {
+            let mut counts = Vec::with_capacity(collections.len());
+            for nsid in &collections {
+                let count = snapshot
+                    .get(&HourlyRollupKey::new(hour, nsid).to_db_bytes()?)?
+                    .as_deref()
+                    .map(db_complete::<CountsValue>)
+                    .transpose()?
+                    .unwrap_or_default();
+                counts.push(count);
+            }
+            counts_by_hour.push((hour, counts));
+        }
+
+        let step_hours = step / (HOUR_IN_MICROS / 1_000_000);
+        let mut output_hours = Vec::with_capacity(step_hours as usize);
+        let mut output_series: CollectionSerieses = collections
+            .iter()
+            .map(|c| (c.clone(), Vec::with_capacity(step_hours as usize)))
+            .collect();
+
+        for chunk in counts_by_hour.chunks(step_hours as usize) {
+            output_hours.push(chunk[0].0); // always guaranteed to have at least one element in a chunks chunk
+            for (i, collection) in collections.iter().enumerate() {
+                let mut c = CountsValue::default();
+                for (_, counts) in chunk {
+                    c.merge(&counts[i]);
+                }
+                output_series
+                    .get_mut(collection)
+                    .expect("output series is initialized with all collections")
+                    .push(c);
+            }
+        }
+
+        Ok((output_hours, output_series))
+    }
+
     fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
         // 0. grab a snapshot in case rollups happen while we're working
         let instant = self.keyspace.instant();
@@ -761,6 +824,19 @@ impl StoreReader for FjallReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || {
             FjallReader::get_collections(&s, limit, order, since, until)
+        })
+        .await?
+    }
+    async fn get_timeseries(
+        &self,
+        collections: Vec<Nsid>,
+        since: HourTruncatedCursor,
+        until: Option<HourTruncatedCursor>,
+        step: u64,
+    ) -> StorageResult<(Vec<HourTruncatedCursor>, CollectionSerieses)> {
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || {
+            FjallReader::get_timeseries(&s, collections, since, until, step)
         })
         .await?
     }

@@ -2,7 +2,7 @@ use crate::db_types::{
     DbBytes, DbConcat, DbStaticStr, EncodingError, EncodingResult, SerdeBytes, StaticStr,
     UseBincodePlz,
 };
-use crate::{Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
+use crate::{Cursor, Did, JustCount, Nsid, PutAction, RecordKey, UFOsCommit};
 use bincode::{Decode, Encode};
 use cardinality_estimator_safe::Sketch;
 use std::ops::{Bound, Range};
@@ -260,6 +260,14 @@ impl Default for CountsValue {
         Self {
             prefix: TotalRecordsValue(0),
             suffix: EstimatedDidsValue(Sketch::<14>::default()),
+        }
+    }
+}
+impl From<&CountsValue> for JustCount {
+    fn from(cv: &CountsValue) -> Self {
+        Self {
+            records: cv.records(),
+            dids_estimate: cv.dids().estimate() as u64,
         }
     }
 }
@@ -527,6 +535,9 @@ impl<const MOD: u64> TruncatedCursor<MOD> {
     pub fn next(&self) -> Self {
         Self(self.0 + MOD)
     }
+    pub fn nth_next(&self, n: u64) -> Self {
+        Self(self.0 + (n * MOD))
+    }
     pub fn prev(&self) -> Self {
         if self.0 < MOD {
             panic!("underflow: previous truncation start would be less than zero");
@@ -556,10 +567,10 @@ impl<const MOD: u64> DbBytes for TruncatedCursor<MOD> {
     }
 }
 
-const HOUR_IN_MICROS: u64 = 1_000_000 * 3600;
+pub const HOUR_IN_MICROS: u64 = 1_000_000 * 3600;
 pub type HourTruncatedCursor = TruncatedCursor<HOUR_IN_MICROS>;
 
-const WEEK_IN_MICROS: u64 = HOUR_IN_MICROS * 24 * 7;
+pub const WEEK_IN_MICROS: u64 = HOUR_IN_MICROS * 24 * 7;
 pub type WeekTruncatedCursor = TruncatedCursor<WEEK_IN_MICROS>;
 
 #[derive(Debug, PartialEq)]

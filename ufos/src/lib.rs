@@ -241,6 +241,12 @@ pub struct NsidCount {
     dids_estimate: u64,
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct JustCount {
+    records: u64,
+    dids_estimate: u64,
+}
+
 #[derive(Debug)]
 pub enum OrderCollectionsBy {
     Lexi { cursor: Option<Vec<u8>> },

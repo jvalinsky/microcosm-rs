@@ -1,7 +1,7 @@
 use crate::index_html::INDEX_HTML;
 use crate::storage::StoreReader;
 use crate::store_types::{HourTruncatedCursor, WeekTruncatedCursor};
-use crate::{ConsumerInfo, Cursor, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord};
+use crate::{ConsumerInfo, Cursor, JustCount, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Utc};
 use dropshot::endpoint;
@@ -280,10 +280,7 @@ struct CollectionsQuery {
     /// Mutually exclusive with `cursor` -- sorted results cannot be paged.
     order: Option<CollectionsQueryOrder>,
 }
-#[endpoint {
-    method = GET,
-    path = "/collections"
-}]
+
 /// Get collection with statistics
 ///
 /// ## To fetch a full list:
@@ -305,6 +302,10 @@ struct CollectionsQuery {
 /// Specify the `order` parameter (must be either `records-created` or `did-estimate`). Note that ordered results cannot be paged.
 ///
 /// All statistics are bucketed hourly, so the most granular effecitve time boundary for `since` and `until` is one hour.
+#[endpoint {
+    method = GET,
+    path = "/collections"
+}]
 async fn get_collections(
     ctx: RequestContext<Context>,
     query: Query<CollectionsQuery>,
@@ -356,6 +357,83 @@ async fn get_collections(
     })
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CollectionTimeseriesQuery {
+    collection: String, // JsonSchema not implemented for Nsid :(
+    /// Limit collections and statistics to those seen after this UTC datetime
+    ///
+    /// default: 1 week ago
+    since: Option<DateTime<Utc>>,
+    /// Limit collections and statistics to those seen before this UTC datetime
+    ///
+    /// default: now
+    until: Option<DateTime<Utc>>,
+    /// time steps between data, in seconds
+    ///
+    /// the step will be rounded down to the nearest hour
+    ///
+    /// default: 86400 (24hrs)
+    #[schemars(range(min = 3600))]
+    step: Option<u64>,
+    // todo: rolling averages
+}
+#[derive(Debug, Serialize, JsonSchema)]
+struct CollectionTimeseriesResponse {
+    range: Vec<DateTime<Utc>>,
+    series: HashMap<String, Vec<JustCount>>,
+}
+/// Get timeseries data
+#[endpoint {
+    method = GET,
+    path = "/timeseries"
+}]
+async fn get_timeseries(
+    ctx: RequestContext<Context>,
+    query: Query<CollectionTimeseriesQuery>,
+) -> OkCorsResponse<CollectionTimeseriesResponse> {
+    let Context { storage, .. } = ctx.context();
+    let q = query.into_inner();
+
+    let since = q.since.map(dt_to_cursor).transpose()?.unwrap_or_else(|| {
+        let week_ago_secs = 7 * 86_400;
+        let week_ago = SystemTime::now() - Duration::from_secs(week_ago_secs);
+        Cursor::at(week_ago).into()
+    });
+
+    let until = q.until.map(dt_to_cursor).transpose()?;
+
+    let step = if let Some(secs) = q.step {
+        if secs < 3600 {
+            let msg = format!("step is too small: {}", secs);
+            return Err(HttpError::for_bad_request(None, msg));
+        }
+        (secs / 3600) * 3600 // trucate to hour
+    } else {
+        86_400
+    };
+
+    let nsid = Nsid::new(q.collection).map_err(|e| {
+        HttpError::for_bad_request(None, format!("collection was not a valid NSID: {:?}", e))
+    })?;
+
+    let (range_cursors, series) = storage
+        .get_timeseries(vec![nsid], since, until, step)
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
+
+    let range = range_cursors
+        .into_iter()
+        .map(|c| DateTime::<Utc>::from_timestamp_micros(c.to_raw_u64() as i64).unwrap())
+        .collect();
+
+    let series = series
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.iter().map(Into::into).collect()))
+        .collect();
+
+    ok_cors(CollectionTimeseriesResponse { range, series })
+}
+
 pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     let log = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
@@ -371,6 +449,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_records_by_collections).unwrap();
     api.register(get_records_total_seen).unwrap();
     api.register(get_collections).unwrap();
+    api.register(get_timeseries).unwrap();
 
     let context = Context {
         spec: Arc::new(

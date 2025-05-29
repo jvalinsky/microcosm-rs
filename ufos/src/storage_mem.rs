@@ -556,6 +556,15 @@ impl StoreReader for MemReader {
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)> {
         todo!()
     }
+    async fn get_timeseries(
+        &self,
+        _: Vec<Nsid>,
+        _: HourTruncatedCursor,
+        _: Option<HourTruncatedCursor>,
+        _: u64,
+    ) -> StorageResult<(Vec<HourTruncatedCursor>, HashMap<Nsid, Vec<CountsValue>>)> {
+        todo!()
+    }
     async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
         let s = self.clone();
         let collection = collection.clone();
