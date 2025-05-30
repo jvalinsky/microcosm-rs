@@ -1350,7 +1350,7 @@ impl StoreBackground for FjallBackground {
         loop {
             tokio::select! {
                 _ = rollup.tick() => {
-                    let (n, dirty) = self.0.step_rollup().inspect_err(|e| log::error!("rollup error: {e:?}"))?;
+                    let (n, dirty) = tokio::task::block_in_place(|| self.0.step_rollup())?;
                     if n == 0 {
                         rollup.reset_after(Duration::from_millis(1_200)); // we're caught up, take a break
                     }
@@ -1363,7 +1363,7 @@ impl StoreBackground for FjallBackground {
                     let t0 = Instant::now();
                     let (mut total_danglers, mut total_deleted) = (0, 0);
                     for collection in &dirty_nsids {
-                        let (danglers, deleted) = self.0.trim_collection(collection, 512, false).inspect_err(|e| log::error!("trim error: {e:?}"))?;
+                        let (danglers, deleted) = tokio::task::block_in_place(|| self.0.trim_collection(collection, 512, false))?;
                         total_danglers += danglers;
                         total_deleted += deleted;
                         if total_deleted > 100_000_000 {
