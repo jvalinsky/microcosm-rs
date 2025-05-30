@@ -27,11 +27,12 @@ fn did_element(sketch_secret: &SketchSecretPrefix, did: &Did) -> Element<14> {
 
 #[derive(Debug, Default, Clone)]
 pub struct CollectionCommits<const LIMIT: usize> {
-    pub total_seen: usize,
+    pub creates: usize,
+    pub updates: usize,
+    pub deletes: usize,
     pub dids_estimate: Sketch<14>,
     pub commits: Vec<UFOsCommit>,
     head: usize,
-    non_creates: usize,
 }
 
 impl<const LIMIT: usize> CollectionCommits<LIMIT> {
@@ -41,22 +42,53 @@ impl<const LIMIT: usize> CollectionCommits<LIMIT> {
             self.head = 0;
         }
     }
+    /// lossy-ish commit insertion
+    ///
+    /// - new commits are *always* added to the batch or else rejected as full.
+    /// - when LIMIT is reached, new commits can displace existing `creates`.
+    ///   `update`s and `delete`s are *never* displaced.
+    /// - if all batched `creates` have been displaced, the batch is full.
+    ///
+    /// in general it's rare for commits to be displaced except for very high-
+    /// volume collections such as `app.bsky.feed.like`.
+    ///
+    /// it could be nice in the future to retain all batched commits and just
+    /// drop new `creates` after a limit instead.
     pub fn truncating_insert(
         &mut self,
         commit: UFOsCommit,
         sketch_secret: &SketchSecretPrefix,
     ) -> Result<(), BatchInsertError> {
-        if self.non_creates == LIMIT {
+        if (self.updates + self.deletes) == LIMIT {
+            // nothing can be displaced (only `create`s may be displaced)
             return Err(BatchInsertError::BatchFull(commit));
         }
-        let did = commit.did.clone();
-        let is_create = commit.action.is_create();
-        if self.commits.len() < LIMIT {
-            self.commits.push(commit);
-            if self.commits.capacity() > LIMIT {
-                self.commits.shrink_to(LIMIT); // save mem?????? maybe??
+
+        // every kind of commit counts as "user activity"
+        self.dids_estimate
+            .insert(did_element(sketch_secret, &commit.did));
+
+        match commit.action {
+            CommitAction::Put(PutAction {
+                is_update: false, ..
+            }) => {
+                self.creates += 1;
             }
+            CommitAction::Put(PutAction {
+                is_update: true, ..
+            }) => {
+                self.updates += 1;
+            }
+            CommitAction::Cut => {
+                self.deletes += 1;
+            }
+        }
+
+        if self.commits.len() < LIMIT {
+            // normal insert: there's space left to put a new commit at the end
+            self.commits.push(commit);
         } else {
+            // displacement insert: find an old `create` we can displace
             let head_started_at = self.head;
             loop {
                 let candidate = self
@@ -72,13 +104,6 @@ impl<const LIMIT: usize> CollectionCommits<LIMIT> {
                     return Err(BatchInsertError::BatchForever);
                 }
             }
-        }
-
-        if is_create {
-            self.total_seen += 1;
-            self.dids_estimate.insert(did_element(sketch_secret, &did));
-        } else {
-            self.non_creates += 1;
         }
 
         Ok(())
@@ -179,12 +204,6 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
             .truncating_insert(commit, sketch_secret)?;
         Ok(())
     }
-    pub fn total_records(&self) -> usize {
-        self.commits_by_nsid.values().map(|v| v.commits.len()).sum()
-    }
-    pub fn total_seen(&self) -> usize {
-        self.commits_by_nsid.values().map(|v| v.total_seen).sum()
-    }
     pub fn total_collections(&self) -> usize {
         self.commits_by_nsid.len()
     }
@@ -237,13 +256,13 @@ pub enum ConsumerInfo {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct NsidCount {
     nsid: String,
-    records: u64,
+    creates: u64,
     dids_estimate: u64,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct JustCount {
-    records: u64,
+    creates: u64,
     dids_estimate: u64,
 }
 
@@ -309,7 +328,7 @@ mod tests {
             &[0u8; 16],
         )?;
 
-        assert_eq!(commits.total_seen, 3);
+        assert_eq!(commits.creates, 3);
         assert_eq!(commits.dids_estimate.estimate(), 1);
         assert_eq!(commits.commits.len(), 2);
 
@@ -329,6 +348,32 @@ mod tests {
         assert!(!found_first);
         assert!(found_last);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_truncating_insert_counts_updates() -> anyhow::Result<()> {
+        let mut commits: CollectionCommits<2> = Default::default();
+
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(100),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+                rev: "rev-asdf".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: true,
+                }),
+            },
+            &[0u8; 16],
+        )?;
+
+        assert_eq!(commits.creates, 0);
+        assert_eq!(commits.updates, 1);
+        assert_eq!(commits.deletes, 0);
+        assert_eq!(commits.dids_estimate.estimate(), 1);
+        assert_eq!(commits.commits.len(), 1);
         Ok(())
     }
 
@@ -375,7 +420,8 @@ mod tests {
             &[0u8; 16],
         )?;
 
-        assert_eq!(commits.total_seen, 2);
+        assert_eq!(commits.creates, 2);
+        assert_eq!(commits.deletes, 1);
         assert_eq!(commits.dids_estimate.estimate(), 1);
         assert_eq!(commits.commits.len(), 2);
 

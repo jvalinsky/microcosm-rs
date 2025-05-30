@@ -5,7 +5,7 @@ use crate::db_types::{db_complete, DbBytes, DbStaticStr, StaticStr};
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use crate::store_types::{
-    AllTimeRollupKey, CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal,
+    AllTimeRollupKey, CommitCounts, CountsValue, DeleteAccountQueueKey, DeleteAccountQueueVal,
     HourTruncatedCursor, HourlyRollupKey, JetstreamCursorKey, JetstreamCursorValue,
     JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey, NewRollupCursorKey,
     NewRollupCursorValue, NsidRecordFeedKey, NsidRecordFeedVal, RecordLocationKey,
@@ -483,7 +483,7 @@ impl MemReader {
             }
         }
         Ok((
-            total_counts.records(),
+            total_counts.counts().creates,
             total_counts.dids().estimate() as u64,
         ))
     }
@@ -724,7 +724,7 @@ impl MemWriter {
             assert_eq!(n, tripppin.len());
             assert_eq!(counts.prefix, and_back.prefix);
             assert_eq!(counts.dids().estimate(), and_back.dids().estimate());
-            if counts.records() > 20000000 {
+            if counts.counts().creates > 20000000 {
                 panic!("COUNTS maybe wtf? {counts:?}")
             }
             // assert_eq!(rolled, and_back);
@@ -737,7 +737,7 @@ impl MemWriter {
             assert_eq!(n, tripppin.len());
             assert_eq!(rolled.prefix, and_back.prefix);
             assert_eq!(rolled.dids().estimate(), and_back.dids().estimate());
-            if rolled.records() > 20000000 {
+            if rolled.counts().creates > 20000000 {
                 panic!("maybe wtf? {rolled:?}")
             }
             // assert_eq!(rolled, and_back);
@@ -804,7 +804,14 @@ impl StoreWriter<MemBackground> for MemWriter {
                 }
             }
             let live_counts_key: LiveCountsKey = (latest, &nsid).into();
-            let counts_value = CountsValue::new(commits.total_seen as u64, commits.dids_estimate);
+            let counts_value = CountsValue::new(
+                CommitCounts {
+                    creates: commits.creates as u64,
+                    updates: commits.updates as u64,
+                    deletes: commits.deletes as u64,
+                },
+                commits.dids_estimate,
+            );
             batch.insert(
                 &self.rollups,
                 &live_counts_key.to_db_bytes()?,

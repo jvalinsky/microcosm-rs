@@ -109,6 +109,8 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
         consumer,
     })
 }
+
+// TODO: replace with normal (🙃) multi-qs value somehow
 fn to_multiple_nsids(s: &str) -> Result<HashSet<Nsid>, String> {
     let mut out = HashSet::new();
     for collection in s.split(',') {
@@ -197,7 +199,7 @@ struct TotalSeenCollectionsQuery {
 }
 #[derive(Debug, Serialize, JsonSchema)]
 struct TotalCounts {
-    total_records: u64,
+    total_creates: u64,
     dids_estimate: u64,
 }
 /// Get total records seen by collection
@@ -218,7 +220,7 @@ async fn get_records_total_seen(
     let mut seen_by_collection = HashMap::with_capacity(collections.len());
 
     for collection in &collections {
-        let (total_records, dids_estimate) = storage
+        let (total_creates, dids_estimate) = storage
             .get_counts_by_collection(collection)
             .await
             .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
@@ -226,7 +228,7 @@ async fn get_records_total_seen(
         seen_by_collection.insert(
             collection.to_string(),
             TotalCounts {
-                total_records,
+                total_creates,
                 dids_estimate,
             },
         );

@@ -104,6 +104,15 @@ impl<P: DbBytes + PartialEq + std::fmt::Debug, S: DbBytes + PartialEq + std::fmt
     }
 }
 
+impl<P: DbBytes + Default, S: DbBytes + Default> Default for DbConcat<P, S> {
+    fn default() -> Self {
+        Self {
+            prefix: Default::default(),
+            suffix: Default::default(),
+        }
+    }
+}
+
 impl<P: DbBytes + std::fmt::Debug, S: DbBytes + std::fmt::Debug> fmt::Debug for DbConcat<P, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "DbConcat<{:?} || {:?}>", self.prefix, self.suffix)
