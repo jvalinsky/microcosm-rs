@@ -79,7 +79,7 @@ impl Batcher {
         batch_sender: Sender<LimitedBatch>,
         sketch_secret: SketchSecretPrefix,
     ) -> Self {
-        let mut rate_limit = tokio::time::interval(std::time::Duration::from_millis(5));
+        let mut rate_limit = tokio::time::interval(std::time::Duration::from_millis(3));
         rate_limit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         Self {
             jetstream_receiver,
@@ -93,7 +93,12 @@ impl Batcher {
     pub async fn run(&mut self) -> anyhow::Result<()> {
         // TODO: report errors *from here* probably, since this gets shipped off into a spawned task that might just vanish
         loop {
-            match timeout(Duration::from_millis(9_000), self.jetstream_receiver.recv()).await {
+            match timeout(
+                Duration::from_millis(30_000),
+                self.jetstream_receiver.recv(),
+            )
+            .await
+            {
                 Err(_elapsed) => self.no_events_step().await?,
                 Ok(Some(event)) => self.handle_event(event).await?,
                 Ok(None) => anyhow::bail!("channel closed"),

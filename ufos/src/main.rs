@@ -130,7 +130,7 @@ async fn go<B: StoreBackground>(
 
     let batches = if jetstream_fixture {
         log::info!("starting with jestream file fixture: {jetstream:?}");
-        file_consumer::consume(jetstream.into(), sketch_secret).await?
+        file_consumer::consume(jetstream.into(), sketch_secret, cursor).await?
     } else {
         log::info!(
             "starting consumer with cursor: {cursor:?} from {:?} ago",
@@ -163,8 +163,10 @@ async fn do_update_stuff(read_store: impl StoreReader) {
     let mut last_at = std::time::SystemTime::now();
     let mut last_cursor = None;
     let mut last_rollup = None;
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(4));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs_f64(4.)).await;
+        interval.tick().await;
         match read_store.get_consumer_info().await {
             Err(e) => log::warn!("failed to get jetstream consumer info: {e:?}"),
             Ok(ConsumerInfo::Jetstream {

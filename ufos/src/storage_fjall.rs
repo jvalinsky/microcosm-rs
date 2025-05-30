@@ -1241,8 +1241,8 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         let mut ended_early = false;
         let mut batch = self.keyspace.batch();
         for (i, kv) in self.feeds.range(live_range).rev().enumerate() {
-            if !full_scan && i > 1_000_000 {
-                log::info!("stopping collection trim early: already scanned 1M elements");
+            if !full_scan && i > 10_000_000 {
+                log::info!("stopping collection trim early: already scanned 10M elements");
                 ended_early = true;
                 break;
             }
@@ -1336,11 +1336,11 @@ impl StoreBackground for FjallBackground {
         let mut dirty_nsids = HashSet::new();
 
         let mut rollup =
-            tokio::time::interval(Duration::from_millis(if backfill { 1 } else { 81 }));
-        rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tokio::time::interval(Duration::from_micros(if backfill { 100 } else { 81_000 }));
+        rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         let mut trim =
-            tokio::time::interval(Duration::from_millis(if backfill { 3_000 } else { 6_000 }));
+            tokio::time::interval(Duration::from_millis(if backfill { 500 } else { 6_000 }));
         trim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -1362,8 +1362,8 @@ impl StoreBackground for FjallBackground {
                         let (danglers, deleted) = self.0.trim_collection(collection, 512, false).inspect_err(|e| log::error!("trim error: {e:?}"))?;
                         total_danglers += danglers;
                         total_deleted += deleted;
-                        if total_deleted > 1_000_000 {
-                            log::info!("trim stopped early, more than 1M records already deleted.");
+                        if total_deleted > 100_000_000 {
+                            log::info!("trim stopped early, more than 100M records already deleted.");
                             break;
                         }
                     }
