@@ -309,7 +309,7 @@ impl DbBytes for Nsid {
         Ok((me, n))
     }
     fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
-        Ok(String::to_db_bytes(&self.to_string())?) // null-terminated DbBytes impl!!!!
+        String::to_db_bytes(&self.to_string()) // null-terminated DbBytes impl!!!!
     }
 }
 impl SubPrefixBytes<&str> for Nsid {
