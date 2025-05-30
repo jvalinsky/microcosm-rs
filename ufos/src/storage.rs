@@ -58,7 +58,7 @@ where
         collection: &Nsid,
         limit: usize,
         full_scan: bool,
-    ) -> StorageResult<(usize, usize)>;
+    ) -> StorageResult<(usize, usize, bool)>;
 
     fn delete_account(&mut self, did: &Did) -> StorageResult<usize>;
 }

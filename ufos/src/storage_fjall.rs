@@ -30,7 +30,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime};
 
-const MAX_BATCHED_CLEANUP_SIZE: usize = 1024; // try to commit progress for longer feeds
 const MAX_BATCHED_ACCOUNT_DELETE_RECORDS: usize = 1024;
 const MAX_BATCHED_ROLLUP_COUNTS: usize = 256;
 
@@ -1220,7 +1219,7 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         collection: &Nsid,
         limit: usize,
         full_scan: bool,
-    ) -> StorageResult<(usize, usize)> {
+    ) -> StorageResult<(usize, usize, bool)> {
         let mut dangling_feed_keys_cleaned = 0;
         let mut records_deleted = 0;
 
@@ -1243,10 +1242,15 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         let mut live_records_found = 0;
         let mut candidate_new_feed_lower_cursor = None;
         let mut ended_early = false;
-        let mut batch = self.keyspace.batch();
         for (i, kv) in self.feeds.range(live_range).rev().enumerate() {
+            if i > 0 && i % 500_000 == 0 {
+                log::info!("trim: at {i} for {:?}", collection.to_string());
+            }
             if !full_scan && i > 10_000_000 {
-                log::info!("stopping collection trim early: already scanned 10M elements");
+                log::info!(
+                    "stopping trim early for {:?}: already scanned 10M elements",
+                    collection.to_string()
+                );
                 ended_early = true;
                 break;
             }
@@ -1258,7 +1262,7 @@ impl StoreWriter<FjallBackground> for FjallWriter {
 
             let Some(location_val_bytes) = self.records.get(&location_key_bytes)? else {
                 // record was deleted (hopefully)
-                batch.remove(&self.feeds, &*key_bytes);
+                self.feeds.remove(&*key_bytes)?;
                 dangling_feed_keys_cleaned += 1;
                 continue;
             };
@@ -1267,22 +1271,17 @@ impl StoreWriter<FjallBackground> for FjallWriter {
 
             if meta.cursor() != feed_key.cursor() {
                 // older/different version
-                batch.remove(&self.feeds, &*key_bytes);
+                self.feeds.remove(&*key_bytes)?;
                 dangling_feed_keys_cleaned += 1;
                 continue;
             }
             if meta.rev != feed_val.rev() {
                 // weird...
                 log::warn!("record lookup: cursor match but rev did not...? removing.");
-                batch.remove(&self.feeds, &*key_bytes);
-                batch.remove(&self.records, &location_key_bytes);
+                self.records.remove(&location_key_bytes)?;
+                self.feeds.remove(&*key_bytes)?;
                 dangling_feed_keys_cleaned += 1;
                 continue;
-            }
-
-            if batch.len() >= MAX_BATCHED_CLEANUP_SIZE {
-                batch.commit()?;
-                batch = self.keyspace.batch();
             }
 
             live_records_found += 1;
@@ -1293,25 +1292,22 @@ impl StoreWriter<FjallBackground> for FjallWriter {
                 candidate_new_feed_lower_cursor = Some(feed_key.cursor());
             }
 
-            batch.remove(&self.feeds, key_bytes);
-            batch.remove(&self.records, &location_key_bytes);
+            self.feeds.remove(&location_key_bytes)?;
+            self.feeds.remove(key_bytes)?;
             records_deleted += 1;
         }
 
         if !ended_early {
             if let Some(new_cursor) = candidate_new_feed_lower_cursor {
-                batch.insert(
-                    &self.global,
+                self.global.insert(
                     &TrimCollectionCursorKey::new(collection.clone()).to_db_bytes()?,
                     &new_cursor.to_db_bytes()?,
-                );
+                )?;
             }
         }
 
-        batch.commit()?;
-
         log::trace!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records (ended early? {ended_early})");
-        Ok((dangling_feed_keys_cleaned, records_deleted))
+        Ok((dangling_feed_keys_cleaned, records_deleted, ended_early))
     }
 
     fn delete_account(&mut self, did: &Did) -> Result<usize, StorageError> {
@@ -1340,7 +1336,7 @@ impl StoreBackground for FjallBackground {
         let mut dirty_nsids = HashSet::new();
 
         let mut rollup =
-            tokio::time::interval(Duration::from_micros(if backfill { 100 } else { 81_000 }));
+            tokio::time::interval(Duration::from_micros(if backfill { 1_000 } else { 81_000 }));
         rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         let mut trim =
@@ -1350,7 +1346,8 @@ impl StoreBackground for FjallBackground {
         loop {
             tokio::select! {
                 _ = rollup.tick() => {
-                    let (n, dirty) = tokio::task::block_in_place(|| self.0.step_rollup())?;
+                    let mut db = self.0.clone();
+                    let (n, dirty) = tokio::task::spawn_blocking(move || db.step_rollup()).await??;
                     if n == 0 {
                         rollup.reset_after(Duration::from_millis(1_200)); // we're caught up, take a break
                     }
@@ -1362,17 +1359,25 @@ impl StoreBackground for FjallBackground {
                     log::trace!("trimming {n} nsids: {dirty_nsids:?}");
                     let t0 = Instant::now();
                     let (mut total_danglers, mut total_deleted) = (0, 0);
+                    let mut completed = HashSet::new();
                     for collection in &dirty_nsids {
-                        let (danglers, deleted) = tokio::task::block_in_place(|| self.0.trim_collection(collection, 512, false))?;
+                        let mut db = self.0.clone();
+                        let c = collection.clone();
+                        let (danglers, deleted, ended_early) = tokio::task::spawn_blocking(move || db.trim_collection(&c, 512, false)).await??;
                         total_danglers += danglers;
                         total_deleted += deleted;
-                        if total_deleted > 100_000_000 {
+                        if !ended_early {
+                            completed.insert(collection.clone());
+                        }
+                        if total_deleted > 10_000_000 {
                             log::info!("trim stopped early, more than 100M records already deleted.");
                             break;
                         }
                     }
+                    for c in completed {
+                        dirty_nsids.remove(&c);
+                    }
                     log::info!("finished trimming {n} nsids in {:?}: {total_danglers} dangling and {total_deleted} total removed.", t0.elapsed());
-                    dirty_nsids.clear();
                 },
             };
         }

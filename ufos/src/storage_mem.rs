@@ -928,7 +928,7 @@ impl StoreWriter<MemBackground> for MemWriter {
         limit: usize,
         _full_scan: bool,
         // TODO: could add a start cursor limit to avoid iterating deleted stuff at the start (/end)
-    ) -> StorageResult<(usize, usize)> {
+    ) -> StorageResult<(usize, usize, bool)> {
         let mut dangling_feed_keys_cleaned = 0;
         let mut records_deleted = 0;
 
@@ -984,7 +984,7 @@ impl StoreWriter<MemBackground> for MemWriter {
         batch.commit()?;
 
         log::info!("trim_collection ({collection:?}) removed {dangling_feed_keys_cleaned} dangling feed entries and {records_deleted} records");
-        Ok((dangling_feed_keys_cleaned, records_deleted))
+        Ok((dangling_feed_keys_cleaned, records_deleted, false))
     }
 
     fn delete_account(&mut self, did: &Did) -> Result<usize, StorageError> {
