@@ -2,7 +2,7 @@ use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingResult, StaticS
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use crate::store_types::{
-    AllTimeDidsKey, AllTimeRecordsKey, AllTimeRollupKey, CountsValue, CursorBucket,
+    AllTimeDidsKey, AllTimeRecordsKey, AllTimeRollupKey, CommitCounts, CountsValue, CursorBucket,
     DeleteAccountQueueKey, DeleteAccountQueueVal, HourTruncatedCursor, HourlyDidsKey,
     HourlyRecordsKey, HourlyRollupKey, HourlyRollupStaticPrefix, JetstreamCursorKey,
     JetstreamCursorValue, JetstreamEndpointKey, JetstreamEndpointValue, LiveCountsKey,
@@ -507,7 +507,7 @@ impl FjallReader {
             }
             out.push(NsidCount {
                 nsid: nsid.to_string(),
-                records: merged.records(),
+                creates: merged.counts().creates,
                 dids_estimate: merged.dids().estimate() as u64,
             });
         }
@@ -607,7 +607,7 @@ impl FjallReader {
         }
         let mut ranked: Vec<(Nsid, CountsValue)> = ranked.into_iter().collect();
         match order {
-            OrderCollectionsBy::RecordsCreated => ranked.sort_by_key(|(_, c)| c.records()),
+            OrderCollectionsBy::RecordsCreated => ranked.sort_by_key(|(_, c)| c.counts().creates),
             OrderCollectionsBy::DidsEstimate => ranked.sort_by_key(|(_, c)| c.dids().estimate()),
             OrderCollectionsBy::Lexi { .. } => unreachable!(),
         }
@@ -617,7 +617,7 @@ impl FjallReader {
             .take(limit)
             .map(|(nsid, cv)| NsidCount {
                 nsid: nsid.to_string(),
-                records: cv.records(),
+                creates: cv.counts().creates,
                 dids_estimate: cv.dids().estimate() as u64,
             })
             .collect();
@@ -746,7 +746,7 @@ impl FjallReader {
             }
         }
         Ok((
-            total_counts.records(),
+            total_counts.counts().creates,
             total_counts.dids().estimate() as u64,
         ))
     }
@@ -973,68 +973,65 @@ impl FjallWriter {
                 .unwrap_or_default();
 
             // now that we have values, we can know the exising ranks
-            let before_records_count = rolled.records();
+            let before_creates_count = rolled.counts().creates;
             let before_dids_estimate = rolled.dids().estimate() as u64;
 
             // update the rollup
             rolled.merge(&counts);
 
-            // replace rank entries
-            let (old_records, new_records, dids) = match rollup {
-                Rollup::Hourly(hourly_cursor) => {
-                    let old_records =
-                        HourlyRecordsKey::new(hourly_cursor, before_records_count.into(), &nsid);
-                    let new_records = old_records.with_rank(rolled.records().into());
-                    let new_estimate = rolled.dids().estimate() as u64;
-                    let dids = if new_estimate == before_dids_estimate {
-                        None
-                    } else {
-                        let old_dids =
-                            HourlyDidsKey::new(hourly_cursor, before_dids_estimate.into(), &nsid);
-                        let new_dids = old_dids.with_rank(new_estimate.into());
-                        Some((old_dids.to_db_bytes()?, new_dids.to_db_bytes()?))
-                    };
-                    (old_records.to_db_bytes()?, new_records.to_db_bytes()?, dids)
-                }
-                Rollup::Weekly(weekly_cursor) => {
-                    let old_records =
-                        WeeklyRecordsKey::new(weekly_cursor, before_records_count.into(), &nsid);
-                    let new_records = old_records.with_rank(rolled.records().into());
-                    let new_estimate = rolled.dids().estimate() as u64;
-                    let dids = if new_estimate == before_dids_estimate {
-                        None
-                    } else {
-                        let old_dids =
-                            WeeklyDidsKey::new(weekly_cursor, before_dids_estimate.into(), &nsid);
-                        let new_dids = old_dids.with_rank(new_estimate.into());
-                        Some((old_dids.to_db_bytes()?, new_dids.to_db_bytes()?))
-                    };
-                    (old_records.to_db_bytes()?, new_records.to_db_bytes()?, dids)
-                }
-                Rollup::AllTime => {
-                    let old_records = AllTimeRecordsKey::new(before_records_count.into(), &nsid);
-                    let new_records = old_records.with_rank(rolled.records().into());
-                    let new_estimate = rolled.dids().estimate() as u64;
-                    let dids = if new_estimate == before_dids_estimate {
-                        None
-                    } else {
-                        let old_dids = AllTimeDidsKey::new(before_dids_estimate.into(), &nsid);
-                        let new_dids = old_dids.with_rank(new_estimate.into());
-                        Some((old_dids.to_db_bytes()?, new_dids.to_db_bytes()?))
-                    };
-                    (old_records.to_db_bytes()?, new_records.to_db_bytes()?, dids)
-                }
-            };
+            // new ranks
+            let new_creates_count = rolled.counts().creates;
+            let new_dids_estimate = rolled.dids().estimate() as u64;
 
-            // replace the ranks
-            batch.remove(&self.rollups, &old_records);
-            batch.insert(&self.rollups, &new_records, "");
-            if let Some((old_dids, new_dids)) = dids {
-                batch.remove(&self.rollups, &old_dids);
-                batch.insert(&self.rollups, &new_dids, "");
+            // update create-ranked secondary index if rank changed
+            if new_creates_count != before_creates_count {
+                let (old_k, new_k) = match rollup {
+                    Rollup::Hourly(cursor) => (
+                        HourlyRecordsKey::new(cursor, before_creates_count.into(), &nsid)
+                            .to_db_bytes()?,
+                        HourlyRecordsKey::new(cursor, new_creates_count.into(), &nsid)
+                            .to_db_bytes()?,
+                    ),
+                    Rollup::Weekly(cursor) => (
+                        WeeklyRecordsKey::new(cursor, before_creates_count.into(), &nsid)
+                            .to_db_bytes()?,
+                        WeeklyRecordsKey::new(cursor, new_creates_count.into(), &nsid)
+                            .to_db_bytes()?,
+                    ),
+                    Rollup::AllTime => (
+                        AllTimeRecordsKey::new(before_creates_count.into(), &nsid).to_db_bytes()?,
+                        AllTimeRecordsKey::new(new_creates_count.into(), &nsid).to_db_bytes()?,
+                    ),
+                };
+                batch.remove(&self.rollups, &old_k); // TODO: when fjall gets weak delete, this will hopefully work way better
+                batch.insert(&self.rollups, &new_k, "");
             }
 
-            // replace the rollup
+            // update dids-ranked secondary index if rank changed
+            if new_dids_estimate != before_dids_estimate {
+                let (old_k, new_k) = match rollup {
+                    Rollup::Hourly(cursor) => (
+                        HourlyDidsKey::new(cursor, before_dids_estimate.into(), &nsid)
+                            .to_db_bytes()?,
+                        HourlyDidsKey::new(cursor, new_dids_estimate.into(), &nsid)
+                            .to_db_bytes()?,
+                    ),
+                    Rollup::Weekly(cursor) => (
+                        WeeklyDidsKey::new(cursor, before_dids_estimate.into(), &nsid)
+                            .to_db_bytes()?,
+                        WeeklyDidsKey::new(cursor, new_dids_estimate.into(), &nsid)
+                            .to_db_bytes()?,
+                    ),
+                    Rollup::AllTime => (
+                        AllTimeDidsKey::new(before_dids_estimate.into(), &nsid).to_db_bytes()?,
+                        AllTimeDidsKey::new(new_dids_estimate.into(), &nsid).to_db_bytes()?,
+                    ),
+                };
+                batch.remove(&self.rollups, &old_k); // TODO: when fjall gets weak delete, this will hopefully work way better
+                batch.insert(&self.rollups, &new_k, "");
+            }
+
+            // replace the main counts rollup
             batch.insert(&self.rollups, &rollup_key_bytes, &rolled.to_db_bytes()?);
         }
 
@@ -1114,7 +1111,14 @@ impl StoreWriter<FjallBackground> for FjallWriter {
                 }
             }
             let live_counts_key: LiveCountsKey = (latest, &nsid).into();
-            let counts_value = CountsValue::new(commits.total_seen as u64, commits.dids_estimate);
+            let counts_value = CountsValue::new(
+                CommitCounts {
+                    creates: commits.creates as u64,
+                    updates: commits.updates as u64,
+                    deletes: commits.deletes as u64,
+                },
+                commits.dids_estimate,
+            );
             batch.insert(
                 &self.rollups,
                 &live_counts_key.to_db_bytes()?,
@@ -1838,8 +1842,8 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let (records, dids) = read.get_counts_by_collection(&collection)?;
-        assert_eq!(records, 1);
+        let (creates, dids) = read.get_counts_by_collection(&collection)?;
+        assert_eq!(creates, 1);
         assert_eq!(dids, 1);
 
         let records = read.get_records_by_collections([collection].into(), 2, false)?;

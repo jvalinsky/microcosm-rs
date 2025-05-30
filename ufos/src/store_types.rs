@@ -209,11 +209,23 @@ impl From<(Cursor, &Nsid)> for LiveCountsKey {
         )
     }
 }
-#[derive(Debug, PartialEq, Decode, Encode)]
-pub struct TotalRecordsValue(pub u64);
-impl UseBincodePlz for TotalRecordsValue {}
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Decode, Encode)]
+pub struct CommitCounts {
+    pub creates: u64,
+    pub updates: u64,
+    pub deletes: u64,
+}
+impl CommitCounts {
+    pub fn merge(&mut self, other: &Self) {
+        self.creates += other.creates;
+        self.updates += other.updates;
+        self.deletes += other.deletes;
+    }
+}
+impl UseBincodePlz for CommitCounts {}
+
+#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EstimatedDidsValue(pub Sketch<14>);
 impl SerdeBytes for EstimatedDidsValue {}
 impl DbBytes for EstimatedDidsValue {
@@ -236,37 +248,29 @@ impl DbBytes for EstimatedDidsValue {
     }
 }
 
-pub type CountsValue = DbConcat<TotalRecordsValue, EstimatedDidsValue>;
+pub type CountsValue = DbConcat<CommitCounts, EstimatedDidsValue>;
 impl CountsValue {
-    pub fn new(total: u64, dids: Sketch<14>) -> Self {
+    pub fn new(counts: CommitCounts, dids: Sketch<14>) -> Self {
         Self {
-            prefix: TotalRecordsValue(total),
+            prefix: counts,
             suffix: EstimatedDidsValue(dids),
         }
     }
-    pub fn records(&self) -> u64 {
-        self.prefix.0
+    pub fn counts(&self) -> CommitCounts {
+        self.prefix
     }
     pub fn dids(&self) -> &Sketch<14> {
         &self.suffix.0
     }
     pub fn merge(&mut self, other: &Self) {
-        self.prefix.0 += other.records();
-        self.suffix.0.merge(other.dids());
-    }
-}
-impl Default for CountsValue {
-    fn default() -> Self {
-        Self {
-            prefix: TotalRecordsValue(0),
-            suffix: EstimatedDidsValue(Sketch::<14>::default()),
-        }
+        self.prefix.merge(&other.prefix);
+        self.suffix.0.merge(&other.suffix.0);
     }
 }
 impl From<&CountsValue> for JustCount {
     fn from(cv: &CountsValue) -> Self {
         Self {
-            records: cv.records(),
+            creates: cv.counts().creates,
             dids_estimate: cv.dids().estimate() as u64,
         }
     }
@@ -608,7 +612,7 @@ impl CursorBucket {
 #[cfg(test)]
 mod test {
     use super::{
-        CountsValue, Cursor, CursorBucket, Did, EncodingError, HourTruncatedCursor,
+        CommitCounts, CountsValue, Cursor, CursorBucket, Did, EncodingError, HourTruncatedCursor,
         HourlyRollupKey, Nsid, Sketch, HOUR_IN_MICROS, WEEK_IN_MICROS,
     };
     use crate::db_types::DbBytes;
@@ -642,7 +646,13 @@ mod test {
                 Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig7{i}")).unwrap(),
             ));
         }
-        let original = CountsValue::new(123, estimator.clone());
+        let original = CountsValue::new(
+            CommitCounts {
+                creates: 123,
+                ..Default::default()
+            },
+            estimator.clone(),
+        );
         let serialized = original.to_db_bytes()?;
         let (restored, bytes_consumed) = CountsValue::from_db_bytes(&serialized)?;
         assert_eq!(restored, original);
@@ -653,7 +663,13 @@ mod test {
                 Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig{i}")).unwrap(),
             ));
         }
-        let original = CountsValue::new(123, estimator);
+        let original = CountsValue::new(
+            CommitCounts {
+                creates: 123,
+                ..Default::default()
+            },
+            estimator,
+        );
         let serialized = original.to_db_bytes()?;
         let (restored, bytes_consumed) = CountsValue::from_db_bytes(&serialized)?;
         assert_eq!(restored, original);
