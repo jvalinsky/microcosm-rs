@@ -9,7 +9,7 @@ use ufos::storage::{StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use ufos::storage_fjall::FjallStorage;
 use ufos::storage_mem::MemStorage;
 use ufos::store_types::SketchSecretPrefix;
-use ufos::ConsumerInfo;
+use ufos::{nice_duration, ConsumerInfo};
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -210,29 +210,6 @@ fn backfill_info(
     started_at: SystemTime,
     now: SystemTime,
 ) {
-    let nice_duration = |dt: Duration| {
-        let secs = dt.as_secs_f64();
-        if secs < 1. {
-            return format!("{:.0}ms", secs * 1000.);
-        }
-        if secs < 60. {
-            return format!("{secs:.02}s");
-        }
-        let mins = (secs / 60.).floor();
-        let rsecs = secs - (mins * 60.);
-        if mins < 60. {
-            return format!("{mins:.0}m{rsecs:.0}s");
-        }
-        let hrs = (mins / 60.).floor();
-        let rmins = mins - (hrs * 60.);
-        if hrs < 24. {
-            return format!("{hrs:.0}h{rmins:.0}m{rsecs:.0}s");
-        }
-        let days = (hrs / 24.).floor();
-        let rhrs = hrs - (days * 24.);
-        format!("{days:.0}d{rhrs:.0}h{rmins:.0}m{rsecs:.0}s")
-    };
-
     let nice_dt_two_maybes = |earlier: Option<Cursor>, later: Option<Cursor>| match (earlier, later)
     {
         (Some(earlier), Some(later)) => match later.duration_since(&earlier) {

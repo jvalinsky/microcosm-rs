@@ -13,7 +13,8 @@ use crate::store_types::{
     WEEK_IN_MICROS,
 };
 use crate::{
-    CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord,
+    nice_duration, CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount,
+    OrderCollectionsBy, UFOsRecord,
 };
 use async_trait::async_trait;
 use fjall::{
@@ -1241,18 +1242,20 @@ impl StoreWriter<FjallBackground> for FjallWriter {
 
         let mut live_records_found = 0;
         let mut candidate_new_feed_lower_cursor = None;
-        let mut ended_early = false;
+        let ended_early = false;
+        let mut current_cursor: Option<Cursor> = None;
         for (i, kv) in self.feeds.range(live_range).rev().enumerate() {
             if i > 0 && i % 500_000 == 0 {
-                log::info!("trim: at {i} for {:?}", collection.to_string());
-            }
-            if !full_scan && i > 10_000_000 {
                 log::info!(
-                    "stopping trim early for {:?}: already scanned 10M elements",
-                    collection.to_string()
+                    "trim: at {i} for {:?} (now at {})",
+                    collection.to_string(),
+                    current_cursor
+                        .map(|c| c
+                            .elapsed()
+                            .map(nice_duration)
+                            .unwrap_or("[not past]".into()))
+                        .unwrap_or("??".into()),
                 );
-                ended_early = true;
-                break;
             }
             let (key_bytes, val_bytes) = kv?;
             let feed_key = db_complete::<NsidRecordFeedKey>(&key_bytes)?;
@@ -1268,6 +1271,7 @@ impl StoreWriter<FjallBackground> for FjallWriter {
             };
 
             let (meta, _) = RecordLocationMeta::from_db_bytes(&location_val_bytes)?;
+            current_cursor = Some(meta.cursor());
 
             if meta.cursor() != feed_key.cursor() {
                 // older/different version
@@ -1335,12 +1339,15 @@ impl StoreBackground for FjallBackground {
     async fn run(mut self, backfill: bool) -> StorageResult<()> {
         let mut dirty_nsids = HashSet::new();
 
+        // backfill condition here is iffy -- longer is good when doing the main ingest and then collection trims
+        // shorter once those are done helps things catch up
+        // the best setting for non-backfill is non-obvious.. it can be pretty slow and still be fine
         let mut rollup =
-            tokio::time::interval(Duration::from_micros(if backfill { 1_000 } else { 81_000 }));
-        rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tokio::time::interval(Duration::from_micros(if backfill { 100 } else { 32_000 }));
+        rollup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        let mut trim =
-            tokio::time::interval(Duration::from_millis(if backfill { 500 } else { 6_000 }));
+        // backfill condition again iffy. collection trims should probably happen in their own phase.
+        let mut trim = tokio::time::interval(Duration::from_secs(if backfill { 18 } else { 9 }));
         trim.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -1370,7 +1377,7 @@ impl StoreBackground for FjallBackground {
                             completed.insert(collection.clone());
                         }
                         if total_deleted > 10_000_000 {
-                            log::info!("trim stopped early, more than 100M records already deleted.");
+                            log::info!("trim stopped early, more than 10M records already deleted.");
                             break;
                         }
                     }

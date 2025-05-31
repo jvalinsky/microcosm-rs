@@ -20,9 +20,33 @@ use serde::Serialize;
 use serde_json::value::RawValue;
 use sha2::Sha256;
 use std::collections::HashMap;
+use std::time::Duration;
 
 fn did_element(sketch_secret: &SketchSecretPrefix, did: &Did) -> Element<14> {
     Element::from_digest_with_prefix::<Sha256>(sketch_secret, did.as_bytes())
+}
+
+pub fn nice_duration(dt: Duration) -> String {
+    let secs = dt.as_secs_f64();
+    if secs < 1. {
+        return format!("{:.0}ms", secs * 1000.);
+    }
+    if secs < 60. {
+        return format!("{secs:.02}s");
+    }
+    let mins = (secs / 60.).floor();
+    let rsecs = secs - (mins * 60.);
+    if mins < 60. {
+        return format!("{mins:.0}m{rsecs:.0}s");
+    }
+    let hrs = (mins / 60.).floor();
+    let rmins = mins - (hrs * 60.);
+    if hrs < 24. {
+        return format!("{hrs:.0}h{rmins:.0}m{rsecs:.0}s");
+    }
+    let days = (hrs / 24.).floor();
+    let rhrs = hrs - (days * 24.);
+    format!("{days:.0}d{rhrs:.0}h{rmins:.0}m{rsecs:.0}s")
 }
 
 #[derive(Debug, Default, Clone)]
