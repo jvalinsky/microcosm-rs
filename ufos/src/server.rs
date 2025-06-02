@@ -1,4 +1,5 @@
 use crate::index_html::INDEX_HTML;
+use crate::qs_query::VecsAllowedQuery;
 use crate::storage::StoreReader;
 use crate::store_types::{HourTruncatedCursor, WeekTruncatedCursor};
 use crate::{ConsumerInfo, Cursor, JustCount, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord};
@@ -16,6 +17,7 @@ use dropshot::HttpResponseOk;
 use dropshot::Query;
 use dropshot::RequestContext;
 use dropshot::ServerBuilder;
+
 use http::{Response, StatusCode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -83,7 +85,7 @@ struct MetaInfo {
     storage: serde_json::Value,
     consumer: ConsumerInfo,
 }
-/// Get meta information about UFOs itself
+/// UFOs meta-info
 #[endpoint {
     method = GET,
     path = "/meta"
@@ -145,7 +147,9 @@ impl From<UFOsRecord> for ApiRecord {
         }
     }
 }
-/// Get recent records by collection
+/// Record samples
+///
+/// Get most recent records seen in the firehose, by collection NSID
 ///
 /// Multiple collections are supported. They will be delivered in one big array with no
 /// specified order.
@@ -195,27 +199,55 @@ async fn get_records_by_collections(
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct TotalSeenCollectionsQuery {
-    collection: String, // JsonSchema not implemented for Nsid :(
+    collection: Vec<String>, // JsonSchema not implemented for Nsid :(
+    /// Limit stats to those seen after this UTC datetime
+    ///
+    /// default: 1 week ago
+    since: Option<DateTime<Utc>>,
+    /// Limit stats to those seen before this UTC datetime
+    ///
+    /// default: now
+    until: Option<DateTime<Utc>>,
 }
 #[derive(Debug, Serialize, JsonSchema)]
 struct TotalCounts {
     total_creates: u64,
     dids_estimate: u64,
 }
-/// Get total records seen by collection
+/// Collection stats
+///
+/// Get stats for a collection over a specific time period
+///
+/// API docs note: the **Body** fields here are actually query parameters!!
+///
+/// Due to limitations with dropshot's query parsing (no support for sequences),
+/// this is kind of the best i could do for now. sadly.
 #[endpoint {
     method = GET,
-    path = "/records/total-seen"
+    path = "/collections/stats"
 }]
 async fn get_records_total_seen(
     ctx: RequestContext<Context>,
-    collection_query: Query<TotalSeenCollectionsQuery>,
+    query: VecsAllowedQuery<TotalSeenCollectionsQuery>,
 ) -> OkCorsResponse<HashMap<String, TotalCounts>> {
     let Context { storage, .. } = ctx.context();
+    let q = query.into_inner();
 
-    let query = collection_query.into_inner();
-    let collections = to_multiple_nsids(&query.collection)
-        .map_err(|reason| HttpError::for_bad_request(None, reason))?;
+    log::warn!("collection: {:?}", q.collection);
+
+    let mut collections = Vec::with_capacity(q.collection.len());
+    for c in q.collection {
+        let Ok(nsid) = Nsid::new(c.clone()) else {
+            return Err(HttpError::for_bad_request(
+                None,
+                format!("could not parse collection to nsid: {c}"),
+            ));
+        };
+        collections.push(nsid);
+    }
+
+    let since = q.since.map(dt_to_cursor).transpose()?;
+    let until = q.until.map(dt_to_cursor).transpose()?;
 
     let mut seen_by_collection = HashMap::with_capacity(collections.len());
 
@@ -283,7 +315,7 @@ struct CollectionsQuery {
     order: Option<CollectionsQueryOrder>,
 }
 
-/// Get collection with statistics
+/// List collections (with stats)
 ///
 /// ## To fetch a full list:
 ///
@@ -384,7 +416,7 @@ struct CollectionTimeseriesResponse {
     range: Vec<DateTime<Utc>>,
     series: HashMap<String, Vec<JustCount>>,
 }
-/// Get timeseries data
+/// Collection timeseries stats
 #[endpoint {
     method = GET,
     path = "/timeseries"
