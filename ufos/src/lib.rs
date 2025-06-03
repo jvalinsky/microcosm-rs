@@ -3,7 +3,6 @@ pub mod db_types;
 pub mod error;
 pub mod file_consumer;
 pub mod index_html;
-pub mod qs_query;
 pub mod server;
 pub mod storage;
 pub mod storage_fjall;

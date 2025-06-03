@@ -1,10 +1,14 @@
+mod collections_query;
+mod cors;
+
 use crate::index_html::INDEX_HTML;
-use crate::qs_query::VecsAllowedQuery;
 use crate::storage::StoreReader;
 use crate::store_types::{HourTruncatedCursor, WeekTruncatedCursor};
 use crate::{ConsumerInfo, Cursor, JustCount, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Utc};
+use collections_query::MultiCollectionQuery;
+use cors::{OkCors, OkCorsResponse};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
 use dropshot::Body;
@@ -12,8 +16,6 @@ use dropshot::ConfigDropshot;
 use dropshot::ConfigLogging;
 use dropshot::ConfigLoggingLevel;
 use dropshot::HttpError;
-use dropshot::HttpResponseHeaders;
-use dropshot::HttpResponseOk;
 use dropshot::Query;
 use dropshot::RequestContext;
 use dropshot::ServerBuilder;
@@ -76,7 +78,7 @@ async fn index(_ctx: RequestContext<Context>) -> Result<Response<Body>, HttpErro
 }]
 async fn get_openapi(ctx: RequestContext<Context>) -> OkCorsResponse<serde_json::Value> {
     let spec = (*ctx.context().spec).clone();
-    ok_cors(spec)
+    OkCors(spec).into()
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -105,11 +107,12 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
         .await
         .map_err(failed_to_get("consumer info"))?;
 
-    ok_cors(MetaInfo {
+    OkCors(MetaInfo {
         storage_name: storage.name(),
         storage: storage_info,
         consumer,
     })
+    .into()
 }
 
 // TODO: replace with normal (🙃) multi-qs value somehow
@@ -194,12 +197,11 @@ async fn get_records_by_collections(
         .map(|r| r.into())
         .collect();
 
-    ok_cors(records)
+    OkCors(records).into()
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct TotalSeenCollectionsQuery {
-    collection: Vec<String>, // JsonSchema not implemented for Nsid :(
+struct CollectionsStatsQuery {
     /// Limit stats to those seen after this UTC datetime
     ///
     /// default: 1 week ago
@@ -216,38 +218,22 @@ struct TotalCounts {
 }
 /// Collection stats
 ///
-/// Get stats for a collection over a specific time period
-///
-/// API docs note: the **Body** fields here are actually query parameters!!
-///
-/// Due to limitations with dropshot's query parsing (no support for sequences),
-/// this is kind of the best i could do for now. sadly.
+/// Get record statistics for collections during a specific time period
 #[endpoint {
     method = GET,
     path = "/collections/stats"
 }]
-async fn get_records_total_seen(
+async fn get_collection_stats(
     ctx: RequestContext<Context>,
-    query: VecsAllowedQuery<TotalSeenCollectionsQuery>,
+    collections_query: MultiCollectionQuery,
+    query: Query<CollectionsStatsQuery>,
 ) -> OkCorsResponse<HashMap<String, TotalCounts>> {
     let Context { storage, .. } = ctx.context();
     let q = query.into_inner();
+    let collections: HashSet<Nsid> = collections_query.try_into()?;
 
-    log::warn!("collection: {:?}", q.collection);
-
-    let mut collections = Vec::with_capacity(q.collection.len());
-    for c in q.collection {
-        let Ok(nsid) = Nsid::new(c.clone()) else {
-            return Err(HttpError::for_bad_request(
-                None,
-                format!("could not parse collection to nsid: {c}"),
-            ));
-        };
-        collections.push(nsid);
-    }
-
-    let since = q.since.map(dt_to_cursor).transpose()?;
-    let until = q.until.map(dt_to_cursor).transpose()?;
+    let _since = q.since.map(dt_to_cursor).transpose()?;
+    let _until = q.until.map(dt_to_cursor).transpose()?;
 
     let mut seen_by_collection = HashMap::with_capacity(collections.len());
 
@@ -266,7 +252,7 @@ async fn get_records_total_seen(
         );
     }
 
-    ok_cors(seen_by_collection)
+    OkCors(seen_by_collection).into()
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -315,7 +301,9 @@ struct CollectionsQuery {
     order: Option<CollectionsQueryOrder>,
 }
 
-/// List collections (with stats)
+/// List collections
+///
+/// With statistics.
 ///
 /// ## To fetch a full list:
 ///
@@ -385,10 +373,11 @@ async fn get_collections(
 
     let next_cursor = next_cursor.map(|c| URL_SAFE_NO_PAD.encode(c));
 
-    ok_cors(CollectionsResponse {
+    OkCors(CollectionsResponse {
         collections,
         cursor: next_cursor,
     })
+    .into()
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -439,7 +428,7 @@ async fn get_timeseries(
     let step = if let Some(secs) = q.step {
         if secs < 3600 {
             let msg = format!("step is too small: {}", secs);
-            return Err(HttpError::for_bad_request(None, msg));
+            Err(HttpError::for_bad_request(None, msg))?;
         }
         (secs / 3600) * 3600 // trucate to hour
     } else {
@@ -465,7 +454,7 @@ async fn get_timeseries(
         .map(|(k, v)| (k.to_string(), v.iter().map(Into::into).collect()))
         .collect();
 
-    ok_cors(CollectionTimeseriesResponse { range, series })
+    OkCors(CollectionTimeseriesResponse { range, series }).into()
 }
 
 pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
@@ -481,7 +470,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_openapi).unwrap();
     api.register(get_meta_info).unwrap();
     api.register(get_records_by_collections).unwrap();
-    api.register(get_records_total_seen).unwrap();
+    api.register(get_collection_stats).unwrap();
     api.register(get_collections).unwrap();
     api.register(get_timeseries).unwrap();
 
@@ -513,13 +502,4 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
         .start()
         .map_err(|error| format!("failed to start server: {}", error))?
         .await
-}
-
-/// awkward helpers
-type OkCorsResponse<T> = Result<HttpResponseHeaders<HttpResponseOk<T>>, HttpError>;
-fn ok_cors<T: Send + Sync + Serialize + JsonSchema>(t: T) -> OkCorsResponse<T> {
-    let mut res = HttpResponseHeaders::new_unnamed(HttpResponseOk(t));
-    res.headers_mut()
-        .insert("access-control-allow-origin", "*".parse().unwrap());
-    Ok(res)
 }
