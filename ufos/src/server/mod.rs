@@ -232,14 +232,19 @@ async fn get_collection_stats(
     let q = query.into_inner();
     let collections: HashSet<Nsid> = collections_query.try_into()?;
 
-    let _since = q.since.map(dt_to_cursor).transpose()?;
-    let _until = q.until.map(dt_to_cursor).transpose()?;
+    let since = q.since.map(dt_to_cursor).transpose()?.unwrap_or_else(|| {
+        let week_ago_secs = 7 * 86_400;
+        let week_ago = SystemTime::now() - Duration::from_secs(week_ago_secs);
+        Cursor::at(week_ago).into()
+    });
+
+    let until = q.until.map(dt_to_cursor).transpose()?;
 
     let mut seen_by_collection = HashMap::with_capacity(collections.len());
 
     for collection in &collections {
         let (total_creates, dids_estimate) = storage
-            .get_counts_by_collection(collection)
+            .get_counts_by_collection(collection, since, until)
             .await
             .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 

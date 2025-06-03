@@ -715,7 +715,12 @@ impl FjallReader {
         Ok((output_hours, output_series))
     }
 
-    fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
+    fn get_counts_by_collection(
+        &self,
+        collection: &Nsid,
+        _since: HourTruncatedCursor,
+        _until: Option<HourTruncatedCursor>,
+    ) -> StorageResult<(u64, u64)> {
         // 0. grab a snapshot in case rollups happen while we're working
         let instant = self.keyspace.instant();
         let global = self.global.snapshot_at(instant);
@@ -840,11 +845,18 @@ impl StoreReader for FjallReader {
         })
         .await?
     }
-    async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)> {
+    async fn get_counts_by_collection(
+        &self,
+        collection: &Nsid,
+        since: HourTruncatedCursor,
+        until: Option<HourTruncatedCursor>,
+    ) -> StorageResult<(u64, u64)> {
         let s = self.clone();
         let collection = collection.clone();
-        tokio::task::spawn_blocking(move || FjallReader::get_counts_by_collection(&s, &collection))
-            .await?
+        tokio::task::spawn_blocking(move || {
+            FjallReader::get_counts_by_collection(&s, &collection, since, until)
+        })
+        .await?
     }
     async fn get_records_by_collections(
         &self,
@@ -1485,6 +1497,9 @@ mod tests {
     }
 
     const TEST_BATCH_LIMIT: usize = 16;
+    fn beginning() -> HourTruncatedCursor {
+        Cursor::from_start().into()
+    }
 
     #[derive(Debug, Default)]
     struct TestBatch {
@@ -1622,8 +1637,11 @@ mod tests {
     fn test_hello() -> anyhow::Result<()> {
         let (read, mut write) = fjall_db();
         write.insert_batch::<TEST_BATCH_LIMIT>(EventBatch::default())?;
-        let (records, dids) =
-            read.get_counts_by_collection(&Nsid::new("a.b.c".to_string()).unwrap())?;
+        let (records, dids) = read.get_counts_by_collection(
+            &Nsid::new("a.b.c".to_string()).unwrap(),
+            beginning(),
+            None,
+        )?;
         assert_eq!(records, 0);
         assert_eq!(dids, 0);
         Ok(())
@@ -1645,11 +1663,14 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let (records, dids) = read.get_counts_by_collection(&collection)?;
+        let (records, dids) = read.get_counts_by_collection(&collection, beginning(), None)?;
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
-        let (records, dids) =
-            read.get_counts_by_collection(&Nsid::new("d.e.f".to_string()).unwrap())?;
+        let (records, dids) = read.get_counts_by_collection(
+            &Nsid::new("d.e.f".to_string()).unwrap(),
+            beginning(),
+            None,
+        )?;
         assert_eq!(records, 0);
         assert_eq!(dids, 0);
 
@@ -1816,7 +1837,7 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let (records, dids) = read.get_counts_by_collection(&collection)?;
+        let (records, dids) = read.get_counts_by_collection(&collection, beginning(), None)?;
         assert_eq!(records, 1);
         assert_eq!(dids, 1);
 
@@ -1854,7 +1875,7 @@ mod tests {
         );
         write.insert_batch(batch.batch)?;
 
-        let (creates, dids) = read.get_counts_by_collection(&collection)?;
+        let (creates, dids) = read.get_counts_by_collection(&collection, beginning(), None)?;
         assert_eq!(creates, 1);
         assert_eq!(dids, 1);
 
@@ -2170,8 +2191,11 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         // before any rollup
-        let (records, dids) =
-            read.get_counts_by_collection(&Nsid::new("a.a.a".to_string()).unwrap())?;
+        let (records, dids) = read.get_counts_by_collection(
+            &Nsid::new("a.a.a".to_string()).unwrap(),
+            beginning(),
+            None,
+        )?;
         assert_eq!(records, 3);
         assert_eq!(dids, 2);
 
@@ -2179,8 +2203,11 @@ mod tests {
         let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
-        let (records, dids) =
-            read.get_counts_by_collection(&Nsid::new("a.a.a".to_string()).unwrap())?;
+        let (records, dids) = read.get_counts_by_collection(
+            &Nsid::new("a.a.a".to_string()).unwrap(),
+            beginning(),
+            None,
+        )?;
         assert_eq!(records, 3);
         assert_eq!(dids, 2);
 
@@ -2188,8 +2215,11 @@ mod tests {
         let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
-        let (records, dids) =
-            read.get_counts_by_collection(&Nsid::new("a.a.a".to_string()).unwrap())?;
+        let (records, dids) = read.get_counts_by_collection(
+            &Nsid::new("a.a.a".to_string()).unwrap(),
+            beginning(),
+            None,
+        )?;
         assert_eq!(records, 3);
         assert_eq!(dids, 2);
 
@@ -2197,8 +2227,11 @@ mod tests {
         let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
-        let (records, dids) =
-            read.get_counts_by_collection(&Nsid::new("a.a.a".to_string()).unwrap())?;
+        let (records, dids) = read.get_counts_by_collection(
+            &Nsid::new("a.a.a".to_string()).unwrap(),
+            beginning(),
+            None,
+        )?;
         assert_eq!(records, 3);
         assert_eq!(dids, 2);
 

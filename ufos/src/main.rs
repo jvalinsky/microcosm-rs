@@ -7,7 +7,6 @@ use ufos::file_consumer;
 use ufos::server;
 use ufos::storage::{StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use ufos::storage_fjall::FjallStorage;
-use ufos::storage_mem::MemStorage;
 use ufos::store_types::SketchSecretPrefix;
 use ufos::{nice_duration, ConsumerInfo};
 
@@ -19,7 +18,7 @@ use tikv_jemallocator::Jemalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 /// Aggregate links in the at-mosphere
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
 struct Args {
     /// Jetstream server to connect to (exclusive with --fixture). Provide either a wss:// URL, or a shorhand value:
@@ -47,9 +46,6 @@ struct Args {
     /// todo: restore this
     #[arg(long, action)]
     pause_rw: bool,
-    /// DEBUG: use an in-memory store instead of fjall
-    #[arg(long, action)]
-    in_mem: bool,
     /// reset the rollup cursor, scrape through missed things in the past (backfill)
     #[arg(long, action)]
     reroll: bool,
@@ -64,56 +60,18 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let jetstream = args.jetstream.clone();
-    if args.in_mem {
-        let (read_store, write_store, cursor, sketch_secret) = MemStorage::init(
-            args.data,
-            jetstream,
-            args.jetstream_force,
-            Default::default(),
-        )?;
-        go(
-            args.jetstream,
-            args.jetstream_fixture,
-            args.pause_writer,
-            args.backfill,
-            args.reroll,
-            read_store,
-            write_store,
-            cursor,
-            sketch_secret,
-        )
-        .await?;
-    } else {
-        let (read_store, write_store, cursor, sketch_secret) = FjallStorage::init(
-            args.data,
-            jetstream,
-            args.jetstream_force,
-            Default::default(),
-        )?;
-        go(
-            args.jetstream,
-            args.jetstream_fixture,
-            args.pause_writer,
-            args.backfill,
-            args.reroll,
-            read_store,
-            write_store,
-            cursor,
-            sketch_secret,
-        )
-        .await?;
-    }
-
+    let (read_store, write_store, cursor, sketch_secret) = FjallStorage::init(
+        args.data.clone(),
+        jetstream,
+        args.jetstream_force,
+        Default::default(),
+    )?;
+    go(args, read_store, write_store, cursor, sketch_secret).await?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn go<B: StoreBackground>(
-    jetstream: String,
-    jetstream_fixture: bool,
-    pause_writer: bool,
-    backfill: bool,
-    reroll: bool,
+    args: Args,
     read_store: impl StoreReader + 'static + Clone,
     mut write_store: impl StoreWriter<B> + 'static,
     cursor: Option<Cursor>,
@@ -122,24 +80,26 @@ async fn go<B: StoreBackground>(
     println!("starting server with storage...");
     let serving = server::serve(read_store.clone());
 
-    if pause_writer {
+    if args.pause_writer {
         log::info!("not starting jetstream or the write loop.");
         serving.await.map_err(|e| anyhow::anyhow!(e))?;
         return Ok(());
     }
 
-    let batches = if jetstream_fixture {
-        log::info!("starting with jestream file fixture: {jetstream:?}");
-        file_consumer::consume(jetstream.into(), sketch_secret, cursor).await?
+    let batches = if args.jetstream_fixture {
+        log::info!("starting with jestream file fixture: {:?}", args.jetstream);
+        file_consumer::consume(args.jetstream.into(), sketch_secret, cursor).await?
     } else {
         log::info!(
             "starting consumer with cursor: {cursor:?} from {:?} ago",
             cursor.map(|c| c.elapsed())
         );
-        consumer::consume(&jetstream, cursor, false, sketch_secret).await?
+        consumer::consume(&args.jetstream, cursor, false, sketch_secret).await?
     };
 
-    let rolling = write_store.background_tasks(reroll)?.run(backfill);
+    let rolling = write_store
+        .background_tasks(args.reroll)?
+        .run(args.backfill);
     let storing = write_store.receive_batches(batches);
 
     let stating = do_update_stuff(read_store);
