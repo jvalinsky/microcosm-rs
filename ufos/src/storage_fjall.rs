@@ -13,7 +13,7 @@ use crate::store_types::{
     WEEK_IN_MICROS,
 };
 use crate::{
-    nice_duration, CommitAction, ConsumerInfo, Did, EventBatch, Nsid, NsidCount,
+    nice_duration, CommitAction, ConsumerInfo, Did, EventBatch, JustCount, Nsid, NsidCount,
     OrderCollectionsBy, UFOsRecord,
 };
 use async_trait::async_trait;
@@ -715,12 +715,12 @@ impl FjallReader {
         Ok((output_hours, output_series))
     }
 
-    fn get_counts_by_collection(
+    fn get_collection_counts(
         &self,
         collection: &Nsid,
         since: HourTruncatedCursor,
         until: Option<HourTruncatedCursor>,
-    ) -> StorageResult<(u64, u64)> {
+    ) -> StorageResult<JustCount> {
         // grab snapshots in case rollups happen while we're working
         let rollups = self.rollups.snapshot();
 
@@ -743,10 +743,7 @@ impl FjallReader {
             total_counts.merge(&count);
         }
 
-        Ok((
-            total_counts.counts().creates,
-            total_counts.dids().estimate() as u64,
-        ))
+        Ok((&total_counts).into())
     }
 
     fn get_records_by_collections(
@@ -838,16 +835,16 @@ impl StoreReader for FjallReader {
         })
         .await?
     }
-    async fn get_counts_by_collection(
+    async fn get_collection_counts(
         &self,
         collection: &Nsid,
         since: HourTruncatedCursor,
         until: Option<HourTruncatedCursor>,
-    ) -> StorageResult<(u64, u64)> {
+    ) -> StorageResult<JustCount> {
         let s = self.clone();
         let collection = collection.clone();
         tokio::task::spawn_blocking(move || {
-            FjallReader::get_counts_by_collection(&s, &collection, since, until)
+            FjallReader::get_collection_counts(&s, &collection, since, until)
         })
         .await?
     }
@@ -1630,13 +1627,17 @@ mod tests {
     fn test_hello() -> anyhow::Result<()> {
         let (read, mut write) = fjall_db();
         write.insert_batch::<TEST_BATCH_LIMIT>(EventBatch::default())?;
-        let (records, dids) = read.get_counts_by_collection(
+        let JustCount {
+            creates,
+            dids_estimate,
+            ..
+        } = read.get_collection_counts(
             &Nsid::new("a.b.c".to_string()).unwrap(),
             beginning(),
             None,
         )?;
-        assert_eq!(records, 0);
-        assert_eq!(dids, 0);
+        assert_eq!(creates, 0);
+        assert_eq!(dids_estimate, 0);
         Ok(())
     }
 
@@ -1657,16 +1658,24 @@ mod tests {
         write.insert_batch(batch.batch)?;
         write.step_rollup()?;
 
-        let (records, dids) = read.get_counts_by_collection(&collection, beginning(), None)?;
-        assert_eq!(records, 1);
-        assert_eq!(dids, 1);
-        let (records, dids) = read.get_counts_by_collection(
+        let JustCount {
+            creates,
+            dids_estimate,
+            ..
+        } = read.get_collection_counts(&collection, beginning(), None)?;
+        assert_eq!(creates, 1);
+        assert_eq!(dids_estimate, 1);
+        let JustCount {
+            creates,
+            dids_estimate,
+            ..
+        } = read.get_collection_counts(
             &Nsid::new("d.e.f".to_string()).unwrap(),
             beginning(),
             None,
         )?;
-        assert_eq!(records, 0);
-        assert_eq!(dids, 0);
+        assert_eq!(creates, 0);
+        assert_eq!(dids_estimate, 0);
 
         let records = read.get_records_by_collections([collection].into(), 2, false)?;
         assert_eq!(records.len(), 1);
@@ -1832,9 +1841,13 @@ mod tests {
         write.insert_batch(batch.batch)?;
         write.step_rollup()?;
 
-        let (records, dids) = read.get_counts_by_collection(&collection, beginning(), None)?;
-        assert_eq!(records, 1);
-        assert_eq!(dids, 1);
+        let JustCount {
+            creates,
+            dids_estimate,
+            ..
+        } = read.get_collection_counts(&collection, beginning(), None)?;
+        assert_eq!(creates, 1);
+        assert_eq!(dids_estimate, 1);
 
         let records = read.get_records_by_collections([collection].into(), 2, false)?;
         assert_eq!(records.len(), 1);
@@ -1871,9 +1884,13 @@ mod tests {
         write.insert_batch(batch.batch)?;
         write.step_rollup()?;
 
-        let (creates, dids) = read.get_counts_by_collection(&collection, beginning(), None)?;
+        let JustCount {
+            creates,
+            dids_estimate,
+            ..
+        } = read.get_collection_counts(&collection, beginning(), None)?;
         assert_eq!(creates, 1);
-        assert_eq!(dids, 1);
+        assert_eq!(dids_estimate, 1);
 
         let records = read.get_records_by_collections([collection].into(), 2, false)?;
         assert_eq!(records.len(), 0);
@@ -2187,49 +2204,65 @@ mod tests {
         write.insert_batch(batch.batch)?;
 
         // before any rollup
-        let (records, dids) = read.get_counts_by_collection(
+        let JustCount {
+            creates,
+            dids_estimate,
+            ..
+        } = read.get_collection_counts(
             &Nsid::new("a.a.a".to_string()).unwrap(),
             beginning(),
             None,
         )?;
-        assert_eq!(records, 0);
-        assert_eq!(dids, 0);
+        assert_eq!(creates, 0);
+        assert_eq!(dids_estimate, 0);
 
         // first batch rolled up
         let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
-        let (records, dids) = read.get_counts_by_collection(
+        let JustCount {
+            creates,
+            dids_estimate,
+            ..
+        } = read.get_collection_counts(
             &Nsid::new("a.a.a".to_string()).unwrap(),
             beginning(),
             None,
         )?;
-        assert_eq!(records, 2);
-        assert_eq!(dids, 2);
+        assert_eq!(creates, 2);
+        assert_eq!(dids_estimate, 2);
 
         // delete account rolled up
         let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
-        let (records, dids) = read.get_counts_by_collection(
+        let JustCount {
+            creates,
+            dids_estimate,
+            ..
+        } = read.get_collection_counts(
             &Nsid::new("a.a.a".to_string()).unwrap(),
             beginning(),
             None,
         )?;
-        assert_eq!(records, 2);
-        assert_eq!(dids, 2);
+        assert_eq!(creates, 2);
+        assert_eq!(dids_estimate, 2);
 
         // second batch rolled up
         let (n, _) = write.step_rollup()?;
         assert_eq!(n, 1);
 
-        let (records, dids) = read.get_counts_by_collection(
+        let JustCount {
+            creates,
+            dids_estimate,
+            ..
+        } = read.get_collection_counts(
             &Nsid::new("a.a.a".to_string()).unwrap(),
             beginning(),
             None,
         )?;
-        assert_eq!(records, 3);
-        assert_eq!(dids, 2);
+        assert_eq!(creates, 3);
+        assert_eq!(dids_estimate, 2);
 
         // no more rollups left
         let (n, _) = write.step_rollup()?;

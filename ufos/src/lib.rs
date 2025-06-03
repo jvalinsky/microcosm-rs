@@ -286,6 +286,8 @@ pub struct NsidCount {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct JustCount {
     creates: u64,
+    updates: u64,
+    deletes: u64,
     dids_estimate: u64,
 }
 

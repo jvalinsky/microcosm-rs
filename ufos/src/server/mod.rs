@@ -211,11 +211,6 @@ struct CollectionsStatsQuery {
     /// default: now
     until: Option<DateTime<Utc>>,
 }
-#[derive(Debug, Serialize, JsonSchema)]
-struct TotalCounts {
-    total_creates: u64,
-    dids_estimate: u64,
-}
 /// Collection stats
 ///
 /// Get record statistics for collections during a specific time period.
@@ -232,7 +227,7 @@ async fn get_collection_stats(
     ctx: RequestContext<Context>,
     collections_query: MultiCollectionQuery,
     query: Query<CollectionsStatsQuery>,
-) -> OkCorsResponse<HashMap<String, TotalCounts>> {
+) -> OkCorsResponse<HashMap<String, JustCount>> {
     let Context { storage, .. } = ctx.context();
     let q = query.into_inner();
     let collections: HashSet<Nsid> = collections_query.try_into()?;
@@ -248,18 +243,12 @@ async fn get_collection_stats(
     let mut seen_by_collection = HashMap::with_capacity(collections.len());
 
     for collection in &collections {
-        let (total_creates, dids_estimate) = storage
-            .get_counts_by_collection(collection, since, until)
+        let counts = storage
+            .get_collection_counts(collection, since, until)
             .await
             .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
-        seen_by_collection.insert(
-            collection.to_string(),
-            TotalCounts {
-                total_creates,
-                dids_estimate,
-            },
-        );
+        seen_by_collection.insert(collection.to_string(), counts);
     }
 
     OkCors(seen_by_collection).into()
