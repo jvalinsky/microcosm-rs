@@ -218,7 +218,12 @@ struct TotalCounts {
 }
 /// Collection stats
 ///
-/// Get record statistics for collections during a specific time period
+/// Get record statistics for collections during a specific time period.
+///
+/// Note: the statistics are "rolled up" into hourly buckets in the background,
+/// so the data here can be as stale as that background task is behind. See the
+/// meta info endpoint to find out how up-to-date the rollup currently is. (In
+/// general it sholud be pretty close to live)
 #[endpoint {
     method = GET,
     path = "/collections/stats"

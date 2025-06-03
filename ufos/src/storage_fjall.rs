@@ -718,38 +718,31 @@ impl FjallReader {
     fn get_counts_by_collection(
         &self,
         collection: &Nsid,
-        _since: HourTruncatedCursor,
-        _until: Option<HourTruncatedCursor>,
+        since: HourTruncatedCursor,
+        until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(u64, u64)> {
-        // 0. grab a snapshot in case rollups happen while we're working
-        let instant = self.keyspace.instant();
-        let global = self.global.snapshot_at(instant);
-        let rollups = self.rollups.snapshot_at(instant);
+        // grab snapshots in case rollups happen while we're working
+        let rollups = self.rollups.snapshot();
 
-        // 1. all-time counts
-        let all_time_key = AllTimeRollupKey::new(collection).to_db_bytes()?;
-        let mut total_counts = rollups
-            .get(&all_time_key)?
-            .as_deref()
-            .map(db_complete::<CountsValue>)
-            .transpose()?
-            .unwrap_or_default();
+        let until = until.unwrap_or_else(|| Cursor::at(SystemTime::now()).into());
+        let buckets = CursorBucket::buckets_spanning(since, until);
+        let mut total_counts = CountsValue::default();
 
-        // 2. live counts that haven't been rolled into all-time yet.
-        let rollup_cursor =
-            get_snapshot_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&global)?.ok_or(
-                StorageError::BadStateError("Could not find current rollup cursor".to_string()),
-            )?;
-
-        let full_range = LiveCountsKey::range_from_cursor(rollup_cursor)?;
-        for kv in rollups.range(full_range) {
-            let (key_bytes, val_bytes) = kv?;
-            let key = db_complete::<LiveCountsKey>(&key_bytes)?;
-            if key.collection() == collection {
-                let counts = db_complete::<CountsValue>(&val_bytes)?;
-                total_counts.merge(&counts);
-            }
+        for bucket in buckets {
+            let key = match bucket {
+                CursorBucket::Hour(t) => HourlyRollupKey::new(t, collection).to_db_bytes()?,
+                CursorBucket::Week(t) => WeeklyRollupKey::new(t, collection).to_db_bytes()?,
+                CursorBucket::AllTime => unreachable!(), // TODO: fall back on this if the time span spans the whole dataset?
+            };
+            let count = rollups
+                .get(&key)?
+                .as_deref()
+                .map(db_complete::<CountsValue>)
+                .transpose()?
+                .unwrap_or_default();
+            total_counts.merge(&count);
         }
+
         Ok((
             total_counts.counts().creates,
             total_counts.dids().estimate() as u64,
@@ -1662,6 +1655,7 @@ mod tests {
             100,
         );
         write.insert_batch(batch.batch)?;
+        write.step_rollup()?;
 
         let (records, dids) = read.get_counts_by_collection(&collection, beginning(), None)?;
         assert_eq!(records, 1);
@@ -1836,6 +1830,7 @@ mod tests {
             101,
         );
         write.insert_batch(batch.batch)?;
+        write.step_rollup()?;
 
         let (records, dids) = read.get_counts_by_collection(&collection, beginning(), None)?;
         assert_eq!(records, 1);
@@ -1874,6 +1869,7 @@ mod tests {
             101,
         );
         write.insert_batch(batch.batch)?;
+        write.step_rollup()?;
 
         let (creates, dids) = read.get_counts_by_collection(&collection, beginning(), None)?;
         assert_eq!(creates, 1);
@@ -2196,8 +2192,8 @@ mod tests {
             beginning(),
             None,
         )?;
-        assert_eq!(records, 3);
-        assert_eq!(dids, 2);
+        assert_eq!(records, 0);
+        assert_eq!(dids, 0);
 
         // first batch rolled up
         let (n, _) = write.step_rollup()?;
@@ -2208,7 +2204,7 @@ mod tests {
             beginning(),
             None,
         )?;
-        assert_eq!(records, 3);
+        assert_eq!(records, 2);
         assert_eq!(dids, 2);
 
         // delete account rolled up
@@ -2220,7 +2216,7 @@ mod tests {
             beginning(),
             None,
         )?;
-        assert_eq!(records, 3);
+        assert_eq!(records, 2);
         assert_eq!(dids, 2);
 
         // second batch rolled up
