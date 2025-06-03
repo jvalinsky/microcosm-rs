@@ -1,7 +1,7 @@
 use crate::store_types::{CountsValue, HourTruncatedCursor, SketchSecretPrefix};
 use crate::{
-    error::StorageError, ConsumerInfo, Cursor, EventBatch, NsidCount, OrderCollectionsBy,
-    UFOsRecord,
+    error::StorageError, ConsumerInfo, Cursor, EventBatch, JustCount, NsidCount,
+    OrderCollectionsBy, UFOsRecord,
 };
 use async_trait::async_trait;
 use jetstream::exports::{Did, Nsid};
@@ -92,7 +92,12 @@ pub trait StoreReader: Send + Sync {
         step: u64,
     ) -> StorageResult<(Vec<HourTruncatedCursor>, HashMap<Nsid, Vec<CountsValue>>)>;
 
-    async fn get_counts_by_collection(&self, collection: &Nsid) -> StorageResult<(u64, u64)>;
+    async fn get_collection_counts(
+        &self,
+        collection: &Nsid,
+        since: HourTruncatedCursor,
+        until: Option<HourTruncatedCursor>,
+    ) -> StorageResult<JustCount>;
 
     async fn get_records_by_collections(
         &self,

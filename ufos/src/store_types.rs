@@ -269,8 +269,15 @@ impl CountsValue {
 }
 impl From<&CountsValue> for JustCount {
     fn from(cv: &CountsValue) -> Self {
+        let CommitCounts {
+            creates,
+            updates,
+            deletes,
+        } = cv.counts();
         Self {
-            creates: cv.counts().creates,
+            creates,
+            updates,
+            deletes,
             dids_estimate: cv.dids().estimate() as u64,
         }
     }

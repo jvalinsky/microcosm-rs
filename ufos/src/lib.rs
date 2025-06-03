@@ -6,7 +6,6 @@ pub mod index_html;
 pub mod server;
 pub mod storage;
 pub mod storage_fjall;
-pub mod storage_mem;
 pub mod store_types;
 
 use crate::error::BatchInsertError;
@@ -287,6 +286,8 @@ pub struct NsidCount {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct JustCount {
     creates: u64,
+    updates: u64,
+    deletes: u64,
     dids_estimate: u64,
 }
 

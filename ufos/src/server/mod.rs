@@ -1,9 +1,14 @@
+mod collections_query;
+mod cors;
+
 use crate::index_html::INDEX_HTML;
 use crate::storage::StoreReader;
 use crate::store_types::{HourTruncatedCursor, WeekTruncatedCursor};
 use crate::{ConsumerInfo, Cursor, JustCount, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Utc};
+use collections_query::MultiCollectionQuery;
+use cors::{OkCors, OkCorsResponse};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
 use dropshot::Body;
@@ -11,11 +16,10 @@ use dropshot::ConfigDropshot;
 use dropshot::ConfigLogging;
 use dropshot::ConfigLoggingLevel;
 use dropshot::HttpError;
-use dropshot::HttpResponseHeaders;
-use dropshot::HttpResponseOk;
 use dropshot::Query;
 use dropshot::RequestContext;
 use dropshot::ServerBuilder;
+
 use http::{Response, StatusCode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -74,7 +78,7 @@ async fn index(_ctx: RequestContext<Context>) -> Result<Response<Body>, HttpErro
 }]
 async fn get_openapi(ctx: RequestContext<Context>) -> OkCorsResponse<serde_json::Value> {
     let spec = (*ctx.context().spec).clone();
-    ok_cors(spec)
+    OkCors(spec).into()
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -83,7 +87,7 @@ struct MetaInfo {
     storage: serde_json::Value,
     consumer: ConsumerInfo,
 }
-/// Get meta information about UFOs itself
+/// UFOs meta-info
 #[endpoint {
     method = GET,
     path = "/meta"
@@ -103,11 +107,12 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
         .await
         .map_err(failed_to_get("consumer info"))?;
 
-    ok_cors(MetaInfo {
+    OkCors(MetaInfo {
         storage_name: storage.name(),
         storage: storage_info,
         consumer,
     })
+    .into()
 }
 
 // TODO: replace with normal (🙃) multi-qs value somehow
@@ -145,7 +150,9 @@ impl From<UFOsRecord> for ApiRecord {
         }
     }
 }
-/// Get recent records by collection
+/// Record samples
+///
+/// Get most recent records seen in the firehose, by collection NSID
 ///
 /// Multiple collections are supported. They will be delivered in one big array with no
 /// specified order.
@@ -190,51 +197,61 @@ async fn get_records_by_collections(
         .map(|r| r.into())
         .collect();
 
-    ok_cors(records)
+    OkCors(records).into()
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct TotalSeenCollectionsQuery {
-    collection: String, // JsonSchema not implemented for Nsid :(
+struct CollectionsStatsQuery {
+    /// Limit stats to those seen after this UTC datetime
+    ///
+    /// default: 1 week ago
+    since: Option<DateTime<Utc>>,
+    /// Limit stats to those seen before this UTC datetime
+    ///
+    /// default: now
+    until: Option<DateTime<Utc>>,
 }
-#[derive(Debug, Serialize, JsonSchema)]
-struct TotalCounts {
-    total_creates: u64,
-    dids_estimate: u64,
-}
-/// Get total records seen by collection
+/// Collection stats
+///
+/// Get record statistics for collections during a specific time period.
+///
+/// Note: the statistics are "rolled up" into hourly buckets in the background,
+/// so the data here can be as stale as that background task is behind. See the
+/// meta info endpoint to find out how up-to-date the rollup currently is. (In
+/// general it sholud be pretty close to live)
 #[endpoint {
     method = GET,
-    path = "/records/total-seen"
+    path = "/collections/stats"
 }]
-async fn get_records_total_seen(
+async fn get_collection_stats(
     ctx: RequestContext<Context>,
-    collection_query: Query<TotalSeenCollectionsQuery>,
-) -> OkCorsResponse<HashMap<String, TotalCounts>> {
+    collections_query: MultiCollectionQuery,
+    query: Query<CollectionsStatsQuery>,
+) -> OkCorsResponse<HashMap<String, JustCount>> {
     let Context { storage, .. } = ctx.context();
+    let q = query.into_inner();
+    let collections: HashSet<Nsid> = collections_query.try_into()?;
 
-    let query = collection_query.into_inner();
-    let collections = to_multiple_nsids(&query.collection)
-        .map_err(|reason| HttpError::for_bad_request(None, reason))?;
+    let since = q.since.map(dt_to_cursor).transpose()?.unwrap_or_else(|| {
+        let week_ago_secs = 7 * 86_400;
+        let week_ago = SystemTime::now() - Duration::from_secs(week_ago_secs);
+        Cursor::at(week_ago).into()
+    });
+
+    let until = q.until.map(dt_to_cursor).transpose()?;
 
     let mut seen_by_collection = HashMap::with_capacity(collections.len());
 
     for collection in &collections {
-        let (total_creates, dids_estimate) = storage
-            .get_counts_by_collection(collection)
+        let counts = storage
+            .get_collection_counts(collection, since, until)
             .await
             .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
-        seen_by_collection.insert(
-            collection.to_string(),
-            TotalCounts {
-                total_creates,
-                dids_estimate,
-            },
-        );
+        seen_by_collection.insert(collection.to_string(), counts);
     }
 
-    ok_cors(seen_by_collection)
+    OkCors(seen_by_collection).into()
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -283,7 +300,9 @@ struct CollectionsQuery {
     order: Option<CollectionsQueryOrder>,
 }
 
-/// Get collection with statistics
+/// List collections
+///
+/// With statistics.
 ///
 /// ## To fetch a full list:
 ///
@@ -353,10 +372,11 @@ async fn get_collections(
 
     let next_cursor = next_cursor.map(|c| URL_SAFE_NO_PAD.encode(c));
 
-    ok_cors(CollectionsResponse {
+    OkCors(CollectionsResponse {
         collections,
         cursor: next_cursor,
     })
+    .into()
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -384,7 +404,7 @@ struct CollectionTimeseriesResponse {
     range: Vec<DateTime<Utc>>,
     series: HashMap<String, Vec<JustCount>>,
 }
-/// Get timeseries data
+/// Collection timeseries stats
 #[endpoint {
     method = GET,
     path = "/timeseries"
@@ -407,7 +427,7 @@ async fn get_timeseries(
     let step = if let Some(secs) = q.step {
         if secs < 3600 {
             let msg = format!("step is too small: {}", secs);
-            return Err(HttpError::for_bad_request(None, msg));
+            Err(HttpError::for_bad_request(None, msg))?;
         }
         (secs / 3600) * 3600 // trucate to hour
     } else {
@@ -433,7 +453,7 @@ async fn get_timeseries(
         .map(|(k, v)| (k.to_string(), v.iter().map(Into::into).collect()))
         .collect();
 
-    ok_cors(CollectionTimeseriesResponse { range, series })
+    OkCors(CollectionTimeseriesResponse { range, series }).into()
 }
 
 pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
@@ -449,7 +469,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_openapi).unwrap();
     api.register(get_meta_info).unwrap();
     api.register(get_records_by_collections).unwrap();
-    api.register(get_records_total_seen).unwrap();
+    api.register(get_collection_stats).unwrap();
     api.register(get_collections).unwrap();
     api.register(get_timeseries).unwrap();
 
@@ -481,13 +501,4 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
         .start()
         .map_err(|error| format!("failed to start server: {}", error))?
         .await
-}
-
-/// awkward helpers
-type OkCorsResponse<T> = Result<HttpResponseHeaders<HttpResponseOk<T>>, HttpError>;
-fn ok_cors<T: Send + Sync + Serialize + JsonSchema>(t: T) -> OkCorsResponse<T> {
-    let mut res = HttpResponseHeaders::new_unnamed(HttpResponseOk(t));
-    res.headers_mut()
-        .insert("access-control-allow-origin", "*".parse().unwrap());
-    Ok(res)
 }
