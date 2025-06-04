@@ -18,6 +18,8 @@ use thiserror::Error;
 pub enum EncodingError {
     #[error("failed to parse Atrium string type: {0}")]
     BadAtriumStringType(&'static str),
+    #[error("Not enough NSID segments for a usable prefix")]
+    NotEnoughNsidSegments,
     #[error("failed to bincode-encode: {0}")]
     BincodeEncodeFailed(#[from] EncodeError),
     #[error("failed to bincode-decode: {0}")]
@@ -62,6 +64,13 @@ pub trait DbBytes {
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError>
     where
         Self: Sized;
+    fn as_prefix_range_end(&self) -> EncodingResult<Vec<u8>> {
+        let bytes = self.to_db_bytes()?;
+        let (_, Bound::Excluded(range_end)) = prefix_to_range(&bytes) else {
+            return Err(EncodingError::BadRangeBound);
+        };
+        Ok(range_end.to_vec())
+    }
 }
 
 pub trait SubPrefixBytes<T> {
@@ -87,11 +96,7 @@ impl<P: DbBytes + PartialEq + std::fmt::Debug, S: DbBytes + PartialEq + std::fmt
         self.prefix.to_db_bytes()
     }
     pub fn prefix_range_end(prefix: &P) -> EncodingResult<Vec<u8>> {
-        let prefix_bytes = prefix.to_db_bytes()?;
-        let (_, Bound::Excluded(range_end)) = prefix_to_range(&prefix_bytes) else {
-            return Err(EncodingError::BadRangeBound);
-        };
-        Ok(range_end.to_vec())
+        prefix.as_prefix_range_end()
     }
     pub fn range_end(&self) -> EncodingResult<Vec<u8>> {
         Self::prefix_range_end(&self.prefix)
@@ -241,10 +246,12 @@ pub trait SerdeBytes: serde::Serialize + for<'a> serde::Deserialize<'a> {
 
 impl<const N: usize> UseBincodePlz for [u8; N] {}
 
+// bare bytes (NOT prefix-encoded!)
 impl DbBytes for Vec<u8> {
     fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         Ok(self.to_vec())
     }
+    // greedy, consumes ALL remaining bytes
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
         Ok((bytes.to_owned(), bytes.len()))
     }

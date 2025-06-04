@@ -360,11 +360,18 @@ static_str!("hourly_counts", _HourlyRollupStaticStr);
 pub type HourlyRollupStaticPrefix = DbStaticStr<_HourlyRollupStaticStr>;
 pub type HourlyRollupKeyHourPrefix = DbConcat<HourlyRollupStaticPrefix, HourTruncatedCursor>;
 pub type HourlyRollupKey = DbConcat<HourlyRollupKeyHourPrefix, Nsid>;
+pub type HourlyRollupPre = DbConcat<HourlyRollupKeyHourPrefix, Vec<u8>>; // bit hack but
 impl HourlyRollupKey {
     pub fn new(cursor: HourTruncatedCursor, nsid: &Nsid) -> Self {
         Self::from_pair(
             DbConcat::from_pair(Default::default(), cursor),
             nsid.clone(),
+        )
+    }
+    pub fn new_nsid_prefix(cursor: HourTruncatedCursor, pre: &[u8]) -> HourlyRollupPre {
+        HourlyRollupPre::from_pair(
+            DbConcat::from_pair(Default::default(), cursor),
+            pre.to_vec(),
         )
     }
     pub fn cursor(&self) -> HourTruncatedCursor {
@@ -378,9 +385,25 @@ impl HourlyRollupKey {
     pub fn after_nsid(hour: HourTruncatedCursor, nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
         Ok(Bound::Excluded(Self::new(hour, nsid).to_db_bytes()?))
     }
+    pub fn after_nsid_prefix(
+        hour: HourTruncatedCursor,
+        pre: &[u8],
+    ) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(hour, pre).to_db_bytes()?,
+        ))
+    }
     pub fn end(hour: HourTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
         let prefix = HourlyRollupKeyHourPrefix::from_pair(Default::default(), hour);
         Ok(Bound::Excluded(Self::prefix_range_end(&prefix)?))
+    }
+    pub fn nsid_prefix_end(
+        hour: HourTruncatedCursor,
+        pre: &[u8],
+    ) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(hour, pre).as_prefix_range_end()?,
+        ))
     }
 }
 impl WithCollection for HourlyRollupKey {
@@ -400,6 +423,7 @@ static_str!("weekly_counts", _WeeklyRollupStaticStr);
 pub type WeeklyRollupStaticPrefix = DbStaticStr<_WeeklyRollupStaticStr>;
 pub type WeeklyRollupKeyWeekPrefix = DbConcat<WeeklyRollupStaticPrefix, WeekTruncatedCursor>;
 pub type WeeklyRollupKey = DbConcat<WeeklyRollupKeyWeekPrefix, Nsid>;
+pub type WeeklyRollupPre = DbConcat<WeeklyRollupKeyWeekPrefix, Vec<u8>>;
 impl WeeklyRollupKey {
     pub fn new(cursor: WeekTruncatedCursor, nsid: &Nsid) -> Self {
         Self::from_pair(
@@ -407,20 +431,42 @@ impl WeeklyRollupKey {
             nsid.clone(),
         )
     }
+    pub fn new_nsid_prefix(cursor: WeekTruncatedCursor, pre: &[u8]) -> WeeklyRollupPre {
+        WeeklyRollupPre::from_pair(
+            DbConcat::from_pair(Default::default(), cursor),
+            pre.to_vec(),
+        )
+    }
     pub fn cursor(&self) -> WeekTruncatedCursor {
         self.prefix.suffix
     }
-    pub fn start(hour: WeekTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
-        let prefix = WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), hour);
+    pub fn start(week: WeekTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), week);
         let prefix_bytes = Self::from_prefix_to_db_bytes(&prefix)?;
         Ok(Bound::Included(prefix_bytes))
     }
-    pub fn after_nsid(hour: WeekTruncatedCursor, nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
-        Ok(Bound::Excluded(Self::new(hour, nsid).to_db_bytes()?))
+    pub fn after_nsid(week: WeekTruncatedCursor, nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(Self::new(week, nsid).to_db_bytes()?))
     }
-    pub fn end(hour: WeekTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
-        let prefix = WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), hour);
+    pub fn after_nsid_prefix(
+        week: WeekTruncatedCursor,
+        prefix: &[u8],
+    ) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(week, prefix).to_db_bytes()?,
+        ))
+    }
+    pub fn end(week: WeekTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), week);
         Ok(Bound::Excluded(Self::prefix_range_end(&prefix)?))
+    }
+    pub fn nsid_prefix_end(
+        week: WeekTruncatedCursor,
+        prefix: &[u8],
+    ) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(week, prefix).as_prefix_range_end()?,
+        ))
     }
 }
 impl WithCollection for WeeklyRollupKey {
@@ -439,9 +485,13 @@ pub type WeeklyDidsKey = BucketedRankRecordsKey<_WeeklyDidsStaticStr, WeekTrunca
 static_str!("ever_counts", _AllTimeRollupStaticStr);
 pub type AllTimeRollupStaticPrefix = DbStaticStr<_AllTimeRollupStaticStr>;
 pub type AllTimeRollupKey = DbConcat<AllTimeRollupStaticPrefix, Nsid>;
+pub type AllTimeRollupPre = DbConcat<AllTimeRollupStaticPrefix, Vec<u8>>;
 impl AllTimeRollupKey {
     pub fn new(nsid: &Nsid) -> Self {
         Self::from_pair(Default::default(), nsid.clone())
+    }
+    pub fn new_nsid_prefix(pre: &[u8]) -> AllTimeRollupPre {
+        AllTimeRollupPre::from_pair(Default::default(), pre.to_vec())
     }
     pub fn start() -> EncodingResult<Bound<Vec<u8>>> {
         Ok(Bound::Included(Self::from_prefix_to_db_bytes(
@@ -451,9 +501,19 @@ impl AllTimeRollupKey {
     pub fn after_nsid(nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
         Ok(Bound::Excluded(Self::new(nsid).to_db_bytes()?))
     }
+    pub fn after_nsid_prefix(prefix: &[u8]) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(prefix).to_db_bytes()?,
+        ))
+    }
     pub fn end() -> EncodingResult<Bound<Vec<u8>>> {
         Ok(Bound::Excluded(
             Self::prefix_range_end(&Default::default())?,
+        ))
+    }
+    pub fn nsid_prefix_end(prefix: &[u8]) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(prefix).as_prefix_range_end()?,
         ))
     }
 }

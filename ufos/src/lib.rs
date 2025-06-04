@@ -8,6 +8,7 @@ pub mod storage;
 pub mod storage_fjall;
 pub mod store_types;
 
+use crate::db_types::{EncodingError, EncodingResult};
 use crate::error::BatchInsertError;
 use crate::store_types::SketchSecretPrefix;
 use cardinality_estimator_safe::{Element, Sketch};
@@ -280,7 +281,47 @@ pub enum ConsumerInfo {
 pub struct NsidCount {
     nsid: String,
     creates: u64,
+    // TODO: add updates and deletes
     dids_estimate: u64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PrefixCount {
+    prefix: String,
+    creates: u64,
+    // TODO: add updates and deletes
+    dids_estimate: u64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PrefixChild {
+    Collection(NsidCount),
+    Prefix(PrefixCount),
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct NsidPrefix(String);
+impl NsidPrefix {
+    pub fn new(pre: &str) -> EncodingResult<Self> {
+        // it's a valid prefix if appending `.name` makes it a valid NSID
+        Nsid::new(format!("{pre}.name")).map_err(EncodingError::BadAtriumStringType)?;
+        // hack (shouldn't really be here): reject prefixes that aren't at least 2 segments long
+        if !pre.contains('.') {
+            return Err(EncodingError::NotEnoughNsidSegments);
+        }
+        Ok(Self(pre.to_string()))
+    }
+    pub fn is_group_of(&self, other: &Nsid) -> bool {
+        assert!(
+            other.as_str().starts_with(&self.0),
+            "must be a prefix of other"
+        );
+        self.0 == other.domain_authority()
+    }
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

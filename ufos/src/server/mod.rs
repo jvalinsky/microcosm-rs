@@ -4,7 +4,10 @@ mod cors;
 use crate::index_html::INDEX_HTML;
 use crate::storage::StoreReader;
 use crate::store_types::{HourTruncatedCursor, WeekTruncatedCursor};
-use crate::{ConsumerInfo, Cursor, JustCount, Nsid, NsidCount, OrderCollectionsBy, UFOsRecord};
+use crate::{
+    ConsumerInfo, Cursor, JustCount, Nsid, NsidCount, NsidPrefix, OrderCollectionsBy, PrefixChild,
+    UFOsRecord,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Utc};
 use collections_query::MultiCollectionQuery;
@@ -379,6 +382,136 @@ async fn get_collections(
     .into()
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+struct PrefixResponse {
+    /// Note that total may not include counts beyond the current page (TODO)
+    total: JustCount,
+    children: Vec<PrefixChild>,
+    /// Include in a follow-up request to get the next page of results, if more are available
+    cursor: Option<String>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+struct PrefixQuery {
+    ///
+    /// The final segment of a collection NSID is the `name`, and everything before it is called its `group`. eg:
+    ///
+    /// - `app.bsky.feed.post` and `app.bsky.feed.like` are both in the _lexicon group_ "`app.bsky.feed`".
+    ///
+    prefix: String,
+    /// The maximum number of collections to return in one request.
+    ///
+    /// The number of items actually returned may be less than the limit. If paginating, this does **not** indicate that no
+    /// more items are available! Check if the `cursor` in the response is `null` to determine the end of items.
+    ///
+    /// Default: `100` normally, `32` if `order` is specified.
+    #[schemars(range(min = 1, max = 200))]
+    limit: Option<usize>,
+    /// Get a paginated response with more collections.
+    ///
+    /// Always omit the cursor for the first request. If more collections than the limit are available, the response will contain a non-null `cursor` to include with the next request.
+    ///
+    /// `cursor` is mutually exclusive with `order`.
+    cursor: Option<String>,
+    /// Limit collections and statistics to those seen after this UTC datetime
+    ///
+    /// Default: all-time
+    since: Option<DateTime<Utc>>,
+    /// Limit collections and statistics to those seen before this UTC datetime
+    ///
+    /// Default: now
+    until: Option<DateTime<Utc>>,
+    /// Get a limited, sorted list
+    ///
+    /// Mutually exclusive with `cursor` -- sorted results cannot be paged.
+    order: Option<CollectionsQueryOrder>,
+}
+/// Prefix-filter collections list
+///
+/// This endpoint enumerates all collection NSIDs for a lexicon group.
+///
+/// ## To fetch a full list:
+///
+/// Omit the `order` parameter and page through the results using the `cursor`. There have been a lot of collections seen in the ATmosphere, well over 400 at time of writing, so you *will* need to make a series of paginaged requests with `cursor`s to get them all.
+///
+/// The set of collections across multiple requests is not guaranteed to be a perfectly consistent snapshot:
+///
+/// - all collection NSIDs observed before the first request will be included in the results
+///
+/// - *new* NSIDs observed in the firehose *while paging* might be included or excluded from the final set
+///
+/// - no duplicate NSIDs will occur in the combined results
+///
+/// In practice this is close enough for most use-cases to not worry about.
+///
+/// ## To fetch the top collection NSIDs:
+///
+/// Specify the `order` parameter (must be either `records-created` or `did-estimate`). Note that ordered results cannot be paged.
+///
+/// All statistics are bucketed hourly, so the most granular effecitve time boundary for `since` and `until` is one hour.
+#[endpoint {
+    method = GET,
+    path = "/prefix"
+}]
+async fn get_prefix(
+    ctx: RequestContext<Context>,
+    query: Query<PrefixQuery>,
+) -> OkCorsResponse<PrefixResponse> {
+    let Context { storage, .. } = ctx.context();
+    let q = query.into_inner();
+
+    let prefix = NsidPrefix::new(&q.prefix).map_err(|e| {
+        HttpError::for_bad_request(
+            None,
+            format!("{:?} was not a valid NSID prefix: {e:?}", q.prefix),
+        )
+    })?;
+
+    if q.cursor.is_some() && q.order.is_some() {
+        let msg = "`cursor` is mutually exclusive with `order`. ordered results cannot be paged.";
+        return Err(HttpError::for_bad_request(None, msg.to_string()));
+    }
+
+    let order = if let Some(ref o) = q.order {
+        o.into()
+    } else {
+        let cursor = q
+            .cursor
+            .and_then(|c| if c.is_empty() { None } else { Some(c) })
+            .map(|c| URL_SAFE_NO_PAD.decode(&c))
+            .transpose()
+            .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
+        OrderCollectionsBy::Lexi { cursor }
+    };
+
+    let limit = match (q.limit, q.order) {
+        (Some(limit), _) => limit,
+        (None, Some(_)) => 32,
+        (None, None) => 100,
+    };
+
+    if !(1..=200).contains(&limit) {
+        let msg = format!("limit not in 1..=200: {}", limit);
+        return Err(HttpError::for_bad_request(None, msg));
+    }
+
+    let since = q.since.map(dt_to_cursor).transpose()?;
+    let until = q.until.map(dt_to_cursor).transpose()?;
+
+    let (total, children, next_cursor) = storage
+        .get_prefix(prefix, limit, order, since, until)
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
+
+    let next_cursor = next_cursor.map(|c| URL_SAFE_NO_PAD.encode(c));
+
+    OkCors(PrefixResponse {
+        total,
+        children,
+        cursor: next_cursor,
+    })
+    .into()
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CollectionTimeseriesQuery {
     collection: String, // JsonSchema not implemented for Nsid :(
@@ -471,6 +604,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_records_by_collections).unwrap();
     api.register(get_collection_stats).unwrap();
     api.register(get_collections).unwrap();
+    api.register(get_prefix).unwrap();
     api.register(get_timeseries).unwrap();
 
     let context = Context {

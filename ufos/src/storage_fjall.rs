@@ -1,4 +1,6 @@
-use crate::db_types::{db_complete, DbBytes, DbStaticStr, EncodingResult, StaticStr};
+use crate::db_types::{
+    db_complete, DbBytes, DbStaticStr, EncodingResult, StaticStr, SubPrefixBytes,
+};
 use crate::error::StorageError;
 use crate::storage::{StorageResult, StorageWhatever, StoreBackground, StoreReader, StoreWriter};
 use crate::store_types::{
@@ -13,8 +15,8 @@ use crate::store_types::{
     WEEK_IN_MICROS,
 };
 use crate::{
-    nice_duration, CommitAction, ConsumerInfo, Did, EventBatch, JustCount, Nsid, NsidCount,
-    OrderCollectionsBy, UFOsRecord,
+    nice_duration, CommitAction, ConsumerInfo, Did, EncodingError, EventBatch, JustCount, Nsid,
+    NsidCount, NsidPrefix, OrderCollectionsBy, PrefixChild, PrefixCount, UFOsRecord,
 };
 use async_trait::async_trait;
 use fjall::{
@@ -655,6 +657,186 @@ impl FjallReader {
         }
     }
 
+    fn get_lexi_prefix(
+        &self,
+        snapshot: Snapshot,
+        prefix: NsidPrefix,
+        limit: usize,
+        cursor: Option<Vec<u8>>,
+        buckets: Vec<CursorBucket>,
+    ) -> StorageResult<(JustCount, Vec<PrefixChild>, Option<Vec<u8>>)> {
+        let prefix_sub = String::sub_prefix(prefix.as_str())?;
+        let cursor_child = cursor
+            .as_deref()
+            .map(|encoded_bytes| {
+                let decoded: String = db_complete(encoded_bytes)?;
+                let as_sub_prefix = String::sub_prefix(&decoded)?;
+                Ok::<_, EncodingError>(as_sub_prefix)
+            })
+            .transpose()?;
+        let mut iters: Vec<NsidCounter> = Vec::with_capacity(buckets.len());
+        for bucket in &buckets {
+            let it: NsidCounter = match bucket {
+                CursorBucket::Hour(t) => {
+                    let start = cursor_child
+                        .as_ref()
+                        .map(|child| HourlyRollupKey::after_nsid_prefix(*t, child))
+                        .unwrap_or_else(|| HourlyRollupKey::after_nsid_prefix(*t, &prefix_sub))?;
+                    let end = HourlyRollupKey::nsid_prefix_end(*t, &prefix_sub)?;
+                    get_lexi_iter::<HourlyRollupKey>(&snapshot, start, end)?
+                }
+                CursorBucket::Week(t) => {
+                    let start = cursor_child
+                        .as_ref()
+                        .map(|child| WeeklyRollupKey::after_nsid_prefix(*t, child))
+                        .unwrap_or_else(|| WeeklyRollupKey::after_nsid_prefix(*t, &prefix_sub))?;
+                    let end = WeeklyRollupKey::nsid_prefix_end(*t, &prefix_sub)?;
+                    get_lexi_iter::<WeeklyRollupKey>(&snapshot, start, end)?
+                }
+                CursorBucket::AllTime => {
+                    let start = cursor_child
+                        .as_ref()
+                        .map(|child| AllTimeRollupKey::after_nsid_prefix(child))
+                        .unwrap_or_else(|| AllTimeRollupKey::after_nsid_prefix(&prefix_sub))?;
+                    let end = AllTimeRollupKey::nsid_prefix_end(&prefix_sub)?;
+                    get_lexi_iter::<AllTimeRollupKey>(&snapshot, start, end)?
+                }
+            };
+            iters.push(it);
+        }
+
+        // with apologies
+        let mut iters: Vec<_> = iters
+            .into_iter()
+            .map(|it| {
+                it.map(|bla| bla.map(|(nsid, v)| (Child::from_prefix(&nsid, &prefix), v)))
+                    .peekable()
+            })
+            .collect();
+
+        let mut items = Vec::new();
+        let mut prefix_count = CountsValue::default();
+        #[derive(Debug, Clone, PartialEq)]
+        enum Child {
+            FullNsid(String),
+            ChildPrefix(String),
+        }
+        impl Child {
+            fn from_prefix(nsid: &Nsid, prefix: &NsidPrefix) -> Self {
+                if prefix.is_group_of(nsid) {
+                    Child::FullNsid(nsid.to_string())
+                } else {
+                    let suffix = nsid
+                        .as_str()
+                        .strip_prefix(&format!("{}.", prefix.0))
+                        .unwrap();
+                    let (segment, _) = suffix.split_once('.').unwrap();
+                    Child::ChildPrefix(format!("{}.{segment}", prefix.0))
+                }
+            }
+            fn is_before(&self, other: &Child) -> bool {
+                match (self, other) {
+                    (Child::FullNsid(s), Child::ChildPrefix(o)) if s == o => true,
+                    (Child::ChildPrefix(s), Child::FullNsid(o)) if s == o => false,
+                    (Child::FullNsid(s), Child::FullNsid(o)) => s < o,
+                    (Child::ChildPrefix(s), Child::ChildPrefix(o)) => s < o,
+                    (Child::FullNsid(s), Child::ChildPrefix(o)) => s < o,
+                    (Child::ChildPrefix(s), Child::FullNsid(o)) => s < o,
+                }
+            }
+            fn into_inner(self) -> String {
+                match self {
+                    Child::FullNsid(s) => s,
+                    Child::ChildPrefix(s) => s,
+                }
+            }
+        }
+        let mut current_child: Option<Child> = None;
+        for _ in 0..limit {
+            // double-scan the iters for each element: this could be eliminated but we're starting simple.
+            // first scan: find the lowest nsid
+            // second scan: take + merge, and advance all iters with lowest nsid
+            let mut lowest: Option<Child> = None;
+            for iter in &mut iters {
+                if let Some(bla) = iter.peek_mut() {
+                    let (child, _) = match bla {
+                        Ok(v) => v,
+                        Err(e) => Err(std::mem::replace(e, StorageError::Stolen))?,
+                    };
+
+                    lowest = match lowest {
+                        Some(ref current) if current.is_before(child) => lowest,
+                        _ => Some(child.clone()),
+                    };
+                }
+            }
+            current_child = lowest.clone();
+            let Some(child) = lowest else { break };
+
+            let mut merged = CountsValue::default();
+            for iter in &mut iters {
+                // unwrap: potential fjall error was already checked & bailed over when peeking in the first loop
+                while let Some(Ok((_, get_counts))) =
+                    iter.next_if(|v| v.as_ref().unwrap().0 == child)
+                {
+                    let counts = get_counts()?;
+                    prefix_count.merge(&counts);
+                    merged.merge(&counts);
+                }
+            }
+            items.push(match child {
+                Child::FullNsid(nsid) => PrefixChild::Collection(NsidCount {
+                    nsid,
+                    creates: merged.counts().creates,
+                    dids_estimate: merged.dids().estimate() as u64,
+                }),
+                Child::ChildPrefix(prefix) => PrefixChild::Prefix(PrefixCount {
+                    prefix,
+                    creates: merged.counts().creates,
+                    dids_estimate: merged.dids().estimate() as u64,
+                }),
+            });
+        }
+
+        // TODO: could serialize the prefix count (with sketch) into the cursor so that uniqs can actually count up?
+        // ....er the sketch is probably too big
+        // TODO: this is probably buggy on child-type boundaries bleh
+        let next_cursor = current_child
+            .map(|s| s.into_inner().to_db_bytes())
+            .transpose()?;
+
+        Ok(((&prefix_count).into(), items, next_cursor))
+    }
+
+    fn get_prefix(
+        &self,
+        prefix: NsidPrefix,
+        limit: usize,
+        order: OrderCollectionsBy,
+        since: Option<HourTruncatedCursor>,
+        until: Option<HourTruncatedCursor>,
+    ) -> StorageResult<(JustCount, Vec<PrefixChild>, Option<Vec<u8>>)> {
+        let snapshot = self.rollups.snapshot();
+        let buckets = if let (None, None) = (since, until) {
+            vec![CursorBucket::AllTime]
+        } else {
+            let mut lower = self.get_earliest_hour(Some(&snapshot))?;
+            if let Some(specified) = since {
+                if specified > lower {
+                    lower = specified;
+                }
+            }
+            let upper = until.unwrap_or_else(|| Cursor::at(SystemTime::now()).into());
+            CursorBucket::buckets_spanning(lower, upper)
+        };
+        match order {
+            OrderCollectionsBy::Lexi { cursor } => {
+                self.get_lexi_prefix(snapshot, prefix, limit, cursor, buckets)
+            }
+            _ => todo!(),
+        }
+    }
+
     /// - step: output series time step, in seconds
     fn get_timeseries(
         &self,
@@ -819,6 +1001,20 @@ impl StoreReader for FjallReader {
         let s = self.clone();
         tokio::task::spawn_blocking(move || {
             FjallReader::get_collections(&s, limit, order, since, until)
+        })
+        .await?
+    }
+    async fn get_prefix(
+        &self,
+        prefix: NsidPrefix,
+        limit: usize,
+        order: OrderCollectionsBy,
+        since: Option<HourTruncatedCursor>,
+        until: Option<HourTruncatedCursor>,
+    ) -> StorageResult<(JustCount, Vec<PrefixChild>, Option<Vec<u8>>)> {
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || {
+            FjallReader::get_prefix(&s, prefix, limit, order, since, until)
         })
         .await?
     }

@@ -1,7 +1,7 @@
 use crate::store_types::{CountsValue, HourTruncatedCursor, SketchSecretPrefix};
 use crate::{
-    error::StorageError, ConsumerInfo, Cursor, EventBatch, JustCount, NsidCount,
-    OrderCollectionsBy, UFOsRecord,
+    error::StorageError, ConsumerInfo, Cursor, EventBatch, JustCount, NsidCount, NsidPrefix,
+    OrderCollectionsBy, PrefixChild, UFOsRecord,
 };
 use async_trait::async_trait;
 use jetstream::exports::{Did, Nsid};
@@ -106,6 +106,15 @@ pub trait StoreReader: Send + Sync {
         since: Option<HourTruncatedCursor>,
         until: Option<HourTruncatedCursor>,
     ) -> StorageResult<(Vec<NsidCount>, Option<Vec<u8>>)>;
+
+    async fn get_prefix(
+        &self,
+        prefix: NsidPrefix,
+        limit: usize,
+        order: OrderCollectionsBy,
+        since: Option<HourTruncatedCursor>,
+        until: Option<HourTruncatedCursor>,
+    ) -> StorageResult<(JustCount, Vec<PrefixChild>, Option<Vec<u8>>)>;
 
     async fn get_timeseries(
         &self,
