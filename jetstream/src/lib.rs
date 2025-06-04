@@ -363,7 +363,7 @@ impl JetstreamConnector {
                 retry_attempt += 1;
                 if let Ok((ws_stream, _)) = connect_async(req).await {
                     let t_connected = Instant::now();
-                    log::trace!("jetstream connected. starting websocket task...");
+                    log::info!("jetstream connected. starting websocket task...");
                     if let Err(e) =
                         websocket_task(dict, ws_stream, send_channel.clone(), &mut last_cursor)
                             .await
@@ -374,15 +374,16 @@ impl JetstreamConnector {
                         }
                         log::error!("Jetstream closed after encountering error: {e:?}");
                     } else {
-                        log::error!("Jetstream connection closed cleanly");
+                        log::warn!("Jetstream connection closed cleanly");
                     }
                     if t_connected.elapsed() > Duration::from_secs(success_threshold_s) {
+                        log::warn!("Jetstream: more than {success_threshold_s}s since last reconnect, reconnecting immediately.");
                         retry_attempt = 0;
                     }
                 }
 
                 if retry_attempt >= max_retries {
-                    log::error!("hit max retries, bye");
+                    log::error!("jetstream: hit max retries, bye");
                     break;
                 }
 
@@ -422,99 +423,91 @@ async fn websocket_task(
     let mut closing_connection = false;
     loop {
         match socket_read.next().await {
-            Some(Ok(message)) => {
-                match message {
-                    Message::Text(json) => {
-                        let event: JetstreamEvent = match serde_json::from_str(&json) {
-                            Ok(ev) => ev,
-                            Err(e) => {
-                                log::warn!(
-                                    "failed to parse json: {e:?} (from {})",
-                                    json.get(..24).unwrap_or(&json)
-                                );
-                                continue;
-                            }
-                        };
-                        let event_cursor = event.cursor;
-
-                        if let Some(last) = last_cursor {
-                            if event_cursor <= *last {
-                                log::warn!("event cursor {event_cursor:?} was not newer than the last one: {last:?}. dropping event.");
-                                continue;
-                            }
+            Some(Ok(message)) => match message {
+                Message::Text(json) => {
+                    let event: JetstreamEvent = match serde_json::from_str(&json) {
+                        Ok(ev) => ev,
+                        Err(e) => {
+                            log::warn!(
+                                "failed to parse json: {e:?} (from {})",
+                                json.get(..24).unwrap_or(&json)
+                            );
+                            continue;
                         }
+                    };
+                    let event_cursor = event.cursor;
 
-                        if send_channel.send(event).await.is_err() {
-                            // We can assume that all receivers have been dropped, so we can close
-                            // the connection and exit the task.
-                            log::info!(
+                    if let Some(last) = last_cursor {
+                        if event_cursor <= *last {
+                            log::warn!("event cursor {event_cursor:?} was not newer than the last one: {last:?}. dropping event.");
+                            continue;
+                        }
+                    }
+
+                    if send_channel.send(event).await.is_err() {
+                        log::warn!(
                                 "All receivers for the Jetstream connection have been dropped, closing connection."
                             );
-                            socket_write.close().await?;
-                            return Err(JetstreamEventError::ReceiverClosedError);
-                        } else if let Some(last) = last_cursor.as_mut() {
-                            *last = event_cursor;
-                        }
+                        socket_write.close().await?;
+                        return Err(JetstreamEventError::ReceiverClosedError);
+                    } else if let Some(last) = last_cursor.as_mut() {
+                        *last = event_cursor;
                     }
-                    Message::Binary(zstd_json) => {
-                        let mut cursor = IoCursor::new(zstd_json);
-                        let decoder = zstd::stream::Decoder::with_prepared_dictionary(
-                            &mut cursor,
-                            &dictionary,
-                        )
-                        .map_err(JetstreamEventError::CompressionDictionaryError)?;
-
-                        let event: JetstreamEvent = match serde_json::from_reader(decoder) {
-                            Ok(ev) => ev,
-                            Err(e) => {
-                                log::warn!("failed to parse json: {e:?}");
-                                continue;
-                            }
-                        };
-                        let event_cursor = event.cursor;
-
-                        if let Some(last) = last_cursor {
-                            if event_cursor <= *last {
-                                log::warn!("event cursor {event_cursor:?} was not newer than the last one: {last:?}. dropping event.");
-                                continue;
-                            }
-                        }
-
-                        if send_channel.send(event).await.is_err() {
-                            // We can assume that all receivers have been dropped, so we can close
-                            // the connection and exit the task.
-                            log::info!(
-                                "All receivers for the Jetstream connection have been dropped, closing connection."
-                            );
-                            socket_write.close().await?;
-                            return Err(JetstreamEventError::ReceiverClosedError);
-                        } else if let Some(last) = last_cursor.as_mut() {
-                            *last = event_cursor;
-                        }
-                    }
-                    Message::Ping(vec) => {
-                        log::trace!("Ping recieved, responding");
-                        socket_write
-                            .send(Message::Pong(vec))
-                            .await
-                            .map_err(JetstreamEventError::PingPongError)?;
-                    }
-                    Message::Close(close_frame) => {
-                        log::trace!("Close recieved. I guess we just log here?");
-                        if let Some(close_frame) = close_frame {
-                            let reason = close_frame.reason;
-                            let code = close_frame.code;
-                            log::trace!("Connection closed. Reason: {reason}, Code: {code}");
-                        }
-                    }
-                    Message::Pong(pong) => {
-                        let pong_payload = String::from_utf8(pong.to_vec())
-                            .unwrap_or("Invalid payload".to_string());
-                        log::trace!("Pong recieved. Payload: {pong_payload}");
-                    }
-                    Message::Frame(_) => (),
                 }
-            }
+                Message::Binary(zstd_json) => {
+                    let mut cursor = IoCursor::new(zstd_json);
+                    let decoder =
+                        zstd::stream::Decoder::with_prepared_dictionary(&mut cursor, &dictionary)
+                            .map_err(JetstreamEventError::CompressionDictionaryError)?;
+
+                    let event: JetstreamEvent = match serde_json::from_reader(decoder) {
+                        Ok(ev) => ev,
+                        Err(e) => {
+                            log::warn!("failed to parse json: {e:?}");
+                            continue;
+                        }
+                    };
+                    let event_cursor = event.cursor;
+
+                    if let Some(last) = last_cursor {
+                        if event_cursor <= *last {
+                            log::warn!("event cursor {event_cursor:?} was not newer than the last one: {last:?}. dropping event.");
+                            continue;
+                        }
+                    }
+
+                    if send_channel.send(event).await.is_err() {
+                        log::warn!(
+                                "All receivers for the Jetstream connection have been dropped, closing connection."
+                            );
+                        socket_write.close().await?;
+                        return Err(JetstreamEventError::ReceiverClosedError);
+                    } else if let Some(last) = last_cursor.as_mut() {
+                        *last = event_cursor;
+                    }
+                }
+                Message::Ping(vec) => {
+                    log::trace!("Ping recieved, responding");
+                    socket_write
+                        .send(Message::Pong(vec))
+                        .await
+                        .map_err(JetstreamEventError::PingPongError)?;
+                }
+                Message::Close(close_frame) => {
+                    log::trace!("Close recieved. I guess we just log here?");
+                    if let Some(close_frame) = close_frame {
+                        let reason = close_frame.reason;
+                        let code = close_frame.code;
+                        log::trace!("Connection closed. Reason: {reason}, Code: {code}");
+                    }
+                }
+                Message::Pong(pong) => {
+                    let pong_payload =
+                        String::from_utf8(pong.to_vec()).unwrap_or("Invalid payload".to_string());
+                    log::trace!("Pong recieved. Payload: {pong_payload}");
+                }
+                Message::Frame(_) => (),
+            },
             Some(Err(error)) => {
                 log::error!("Web socket error: {error}");
                 closing_connection = true;

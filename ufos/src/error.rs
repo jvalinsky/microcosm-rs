@@ -40,4 +40,6 @@ pub enum StorageError {
     JoinError(#[from] tokio::task::JoinError),
     #[error("Background task already started")]
     BackgroundAlreadyStarted,
+    #[error("Batch sender exited")]
+    BatchSenderExited,
 }

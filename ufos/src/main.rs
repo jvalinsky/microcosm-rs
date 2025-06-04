@@ -100,14 +100,14 @@ async fn go<B: StoreBackground>(
     let rolling = write_store
         .background_tasks(args.reroll)?
         .run(args.backfill);
-    let storing = write_store.receive_batches(batches);
+    let consuming = write_store.receive_batches(batches);
 
     let stating = do_update_stuff(read_store);
 
     tokio::select! {
         z = serving => log::warn!("serve task ended: {z:?}"),
         z = rolling => log::warn!("rollup task ended: {z:?}"),
-        z = storing => log::warn!("storage task ended: {z:?}"),
+        z = consuming => log::warn!("consuming task ended: {z:?}"),
         z = stating => log::warn!("status task ended: {z:?}"),
     };
 

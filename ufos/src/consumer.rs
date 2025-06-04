@@ -68,7 +68,7 @@ pub async fn consume(
     let mut batcher = Batcher::new(jetstream_receiver, batch_sender, sketch_secret);
     tokio::task::spawn(async move {
         let r = batcher.run().await;
-        log::info!("batcher ended: {r:?}");
+        log::warn!("batcher ended: {r:?}");
     });
     Ok(batch_reciever)
 }
@@ -93,12 +93,7 @@ impl Batcher {
     pub async fn run(&mut self) -> anyhow::Result<()> {
         // TODO: report errors *from here* probably, since this gets shipped off into a spawned task that might just vanish
         loop {
-            match timeout(
-                Duration::from_millis(30_000),
-                self.jetstream_receiver.recv(),
-            )
-            .await
-            {
+            match timeout(Duration::from_secs_f64(30.), self.jetstream_receiver.recv()).await {
                 Err(_elapsed) => self.no_events_step().await?,
                 Ok(Some(event)) => self.handle_event(event).await?,
                 Ok(None) => anyhow::bail!("channel closed"),
@@ -198,7 +193,7 @@ impl Batcher {
             Some(Ok(t)) => format!("{:?}", t),
             Some(Err(e)) => format!("+{:?}", e.duration()),
         };
-        log::trace!(
+        log::info!(
             "sending batch now from {beginning}, {}, queue capacity: {}, referrer: {referrer}",
             if small { "small" } else { "full" },
             self.batch_sender.capacity(),
