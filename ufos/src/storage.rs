@@ -43,13 +43,13 @@ where
                 let mut concerned = false;
                 loop {
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs_f64(1.)) => {
+                        _ = tokio::time::sleep(Duration::from_secs_f64(3.)) => {
                             log::warn!("taking a long time to insert an event batch ({:?})...", started.elapsed());
                             concerned = true;
                         }
                         _ = cancelled.cancelled() => {
                             if concerned {
-                                log::warn!("finally inserted slow event batch after {:?}", started.elapsed());
+                                log::warn!("finally inserted slow event batch (or failed) after {:?}", started.elapsed());
                             }
                             break
                         }

@@ -18,8 +18,8 @@ pub const MAX_ACCOUNT_REMOVES: usize = 1024; // hard limit, extremely unlikely t
 pub const MAX_BATCHED_COLLECTIONS: usize = 64; // hard limit, MAX_BATCHED_RECORDS applies per-collection
 pub const MIN_BATCH_SPAN_SECS: f64 = 2.; // breathe
 pub const MAX_BATCH_SPAN_SECS: f64 = 60.; // hard limit, pause consumer if we're unable to send by now
-pub const SEND_TIMEOUT_S: f64 = 15.; // if the channel is blocked longer than this, something is probably up
-pub const BATCH_QUEUE_SIZE: usize = 1; // nearly-rendez-vous
+pub const SEND_TIMEOUT_S: f64 = 150.; // if the channel is blocked longer than this, something is probably up
+pub const BATCH_QUEUE_SIZE: usize = 64; // used to be 1, but sometimes inserts are just really slow????????
 
 pub type LimitedBatch = EventBatch<MAX_BATCHED_RECORDS>;
 
