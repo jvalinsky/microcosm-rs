@@ -277,7 +277,7 @@ pub enum ConsumerInfo {
     },
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
 pub struct NsidCount {
     nsid: String,
     creates: u64,
@@ -285,7 +285,7 @@ pub struct NsidCount {
     dids_estimate: u64,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
 pub struct PrefixCount {
     prefix: String,
     creates: u64,
@@ -293,7 +293,7 @@ pub struct PrefixCount {
     dids_estimate: u64,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PrefixChild {
     Collection(NsidCount),

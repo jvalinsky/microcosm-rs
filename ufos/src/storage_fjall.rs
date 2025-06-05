@@ -2466,4 +2466,165 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn get_nsid_prefix_children_lexi_empty() {
+        let (read, _) = fjall_db();
+        let (
+            JustCount {
+                creates,
+                dids_estimate,
+                ..
+            },
+            children,
+            cursor,
+        ) = read
+            .get_prefix(
+                NsidPrefix::new("aaa.aaa").unwrap(),
+                10,
+                OrderCollectionsBy::Lexi { cursor: None },
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(creates, 0);
+        assert_eq!(dids_estimate, 0);
+        assert_eq!(children, vec![]);
+        assert_eq!(cursor, None);
+    }
+
+    #[test]
+    fn get_nsid_prefix_children_lexi() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+        );
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a.a",
+            "rkey-aaaa",
+            "{}",
+            Some("rev-aaaa"),
+            None,
+            10_001,
+        );
+        batch.create(
+            "did:plc:person-b",
+            "a.a.a.a",
+            "rkey-aaaa",
+            "{}",
+            Some("rev-aaaa"),
+            None,
+            10_002,
+        );
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a.c",
+            "rkey-aaac",
+            "{}",
+            Some("rev-aaac"),
+            None,
+            10_003,
+        );
+        batch.create(
+            "did:plc:person-b",
+            "a.b.c.d",
+            "rkey-abcd",
+            "{}",
+            Some("rev-abcd"),
+            None,
+            10_004,
+        );
+        batch.create(
+            "did:plc:person-a",
+            "w.x.y.z",
+            "rkey-wxyz",
+            "{}",
+            Some("rev-wxyz"),
+            None,
+            10_005,
+        );
+        write.insert_batch(batch.batch)?;
+
+        write.step_rollup()?;
+
+        let (
+            JustCount {
+                creates,
+                dids_estimate,
+                ..
+            },
+            children,
+            cursor,
+        ) = read.get_prefix(
+            NsidPrefix::new("a.a").unwrap(),
+            10,
+            OrderCollectionsBy::Lexi { cursor: None },
+            None,
+            None,
+        )?;
+        assert_eq!(creates, 4);
+        assert_eq!(dids_estimate, 2);
+        assert_eq!(
+            children,
+            vec![
+                PrefixChild::Collection(NsidCount {
+                    nsid: "a.a.a".to_string(),
+                    creates: 1,
+                    dids_estimate: 1
+                }),
+                PrefixChild::Prefix(PrefixCount {
+                    prefix: "a.a.a".to_string(),
+                    creates: 3,
+                    dids_estimate: 2
+                }),
+            ]
+        );
+        assert_eq!(cursor, None);
+
+        let (
+            JustCount {
+                creates,
+                dids_estimate,
+                ..
+            },
+            children,
+            cursor,
+        ) = read.get_prefix(
+            NsidPrefix::new("a.a.a").unwrap(),
+            10,
+            OrderCollectionsBy::Lexi { cursor: None },
+            None,
+            None,
+        )?;
+        assert_eq!(creates, 4);
+        assert_eq!(dids_estimate, 2);
+        assert_eq!(
+            children,
+            vec![
+                PrefixChild::Collection(NsidCount {
+                    nsid: "a.a.a".to_string(),
+                    creates: 1,
+                    dids_estimate: 1
+                }),
+                PrefixChild::Prefix(PrefixCount {
+                    prefix: "a.a.a".to_string(),
+                    creates: 3,
+                    dids_estimate: 2
+                }),
+            ]
+        );
+        assert_eq!(cursor, None);
+
+        Ok(())
+    }
 }
