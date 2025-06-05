@@ -274,6 +274,10 @@ fn get_links(
         .get_links(&query.target, &query.collection, &query.path, limit, until)
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    let total = store
+        .get_count(&query.target, &query.collection, &query.path)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
     let cursor = paged.next.map(|next| {
         ApiCursor {
             version: paged.version,
@@ -285,7 +289,7 @@ fn get_links(
     Ok(acceptable(
         accept,
         GetLinkItemsResponse {
-            total: paged.version.0,
+            total: total,
             linking_records: paged.items,
             cursor,
             query: (*query).clone(),
@@ -335,6 +339,12 @@ fn get_distinct_dids(
         .get_distinct_dids(&query.target, &query.collection, &query.path, limit, until)
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    let distinct_dids_total = store
+        .get_distinct_did_count(&query.target, &query.collection, &query.path)
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+
+
     let cursor = paged.next.map(|next| {
         ApiCursor {
             version: paged.version,
@@ -346,7 +356,7 @@ fn get_distinct_dids(
     Ok(acceptable(
         accept,
         GetDidItemsResponse {
-            total: paged.version.0,
+            total: distinct_dids_total,
             linking_dids: paged.items,
             cursor,
             query: (*query).clone(),
