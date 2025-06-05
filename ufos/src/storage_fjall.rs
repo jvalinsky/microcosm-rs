@@ -665,13 +665,21 @@ impl FjallReader {
         cursor: Option<Vec<u8>>,
         buckets: Vec<CursorBucket>,
     ) -> StorageResult<(JustCount, Vec<PrefixChild>, Option<Vec<u8>>)> {
+        // TODO: fix up this mess
+        // the lower/start bound is tricky because `Exclusive()` _without_ a null terminator _will_ include the null-
+        // terminated exact match. so we actually need the null terminator for an exclusive lower bound!
+        //
+        // but for upper/end bound, we *cannot* have a null terminator after the prefix, else we'll only get everything up
+        // until prefix+null (aka nothing).
+        // anywayyyyyyyy
+        let prefix_sub_with_null = prefix.as_str().to_string().to_db_bytes()?;
         let prefix_sub = String::sub_prefix(prefix.as_str())?;
         let cursor_child = cursor
             .as_deref()
             .map(|encoded_bytes| {
                 let decoded: String = db_complete(encoded_bytes)?;
-                let as_sub_prefix = String::sub_prefix(&decoded)?;
-                Ok::<_, EncodingError>(as_sub_prefix)
+                let as_sub_prefix_with_null = decoded.to_db_bytes()?;
+                Ok::<_, EncodingError>(as_sub_prefix_with_null)
             })
             .transpose()?;
         let mut iters: Vec<NsidCounter> = Vec::with_capacity(buckets.len());
@@ -681,7 +689,9 @@ impl FjallReader {
                     let start = cursor_child
                         .as_ref()
                         .map(|child| HourlyRollupKey::after_nsid_prefix(*t, child))
-                        .unwrap_or_else(|| HourlyRollupKey::after_nsid_prefix(*t, &prefix_sub))?;
+                        .unwrap_or_else(|| {
+                            HourlyRollupKey::after_nsid_prefix(*t, &prefix_sub_with_null)
+                        })?;
                     let end = HourlyRollupKey::nsid_prefix_end(*t, &prefix_sub)?;
                     get_lexi_iter::<HourlyRollupKey>(&snapshot, start, end)?
                 }
@@ -689,7 +699,9 @@ impl FjallReader {
                     let start = cursor_child
                         .as_ref()
                         .map(|child| WeeklyRollupKey::after_nsid_prefix(*t, child))
-                        .unwrap_or_else(|| WeeklyRollupKey::after_nsid_prefix(*t, &prefix_sub))?;
+                        .unwrap_or_else(|| {
+                            WeeklyRollupKey::after_nsid_prefix(*t, &prefix_sub_with_null)
+                        })?;
                     let end = WeeklyRollupKey::nsid_prefix_end(*t, &prefix_sub)?;
                     get_lexi_iter::<WeeklyRollupKey>(&snapshot, start, end)?
                 }
@@ -697,7 +709,9 @@ impl FjallReader {
                     let start = cursor_child
                         .as_ref()
                         .map(|child| AllTimeRollupKey::after_nsid_prefix(child))
-                        .unwrap_or_else(|| AllTimeRollupKey::after_nsid_prefix(&prefix_sub))?;
+                        .unwrap_or_else(|| {
+                            AllTimeRollupKey::after_nsid_prefix(&prefix_sub_with_null)
+                        })?;
                     let end = AllTimeRollupKey::nsid_prefix_end(&prefix_sub)?;
                     get_lexi_iter::<AllTimeRollupKey>(&snapshot, start, end)?
                 }
@@ -709,8 +723,15 @@ impl FjallReader {
         let mut iters: Vec<_> = iters
             .into_iter()
             .map(|it| {
-                it.map(|bla| bla.map(|(nsid, v)| (Child::from_prefix(&nsid, &prefix), v)))
-                    .peekable()
+                it.map(|bla| {
+                    bla.map(|(nsid, v)| {
+                        let Some(child) = Child::from_prefix(&nsid, &prefix) else {
+                            panic!("failed from_prefix: {nsid:?} {prefix:?} (bad iter bounds?)");
+                        };
+                        (child, v)
+                    })
+                })
+                .peekable()
             })
             .collect();
 
@@ -722,17 +743,14 @@ impl FjallReader {
             ChildPrefix(String),
         }
         impl Child {
-            fn from_prefix(nsid: &Nsid, prefix: &NsidPrefix) -> Self {
+            fn from_prefix(nsid: &Nsid, prefix: &NsidPrefix) -> Option<Self> {
                 if prefix.is_group_of(nsid) {
-                    Child::FullNsid(nsid.to_string())
-                } else {
-                    let suffix = nsid
-                        .as_str()
-                        .strip_prefix(&format!("{}.", prefix.0))
-                        .unwrap();
-                    let (segment, _) = suffix.split_once('.').unwrap();
-                    Child::ChildPrefix(format!("{}.{segment}", prefix.0))
+                    return Some(Child::FullNsid(nsid.to_string()));
                 }
+                let suffix = nsid.as_str().strip_prefix(&format!("{}.", prefix.0))?;
+                let (segment, _) = suffix.split_once('.').unwrap();
+                let child_prefix = format!("{}.{segment}", prefix.0);
+                Some(Child::ChildPrefix(child_prefix))
             }
             fn is_before(&self, other: &Child) -> bool {
                 match (self, other) {
@@ -2468,7 +2486,7 @@ mod tests {
     }
 
     #[test]
-    fn get_nsid_prefix_children_lexi_empty() {
+    fn get_prefix_children_lexi_empty() {
         let (read, _) = fjall_db();
         let (
             JustCount {
@@ -2495,7 +2513,7 @@ mod tests {
     }
 
     #[test]
-    fn get_nsid_prefix_children_lexi() -> anyhow::Result<()> {
+    fn get_prefix_excludes_exact_collection() -> anyhow::Result<()> {
         let (read, mut write) = fjall_db();
 
         let mut batch = TestBatch::default();
@@ -2508,53 +2526,46 @@ mod tests {
             None,
             10_000,
         );
+        write.insert_batch(batch.batch)?;
+        write.step_rollup()?;
+
+        let (
+            JustCount {
+                creates,
+                dids_estimate,
+                ..
+            },
+            children,
+            cursor,
+        ) = read.get_prefix(
+            NsidPrefix::new("a.a.a").unwrap(),
+            10,
+            OrderCollectionsBy::Lexi { cursor: None },
+            None,
+            None,
+        )?;
+        assert_eq!(creates, 0);
+        assert_eq!(dids_estimate, 0);
+        assert_eq!(children, vec![]);
+        assert_eq!(cursor, None);
+        Ok(())
+    }
+
+    #[test]
+    fn get_prefix_includes_child_collection() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
         batch.create(
             "did:plc:person-a",
-            "a.a.a.a",
-            "rkey-aaaa",
+            "a.a.a",
+            "rkey-aaa",
             "{}",
-            Some("rev-aaaa"),
+            Some("rev-aaa"),
             None,
-            10_001,
-        );
-        batch.create(
-            "did:plc:person-b",
-            "a.a.a.a",
-            "rkey-aaaa",
-            "{}",
-            Some("rev-aaaa"),
-            None,
-            10_002,
-        );
-        batch.create(
-            "did:plc:person-a",
-            "a.a.a.c",
-            "rkey-aaac",
-            "{}",
-            Some("rev-aaac"),
-            None,
-            10_003,
-        );
-        batch.create(
-            "did:plc:person-b",
-            "a.b.c.d",
-            "rkey-abcd",
-            "{}",
-            Some("rev-abcd"),
-            None,
-            10_004,
-        );
-        batch.create(
-            "did:plc:person-a",
-            "w.x.y.z",
-            "rkey-wxyz",
-            "{}",
-            Some("rev-wxyz"),
-            None,
-            10_005,
+            10_000,
         );
         write.insert_batch(batch.batch)?;
-
         write.step_rollup()?;
 
         let (
@@ -2572,24 +2583,158 @@ mod tests {
             None,
             None,
         )?;
-        assert_eq!(creates, 4);
-        assert_eq!(dids_estimate, 2);
+        assert_eq!(creates, 1);
+        assert_eq!(dids_estimate, 1);
         assert_eq!(
             children,
-            vec![
-                PrefixChild::Collection(NsidCount {
-                    nsid: "a.a.a".to_string(),
-                    creates: 1,
-                    dids_estimate: 1
-                }),
-                PrefixChild::Prefix(PrefixCount {
-                    prefix: "a.a.a".to_string(),
-                    creates: 3,
-                    dids_estimate: 2
-                }),
-            ]
+            vec![PrefixChild::Collection(NsidCount {
+                nsid: "a.a.a".to_string(),
+                creates: 1,
+                dids_estimate: 1
+            }),]
         );
         assert_eq!(cursor, None);
+        Ok(())
+    }
+
+    #[test]
+    fn get_prefix_includes_child_prefix() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a.a",
+            "rkey-aaaa",
+            "{}",
+            Some("rev-aaaa"),
+            None,
+            10_000,
+        );
+        write.insert_batch(batch.batch)?;
+        write.step_rollup()?;
+
+        let (
+            JustCount {
+                creates,
+                dids_estimate,
+                ..
+            },
+            children,
+            cursor,
+        ) = read.get_prefix(
+            NsidPrefix::new("a.a").unwrap(),
+            10,
+            OrderCollectionsBy::Lexi { cursor: None },
+            None,
+            None,
+        )?;
+        assert_eq!(creates, 1);
+        assert_eq!(dids_estimate, 1);
+        assert_eq!(
+            children,
+            vec![PrefixChild::Prefix(PrefixCount {
+                prefix: "a.a.a".to_string(),
+                creates: 1,
+                dids_estimate: 1
+            }),]
+        );
+        assert_eq!(cursor, None);
+        Ok(())
+    }
+
+    #[test]
+    fn get_prefix_merges_child_prefixes() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a.a",
+            "rkey-aaaa",
+            "{}",
+            Some("rev-aaaa"),
+            None,
+            10_000,
+        );
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a.b",
+            "rkey-aaab",
+            "{}",
+            Some("rev-aaab"),
+            None,
+            10_001,
+        );
+        write.insert_batch(batch.batch)?;
+        write.step_rollup()?;
+
+        let (
+            JustCount {
+                creates,
+                dids_estimate,
+                ..
+            },
+            children,
+            cursor,
+        ) = read.get_prefix(
+            NsidPrefix::new("a.a").unwrap(),
+            10,
+            OrderCollectionsBy::Lexi { cursor: None },
+            None,
+            None,
+        )?;
+        assert_eq!(creates, 2);
+        assert_eq!(dids_estimate, 1);
+        assert_eq!(
+            children,
+            vec![PrefixChild::Prefix(PrefixCount {
+                prefix: "a.a.a".to_string(),
+                creates: 2,
+                dids_estimate: 1
+            }),]
+        );
+        assert_eq!(cursor, None);
+        Ok(())
+    }
+
+    #[test]
+    fn get_prefix_exact_and_child_and_prefix() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        // exact:
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+        );
+        // child:
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a.a",
+            "rkey-aaaa",
+            "{}",
+            Some("rev-aaaa"),
+            None,
+            10_001,
+        );
+        // prefix:
+        batch.create(
+            "did:plc:person-a",
+            "a.a.a.a.a",
+            "rkey-aaaaa",
+            "{}",
+            Some("rev-aaaaa"),
+            None,
+            10_002,
+        );
+        write.insert_batch(batch.batch)?;
+        write.step_rollup()?;
 
         let (
             JustCount {
@@ -2606,25 +2751,24 @@ mod tests {
             None,
             None,
         )?;
-        assert_eq!(creates, 4);
-        assert_eq!(dids_estimate, 2);
+        assert_eq!(creates, 2);
+        assert_eq!(dids_estimate, 1);
         assert_eq!(
             children,
             vec![
                 PrefixChild::Collection(NsidCount {
-                    nsid: "a.a.a".to_string(),
+                    nsid: "a.a.a.a".to_string(),
                     creates: 1,
                     dids_estimate: 1
                 }),
                 PrefixChild::Prefix(PrefixCount {
-                    prefix: "a.a.a".to_string(),
-                    creates: 3,
-                    dids_estimate: 2
+                    prefix: "a.a.a.a".to_string(),
+                    creates: 1,
+                    dids_estimate: 1
                 }),
             ]
         );
         assert_eq!(cursor, None);
-
         Ok(())
     }
 }
