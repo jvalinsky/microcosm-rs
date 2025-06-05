@@ -16,6 +16,7 @@ pub struct PagedAppendingCollection<T> {
     pub version: (u64, u64), // (collection length, deleted item count) // TODO: change to (total, active)? since dedups isn't "deleted"
     pub items: Vec<T>,
     pub next: Option<u64>,
+    pub total: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -149,6 +150,7 @@ mod tests {
                 version: (0, 0),
                 items: vec![],
                 next: None,
+                total: 0,
             }
         );
         assert_eq!(
@@ -157,6 +159,7 @@ mod tests {
                 version: (0, 0),
                 items: vec![],
                 next: None,
+                total: 0,
             }
         );
         assert_eq!(storage.get_all_counts("bad-example.com")?, HashMap::new());
@@ -647,6 +650,7 @@ mod tests {
                     rkey: "asdf".into(),
                 }],
                 next: None,
+                total: 1,
             }
         );
         assert_eq!(
@@ -655,6 +659,7 @@ mod tests {
                 version: (1, 0),
                 items: vec!["did:plc:asdf".into()],
                 next: None,
+                total: 1,
             }
         );
         assert_stats(storage.get_stats()?, 1..=1, 1..=1, 1..=1);
@@ -696,6 +701,7 @@ mod tests {
                     },
                 ],
                 next: Some(3),
+                total: 5,
             }
         );
         assert_eq!(
@@ -704,6 +710,7 @@ mod tests {
                 version: (5, 0),
                 items: vec!["did:plc:asdf-5".into(), "did:plc:asdf-4".into()],
                 next: Some(3),
+                total: 5,
             }
         );
         let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
@@ -725,6 +732,7 @@ mod tests {
                     },
                 ],
                 next: Some(1),
+                total: 5,
             }
         );
         assert_eq!(
@@ -733,6 +741,7 @@ mod tests {
                 version: (5, 0),
                 items: vec!["did:plc:asdf-3".into(), "did:plc:asdf-2".into()],
                 next: Some(1),
+                total: 5,
             }
         );
         let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
@@ -747,6 +756,7 @@ mod tests {
                     rkey: "asdf".into(),
                 },],
                 next: None,
+                total: 5,
             }
         );
         assert_eq!(
@@ -755,6 +765,7 @@ mod tests {
                 version: (5, 0),
                 items: vec!["did:plc:asdf-1".into()],
                 next: None,
+                total: 5,
             }
         );
         assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
@@ -795,6 +806,7 @@ mod tests {
                     },
                 ],
                 next: Some(2),
+                total: 4,
             }
         );
         let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
@@ -815,6 +827,7 @@ mod tests {
                     },
                 ],
                 next: None,
+                total: 4,
             }
         );
         assert_stats(storage.get_stats()?, 4..=4, 1..=1, 4..=4);
@@ -855,6 +868,7 @@ mod tests {
                     },
                 ],
                 next: Some(2),
+                total: 4,
             }
         );
         storage.push(
@@ -889,6 +903,7 @@ mod tests {
                     },
                 ],
                 next: None,
+                total: 5,
             }
         );
         assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
@@ -929,6 +944,7 @@ mod tests {
                     },
                 ],
                 next: Some(2),
+                total: 4,
             }
         );
         storage.push(
@@ -950,6 +966,7 @@ mod tests {
                     rkey: "asdf".into(),
                 },],
                 next: None,
+                total: 3,
             }
         );
         assert_stats(storage.get_stats()?, 4..=4, 1..=1, 3..=3);
@@ -990,6 +1007,7 @@ mod tests {
                     },
                 ],
                 next: Some(2),
+                total: 4,
             }
         );
         storage.push(
@@ -1007,6 +1025,7 @@ mod tests {
                     rkey: "asdf".into(),
                 },],
                 next: None,
+                total: 4,
             }
         );
         assert_stats(storage.get_stats()?, 4..=4, 1..=1, 4..=4);

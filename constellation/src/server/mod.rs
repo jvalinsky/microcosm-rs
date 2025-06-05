@@ -285,7 +285,7 @@ fn get_links(
     Ok(acceptable(
         accept,
         GetLinkItemsResponse {
-            total: paged.version.0,
+            total: paged.total,
             linking_records: paged.items,
             cursor,
             query: (*query).clone(),
@@ -346,7 +346,7 @@ fn get_distinct_dids(
     Ok(acceptable(
         accept,
         GetDidItemsResponse {
-            total: paged.version.0,
+            total: paged.total,
             linking_dids: paged.items,
             cursor,
             query: (*query).clone(),

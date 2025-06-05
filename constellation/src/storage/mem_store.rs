@@ -173,6 +173,7 @@ impl LinkReader for MemStorage {
                 version: (0, 0),
                 items: Vec::new(),
                 next: None,
+                total: 0,
             });
         };
         let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
@@ -180,6 +181,7 @@ impl LinkReader for MemStorage {
                 version: (0, 0),
                 items: Vec::new(),
                 next: None,
+                total: 0,
             });
         };
 
@@ -209,6 +211,7 @@ impl LinkReader for MemStorage {
             version: (total as u64, gone as u64),
             items,
             next,
+            total: alive as u64,
         })
     }
 
@@ -226,6 +229,7 @@ impl LinkReader for MemStorage {
                 version: (0, 0),
                 items: Vec::new(),
                 next: None,
+                total: 0,
             });
         };
         let Some(did_rkeys) = paths.get(&Source::new(collection, path)) else {
@@ -233,6 +237,7 @@ impl LinkReader for MemStorage {
                 version: (0, 0),
                 items: Vec::new(),
                 next: None,
+                total: 0,
             });
         };
 
@@ -275,6 +280,7 @@ impl LinkReader for MemStorage {
             version: (total as u64, gone as u64),
             items,
             next,
+            total: alive as u64,
         })
     }
 
