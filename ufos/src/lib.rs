@@ -303,6 +303,7 @@ pub enum PrefixChild {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct NsidPrefix(String);
 impl NsidPrefix {
+    /// Input must not include a trailing dot.
     pub fn new(pre: &str) -> EncodingResult<Self> {
         // it's a valid prefix if appending `.name` makes it a valid NSID
         Nsid::new(format!("{pre}.name")).map_err(EncodingError::BadAtriumStringType)?;
@@ -319,8 +320,13 @@ impl NsidPrefix {
         );
         self.0 == other.domain_authority()
     }
+    /// The prefix as initialized (no trailing dot)
     pub fn as_str(&self) -> &str {
         self.0.as_str()
+    }
+    /// The prefix with a trailing `.` appended to avoid matching a longer segment
+    pub fn terminated(&self) -> String {
+        format!("{}.", self.0)
     }
 }
 

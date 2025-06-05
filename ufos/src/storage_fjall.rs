@@ -665,19 +665,13 @@ impl FjallReader {
         cursor: Option<Vec<u8>>,
         buckets: Vec<CursorBucket>,
     ) -> StorageResult<(JustCount, Vec<PrefixChild>, Option<Vec<u8>>)> {
-        // TODO: fix up this mess
-        // the lower/start bound is tricky because `Exclusive()` _without_ a null terminator _will_ include the null-
-        // terminated exact match. so we actually need the null terminator for an exclusive lower bound!
-        //
-        // but for upper/end bound, we *cannot* have a null terminator after the prefix, else we'll only get everything up
-        // until prefix+null (aka nothing).
-        // anywayyyyyyyy
-        let prefix_sub_with_null = prefix.as_str().to_string().to_db_bytes()?;
-        let prefix_sub = String::sub_prefix(prefix.as_str())?;
+        // let prefix_sub_with_null = prefix.as_str().to_string().to_db_bytes()?;
+        let prefix_sub = String::sub_prefix(&prefix.terminated())?; // with trailing dot to ensure full segment match
         let cursor_child = cursor
             .as_deref()
             .map(|encoded_bytes| {
                 let decoded: String = db_complete(encoded_bytes)?;
+                // TODO: write some tests for cursors, there's probably bugs here
                 let as_sub_prefix_with_null = decoded.to_db_bytes()?;
                 Ok::<_, EncodingError>(as_sub_prefix_with_null)
             })
@@ -689,9 +683,7 @@ impl FjallReader {
                     let start = cursor_child
                         .as_ref()
                         .map(|child| HourlyRollupKey::after_nsid_prefix(*t, child))
-                        .unwrap_or_else(|| {
-                            HourlyRollupKey::after_nsid_prefix(*t, &prefix_sub_with_null)
-                        })?;
+                        .unwrap_or_else(|| HourlyRollupKey::after_nsid_prefix(*t, &prefix_sub))?;
                     let end = HourlyRollupKey::nsid_prefix_end(*t, &prefix_sub)?;
                     get_lexi_iter::<HourlyRollupKey>(&snapshot, start, end)?
                 }
@@ -699,9 +691,7 @@ impl FjallReader {
                     let start = cursor_child
                         .as_ref()
                         .map(|child| WeeklyRollupKey::after_nsid_prefix(*t, child))
-                        .unwrap_or_else(|| {
-                            WeeklyRollupKey::after_nsid_prefix(*t, &prefix_sub_with_null)
-                        })?;
+                        .unwrap_or_else(|| WeeklyRollupKey::after_nsid_prefix(*t, &prefix_sub))?;
                     let end = WeeklyRollupKey::nsid_prefix_end(*t, &prefix_sub)?;
                     get_lexi_iter::<WeeklyRollupKey>(&snapshot, start, end)?
                 }
@@ -709,9 +699,7 @@ impl FjallReader {
                     let start = cursor_child
                         .as_ref()
                         .map(|child| AllTimeRollupKey::after_nsid_prefix(child))
-                        .unwrap_or_else(|| {
-                            AllTimeRollupKey::after_nsid_prefix(&prefix_sub_with_null)
-                        })?;
+                        .unwrap_or_else(|| AllTimeRollupKey::after_nsid_prefix(&prefix_sub))?;
                     let end = AllTimeRollupKey::nsid_prefix_end(&prefix_sub)?;
                     get_lexi_iter::<AllTimeRollupKey>(&snapshot, start, end)?
                 }
