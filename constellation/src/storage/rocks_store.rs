@@ -872,6 +872,7 @@ impl LinkReader for RocksStorage {
                 version: (0, 0),
                 items: Vec::new(),
                 next: None,
+                total: 0,
             });
         };
 
@@ -914,6 +915,7 @@ impl LinkReader for RocksStorage {
             version: (total, gone),
             items,
             next,
+            total: alive,
         })
     }
 
@@ -936,6 +938,7 @@ impl LinkReader for RocksStorage {
                 version: (0, 0),
                 items: Vec::new(),
                 next: None,
+                total: 0,
             });
         };
 
@@ -974,6 +977,7 @@ impl LinkReader for RocksStorage {
             version: (total, gone),
             items,
             next,
+            total: alive,
         })
     }
 

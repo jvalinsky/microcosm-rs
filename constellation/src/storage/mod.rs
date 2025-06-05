@@ -16,6 +16,7 @@ pub struct PagedAppendingCollection<T> {
     pub version: (u64, u64), // (collection length, deleted item count) // TODO: change to (total, active)? since dedups isn't "deleted"
     pub items: Vec<T>,
     pub next: Option<u64>,
+    pub total: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
