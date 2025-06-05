@@ -2552,6 +2552,45 @@ mod tests {
     }
 
     #[test]
+    fn get_prefix_excludes_neighbour_collection() -> anyhow::Result<()> {
+        let (read, mut write) = fjall_db();
+
+        let mut batch = TestBatch::default();
+        batch.create(
+            "did:plc:person-a",
+            "a.a.aa",
+            "rkey-aaa",
+            "{}",
+            Some("rev-aaa"),
+            None,
+            10_000,
+        );
+        write.insert_batch(batch.batch)?;
+        write.step_rollup()?;
+
+        let (
+            JustCount {
+                creates,
+                dids_estimate,
+                ..
+            },
+            children,
+            cursor,
+        ) = read.get_prefix(
+            NsidPrefix::new("a.a.a").unwrap(),
+            10,
+            OrderCollectionsBy::Lexi { cursor: None },
+            None,
+            None,
+        )?;
+        assert_eq!(creates, 0);
+        assert_eq!(dids_estimate, 0);
+        assert_eq!(children, vec![]);
+        assert_eq!(cursor, None);
+        Ok(())
+    }
+
+    #[test]
     fn get_prefix_includes_child_collection() -> anyhow::Result<()> {
         let (read, mut write) = fjall_db();
 
