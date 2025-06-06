@@ -28,6 +28,19 @@ glibc will cause problems when switching between (`GLIBC_2.25` message). clean u
 cargo clean
 ```
 
+for bonilla but 64-bit? (rp4)
+```bash
+cross build --release --target aarch64-unknown-linux-gnu && scp ../target/aarch64-unknown-linux-gnu/release/ufos pi@bonilla.local:ufos
+# ^^ fails due to linker?
+
+cross build --release --target aarch64-unknown-linux-musl && scp ../target/aarch64-unknown-linux-musl/release/ufos pi@bonilla.local:ufos
+# seems to work
+
+rsync -avhP ufos-bff-rl/ pi@bonilla:/mnt/ufos-db/
+
+RUST_LOG=info ./ufos --jetstream us-west-2 --data /mnt/ufos-db/
+```
+
 nginx forward proxy for websocket (run this on another host):
 
 ```nginx

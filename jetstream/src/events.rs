@@ -92,8 +92,9 @@ impl Cursor {
     ///
     /// Warning: this exploits the internal implementation detail of jetstream cursors
     /// being ~microsecond timestamps.
-    pub fn at(t: SystemTime) -> Self {
+    pub fn at(t: impl Into<SystemTime>) -> Self {
         let unix_dt = t
+            .into()
             .duration_since(UNIX_EPOCH)
             .expect("cannot set jetstream cursor earlier than unix epoch");
         Self(unix_dt.as_micros() as u64)

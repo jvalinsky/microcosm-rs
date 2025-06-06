@@ -2,29 +2,61 @@ pub mod consumer;
 pub mod db_types;
 pub mod error;
 pub mod file_consumer;
+pub mod index_html;
 pub mod server;
 pub mod storage;
 pub mod storage_fjall;
-pub mod storage_mem;
 pub mod store_types;
 
+use crate::db_types::{EncodingError, EncodingResult};
 use crate::error::BatchInsertError;
-use cardinality_estimator::CardinalityEstimator;
+use crate::store_types::SketchSecretPrefix;
+use cardinality_estimator_safe::{Element, Sketch};
 use error::FirehoseEventError;
 use jetstream::events::{CommitEvent, CommitOp, Cursor};
 use jetstream::exports::{Did, Nsid, RecordKey};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::value::RawValue;
+use sha2::Sha256;
 use std::collections::HashMap;
+use std::time::Duration;
+
+fn did_element(sketch_secret: &SketchSecretPrefix, did: &Did) -> Element<14> {
+    Element::from_digest_with_prefix::<Sha256>(sketch_secret, did.as_bytes())
+}
+
+pub fn nice_duration(dt: Duration) -> String {
+    let secs = dt.as_secs_f64();
+    if secs < 1. {
+        return format!("{:.0}ms", secs * 1000.);
+    }
+    if secs < 60. {
+        return format!("{secs:.02}s");
+    }
+    let mins = (secs / 60.).floor();
+    let rsecs = secs - (mins * 60.);
+    if mins < 60. {
+        return format!("{mins:.0}m{rsecs:.0}s");
+    }
+    let hrs = (mins / 60.).floor();
+    let rmins = mins - (hrs * 60.);
+    if hrs < 24. {
+        return format!("{hrs:.0}h{rmins:.0}m{rsecs:.0}s");
+    }
+    let days = (hrs / 24.).floor();
+    let rhrs = hrs - (days * 24.);
+    format!("{days:.0}d{rhrs:.0}h{rmins:.0}m{rsecs:.0}s")
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct CollectionCommits<const LIMIT: usize> {
-    pub total_seen: usize,
-    pub dids_estimate: CardinalityEstimator<Did>,
+    pub creates: usize,
+    pub updates: usize,
+    pub deletes: usize,
+    pub dids_estimate: Sketch<14>,
     pub commits: Vec<UFOsCommit>,
     head: usize,
-    non_creates: usize,
 }
 
 impl<const LIMIT: usize> CollectionCommits<LIMIT> {
@@ -34,18 +66,53 @@ impl<const LIMIT: usize> CollectionCommits<LIMIT> {
             self.head = 0;
         }
     }
-    pub fn truncating_insert(&mut self, commit: UFOsCommit) -> Result<(), BatchInsertError> {
-        if self.non_creates == LIMIT {
+    /// lossy-ish commit insertion
+    ///
+    /// - new commits are *always* added to the batch or else rejected as full.
+    /// - when LIMIT is reached, new commits can displace existing `creates`.
+    ///   `update`s and `delete`s are *never* displaced.
+    /// - if all batched `creates` have been displaced, the batch is full.
+    ///
+    /// in general it's rare for commits to be displaced except for very high-
+    /// volume collections such as `app.bsky.feed.like`.
+    ///
+    /// it could be nice in the future to retain all batched commits and just
+    /// drop new `creates` after a limit instead.
+    pub fn truncating_insert(
+        &mut self,
+        commit: UFOsCommit,
+        sketch_secret: &SketchSecretPrefix,
+    ) -> Result<(), BatchInsertError> {
+        if (self.updates + self.deletes) == LIMIT {
+            // nothing can be displaced (only `create`s may be displaced)
             return Err(BatchInsertError::BatchFull(commit));
         }
-        let did = commit.did.clone();
-        let is_create = commit.action.is_create();
-        if self.commits.len() < LIMIT {
-            self.commits.push(commit);
-            if self.commits.capacity() > LIMIT {
-                self.commits.shrink_to(LIMIT); // save mem?????? maybe??
+
+        // every kind of commit counts as "user activity"
+        self.dids_estimate
+            .insert(did_element(sketch_secret, &commit.did));
+
+        match commit.action {
+            CommitAction::Put(PutAction {
+                is_update: false, ..
+            }) => {
+                self.creates += 1;
             }
+            CommitAction::Put(PutAction {
+                is_update: true, ..
+            }) => {
+                self.updates += 1;
+            }
+            CommitAction::Cut => {
+                self.deletes += 1;
+            }
+        }
+
+        if self.commits.len() < LIMIT {
+            // normal insert: there's space left to put a new commit at the end
+            self.commits.push(commit);
         } else {
+            // displacement insert: find an old `create` we can displace
             let head_started_at = self.head;
             loop {
                 let candidate = self
@@ -61,13 +128,6 @@ impl<const LIMIT: usize> CollectionCommits<LIMIT> {
                     return Err(BatchInsertError::BatchForever);
                 }
             }
-        }
-
-        if is_create {
-            self.total_seen += 1;
-            self.dids_estimate.insert(&did);
-        } else {
-            self.non_creates += 1;
         }
 
         Ok(())
@@ -157,6 +217,7 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
         collection: &Nsid,
         commit: UFOsCommit,
         max_collections: usize,
+        sketch_secret: &SketchSecretPrefix,
     ) -> Result<(), BatchInsertError> {
         let map = &mut self.commits_by_nsid;
         if !map.contains_key(collection) && map.len() >= max_collections {
@@ -164,14 +225,8 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
         }
         map.entry(collection.clone())
             .or_default()
-            .truncating_insert(commit)?;
+            .truncating_insert(commit, sketch_secret)?;
         Ok(())
-    }
-    pub fn total_records(&self) -> usize {
-        self.commits_by_nsid.values().map(|v| v.commits.len()).sum()
-    }
-    pub fn total_seen(&self) -> usize {
-        self.commits_by_nsid.values().map(|v| v.total_seen).sum()
     }
     pub fn total_collections(&self) -> usize {
         self.commits_by_nsid.len()
@@ -180,7 +235,7 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
         self.account_removes.len()
     }
     pub fn estimate_dids(&self) -> usize {
-        let mut estimator = CardinalityEstimator::<Did>::new();
+        let mut estimator = Sketch::<14>::default();
         for commits in self.commits_by_nsid.values() {
             estimator.merge(&commits.dids_estimate);
         }
@@ -212,38 +267,86 @@ impl<const LIMIT: usize> EventBatch<LIMIT> {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum ConsumerInfo {
     Jetstream {
         endpoint: String,
         started_at: u64,
         latest_cursor: Option<u64>,
+        rollup_cursor: Option<u64>,
     },
 }
 
-#[derive(Debug, Default, PartialEq, Serialize, JsonSchema)]
-pub struct TopCollections {
-    total_records: u64,
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+pub struct NsidCount {
+    nsid: String,
+    creates: u64,
+    // TODO: add updates and deletes
     dids_estimate: u64,
-    nsid_child_segments: HashMap<String, TopCollections>,
 }
 
-// this is not safe from ~DOS
-// todo: remove this and just iterate the all-time rollups to get nsids? (or recent rollups?)
-impl From<TopCollections> for Vec<String> {
-    fn from(tc: TopCollections) -> Self {
-        let mut me = vec![];
-        for (segment, children) in tc.nsid_child_segments {
-            let child_segments: Self = children.into();
-            if child_segments.is_empty() {
-                me.push(segment);
-            } else {
-                for ch in child_segments {
-                    let nsid = format!("{segment}.{ch}");
-                    me.push(nsid);
-                }
-            }
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+pub struct PrefixCount {
+    prefix: String,
+    creates: u64,
+    // TODO: add updates and deletes
+    dids_estimate: u64,
+}
+
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PrefixChild {
+    Collection(NsidCount),
+    Prefix(PrefixCount),
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct NsidPrefix(String);
+impl NsidPrefix {
+    /// Input must not include a trailing dot.
+    pub fn new(pre: &str) -> EncodingResult<Self> {
+        // it's a valid prefix if appending `.name` makes it a valid NSID
+        Nsid::new(format!("{pre}.name")).map_err(EncodingError::BadAtriumStringType)?;
+        // hack (shouldn't really be here): reject prefixes that aren't at least 2 segments long
+        if !pre.contains('.') {
+            return Err(EncodingError::NotEnoughNsidSegments);
         }
-        me
+        Ok(Self(pre.to_string()))
+    }
+    pub fn is_group_of(&self, other: &Nsid) -> bool {
+        assert!(
+            other.as_str().starts_with(&self.0),
+            "must be a prefix of other"
+        );
+        self.0 == other.domain_authority()
+    }
+    /// The prefix as initialized (no trailing dot)
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+    /// The prefix with a trailing `.` appended to avoid matching a longer segment
+    pub fn terminated(&self) -> String {
+        format!("{}.", self.0)
+    }
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct JustCount {
+    creates: u64,
+    updates: u64,
+    deletes: u64,
+    dids_estimate: u64,
+}
+
+#[derive(Debug)]
+pub enum OrderCollectionsBy {
+    Lexi { cursor: Option<Vec<u8>> },
+    RecordsCreated,
+    DidsEstimate,
+}
+impl Default for OrderCollectionsBy {
+    fn default() -> Self {
+        Self::Lexi { cursor: None }
     }
 }
 
@@ -252,70 +355,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_top_collections_to_nsids() {
-        let empty_tc = TopCollections::default();
-        assert_eq!(Into::<Vec<String>>::into(empty_tc), Vec::<String>::new());
-
-        let tc = TopCollections {
-            nsid_child_segments: HashMap::from([
-                (
-                    "a".to_string(),
-                    TopCollections {
-                        nsid_child_segments: HashMap::from([
-                            ("b".to_string(), TopCollections::default()),
-                            ("c".to_string(), TopCollections::default()),
-                        ]),
-                        ..Default::default()
-                    },
-                ),
-                ("z".to_string(), TopCollections::default()),
-            ]),
-            ..Default::default()
-        };
-
-        let mut nsids: Vec<String> = tc.into();
-        nsids.sort();
-        assert_eq!(nsids, ["a.b", "a.c", "z"]);
-    }
-
-    #[test]
     fn test_truncating_insert_truncates() -> anyhow::Result<()> {
         let mut commits: CollectionCommits<2> = Default::default();
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(100),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
-            rev: "rev-asdf".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(100),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+                rev: "rev-asdf".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(101),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
-            rev: "rev-asdg".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(101),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+                rev: "rev-asdg".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(102),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
-            rev: "rev-asdh".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(102),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
+                rev: "rev-asdh".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
-        assert_eq!(commits.total_seen, 3);
+        assert_eq!(commits.creates, 3);
         assert_eq!(commits.dids_estimate.estimate(), 1);
         assert_eq!(commits.commits.len(), 2);
 
@@ -339,40 +424,76 @@ mod tests {
     }
 
     #[test]
+    fn test_truncating_insert_counts_updates() -> anyhow::Result<()> {
+        let mut commits: CollectionCommits<2> = Default::default();
+
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(100),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+                rev: "rev-asdf".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: true,
+                }),
+            },
+            &[0u8; 16],
+        )?;
+
+        assert_eq!(commits.creates, 0);
+        assert_eq!(commits.updates, 1);
+        assert_eq!(commits.deletes, 0);
+        assert_eq!(commits.dids_estimate.estimate(), 1);
+        assert_eq!(commits.commits.len(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn test_truncating_insert_does_not_truncate_deletes() -> anyhow::Result<()> {
         let mut commits: CollectionCommits<2> = Default::default();
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(100),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
-            rev: "rev-asdf".to_string(),
-            action: CommitAction::Cut,
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(100),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+                rev: "rev-asdf".to_string(),
+                action: CommitAction::Cut,
+            },
+            &[0u8; 16],
+        )?;
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(101),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
-            rev: "rev-asdg".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(101),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+                rev: "rev-asdg".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
-        commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(102),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
-            rev: "rev-asdh".to_string(),
-            action: CommitAction::Put(PutAction {
-                record: RawValue::from_string("{}".to_string())?,
-                is_update: false,
-            }),
-        })?;
+        commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(102),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
+                rev: "rev-asdh".to_string(),
+                action: CommitAction::Put(PutAction {
+                    record: RawValue::from_string("{}".to_string())?,
+                    is_update: false,
+                }),
+            },
+            &[0u8; 16],
+        )?;
 
-        assert_eq!(commits.total_seen, 2);
+        assert_eq!(commits.creates, 2);
+        assert_eq!(commits.deletes, 1);
         assert_eq!(commits.dids_estimate.estimate(), 1);
         assert_eq!(commits.commits.len(), 2);
 
@@ -405,46 +526,58 @@ mod tests {
         let mut commits: CollectionCommits<2> = Default::default();
 
         commits
-            .truncating_insert(UFOsCommit {
-                cursor: Cursor::from_raw_u64(100),
-                did: Did::new("did:plc:whatever".to_string()).unwrap(),
-                rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
-                rev: "rev-asdf".to_string(),
-                action: CommitAction::Cut,
-            })
+            .truncating_insert(
+                UFOsCommit {
+                    cursor: Cursor::from_raw_u64(100),
+                    did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                    rkey: RecordKey::new("rkey-asdf-a".to_string()).unwrap(),
+                    rev: "rev-asdf".to_string(),
+                    action: CommitAction::Cut,
+                },
+                &[0u8; 16],
+            )
             .unwrap();
 
         // this create will just be discarded
         commits
-            .truncating_insert(UFOsCommit {
-                cursor: Cursor::from_raw_u64(80),
-                did: Did::new("did:plc:whatever".to_string()).unwrap(),
-                rkey: RecordKey::new("rkey-asdf-zzz".to_string()).unwrap(),
-                rev: "rev-asdzzz".to_string(),
-                action: CommitAction::Put(PutAction {
-                    record: RawValue::from_string("{}".to_string())?,
-                    is_update: false,
-                }),
-            })
+            .truncating_insert(
+                UFOsCommit {
+                    cursor: Cursor::from_raw_u64(80),
+                    did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                    rkey: RecordKey::new("rkey-asdf-zzz".to_string()).unwrap(),
+                    rev: "rev-asdzzz".to_string(),
+                    action: CommitAction::Put(PutAction {
+                        record: RawValue::from_string("{}".to_string())?,
+                        is_update: false,
+                    }),
+                },
+                &[0u8; 16],
+            )
             .unwrap();
 
         commits
-            .truncating_insert(UFOsCommit {
-                cursor: Cursor::from_raw_u64(101),
-                did: Did::new("did:plc:whatever".to_string()).unwrap(),
-                rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
-                rev: "rev-asdg".to_string(),
-                action: CommitAction::Cut,
-            })
+            .truncating_insert(
+                UFOsCommit {
+                    cursor: Cursor::from_raw_u64(101),
+                    did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                    rkey: RecordKey::new("rkey-asdf-b".to_string()).unwrap(),
+                    rev: "rev-asdg".to_string(),
+                    action: CommitAction::Cut,
+                },
+                &[0u8; 16],
+            )
             .unwrap();
 
-        let res = commits.truncating_insert(UFOsCommit {
-            cursor: Cursor::from_raw_u64(102),
-            did: Did::new("did:plc:whatever".to_string()).unwrap(),
-            rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
-            rev: "rev-asdh".to_string(),
-            action: CommitAction::Cut,
-        });
+        let res = commits.truncating_insert(
+            UFOsCommit {
+                cursor: Cursor::from_raw_u64(102),
+                did: Did::new("did:plc:whatever".to_string()).unwrap(),
+                rkey: RecordKey::new("rkey-asdf-c".to_string()).unwrap(),
+                rev: "rev-asdh".to_string(),
+                action: CommitAction::Cut,
+            },
+            &[0u8; 16],
+        );
 
         assert!(res.is_err());
         let overflowed = match res {

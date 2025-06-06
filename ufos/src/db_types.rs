@@ -18,6 +18,8 @@ use thiserror::Error;
 pub enum EncodingError {
     #[error("failed to parse Atrium string type: {0}")]
     BadAtriumStringType(&'static str),
+    #[error("Not enough NSID segments for a usable prefix")]
+    NotEnoughNsidSegments,
     #[error("failed to bincode-encode: {0}")]
     BincodeEncodeFailed(#[from] EncodeError),
     #[error("failed to bincode-decode: {0}")]
@@ -48,6 +50,8 @@ pub enum EncodingError {
     InvalidTruncated(u64, u64),
 }
 
+pub type EncodingResult<T> = Result<T, EncodingError>;
+
 fn bincode_conf() -> impl Config {
     standard()
         .with_big_endian()
@@ -56,10 +60,21 @@ fn bincode_conf() -> impl Config {
 }
 
 pub trait DbBytes {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError>;
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>>;
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError>
     where
         Self: Sized;
+    fn as_prefix_range_end(&self) -> EncodingResult<Vec<u8>> {
+        let bytes = self.to_db_bytes()?;
+        let (_, Bound::Excluded(range_end)) = prefix_to_range(&bytes) else {
+            return Err(EncodingError::BadRangeBound);
+        };
+        Ok(range_end.to_vec())
+    }
+}
+
+pub trait SubPrefixBytes<T> {
+    fn sub_prefix(input: T) -> EncodingResult<Vec<u8>>;
 }
 
 #[derive(PartialEq)]
@@ -74,20 +89,16 @@ impl<P: DbBytes + PartialEq + std::fmt::Debug, S: DbBytes + PartialEq + std::fmt
     pub fn from_pair(prefix: P, suffix: S) -> Self {
         Self { prefix, suffix }
     }
-    pub fn from_prefix_to_db_bytes(prefix: &P) -> Result<Vec<u8>, EncodingError> {
+    pub fn from_prefix_to_db_bytes(prefix: &P) -> EncodingResult<Vec<u8>> {
         prefix.to_db_bytes()
     }
-    pub fn to_prefix_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    pub fn to_prefix_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         self.prefix.to_db_bytes()
     }
-    pub fn prefix_range_end(prefix: &P) -> Result<Vec<u8>, EncodingError> {
-        let prefix_bytes = prefix.to_db_bytes()?;
-        let (_, Bound::Excluded(range_end)) = prefix_to_range(&prefix_bytes) else {
-            return Err(EncodingError::BadRangeBound);
-        };
-        Ok(range_end.to_vec())
+    pub fn prefix_range_end(prefix: &P) -> EncodingResult<Vec<u8>> {
+        prefix.as_prefix_range_end()
     }
-    pub fn range_end(&self) -> Result<Vec<u8>, EncodingError> {
+    pub fn range_end(&self) -> EncodingResult<Vec<u8>> {
         Self::prefix_range_end(&self.prefix)
     }
     pub fn range(&self) -> Result<Range<Vec<u8>>, EncodingError> {
@@ -102,6 +113,15 @@ impl<P: DbBytes + PartialEq + std::fmt::Debug, S: DbBytes + PartialEq + std::fmt
     }
 }
 
+impl<P: DbBytes + Default, S: DbBytes + Default> Default for DbConcat<P, S> {
+    fn default() -> Self {
+        Self {
+            prefix: Default::default(),
+            suffix: Default::default(),
+        }
+    }
+}
+
 impl<P: DbBytes + std::fmt::Debug, S: DbBytes + std::fmt::Debug> fmt::Debug for DbConcat<P, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "DbConcat<{:?} || {:?}>", self.prefix, self.suffix)
@@ -109,7 +129,7 @@ impl<P: DbBytes + std::fmt::Debug, S: DbBytes + std::fmt::Debug> fmt::Debug for 
 }
 
 impl<P: DbBytes, S: DbBytes> DbBytes for DbConcat<P, S> {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         let mut combined = self.prefix.to_db_bytes()?;
         combined.append(&mut self.suffix.to_db_bytes()?);
         Ok(combined)
@@ -145,7 +165,7 @@ impl<P: DbBytes, S: DbBytes> DbBytes for DbConcat<P, S> {
 #[derive(Debug, Default, PartialEq)]
 pub struct DbEmpty(());
 impl DbBytes for DbEmpty {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         Ok(vec![])
     }
     fn from_db_bytes(_: &[u8]) -> Result<(Self, usize), EncodingError> {
@@ -174,7 +194,7 @@ impl<S: StaticStr> fmt::Debug for DbStaticStr<S> {
     }
 }
 impl<S: StaticStr> DbBytes for DbStaticStr<S> {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         S::static_str().to_string().to_db_bytes()
     }
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
@@ -201,7 +221,7 @@ impl<T> DbBytes for T
 where
     T: BincodeEncode + BincodeDecode<()> + UseBincodePlz + Sized + std::fmt::Debug,
 {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         Ok(encode_to_vec(self, bincode_conf())?)
     }
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
@@ -211,7 +231,7 @@ where
 
 /// helper trait: impl on a type to get helpers to implement DbBytes
 pub trait SerdeBytes: serde::Serialize + for<'a> serde::Deserialize<'a> {
-    fn to_bytes(&self) -> Result<Vec<u8>, EncodingError>
+    fn to_bytes(&self) -> EncodingResult<Vec<u8>>
     where
         Self: std::fmt::Debug,
     {
@@ -224,10 +244,14 @@ pub trait SerdeBytes: serde::Serialize + for<'a> serde::Deserialize<'a> {
 
 //////
 
+impl<const N: usize> UseBincodePlz for [u8; N] {}
+
+// bare bytes (NOT prefix-encoded!)
 impl DbBytes for Vec<u8> {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         Ok(self.to_vec())
     }
+    // greedy, consumes ALL remaining bytes
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
         Ok((bytes.to_owned(), bytes.len()))
     }
@@ -243,7 +267,7 @@ impl DbBytes for Vec<u8> {
 /// TODO: wrap in another type. it's actually probably not desirable to serialize strings this way
 /// *except* where needed as a prefix.
 impl DbBytes for String {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         let mut v = self.as_bytes().to_vec();
         if v.contains(&0x00) {
             return Err(EncodingError::StringContainedNull);
@@ -263,25 +287,41 @@ impl DbBytes for String {
     }
 }
 
+impl SubPrefixBytes<&str> for String {
+    fn sub_prefix(input: &str) -> EncodingResult<Vec<u8>> {
+        let v = input.as_bytes();
+        if v.contains(&0x00) {
+            return Err(EncodingError::StringContainedNull);
+        }
+        // NO null terminator!!
+        Ok(v.to_vec())
+    }
+}
+
 impl DbBytes for Did {
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
         let (s, n) = decode_from_slice(bytes, bincode_conf())?;
         let me = Self::new(s).map_err(EncodingError::BadAtriumStringType)?;
         Ok((me, n))
     }
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         Ok(encode_to_vec(self.as_ref(), bincode_conf())?)
     }
 }
 
 impl DbBytes for Nsid {
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        let (s, n) = decode_from_slice(bytes, bincode_conf())?;
+        let (s, n) = String::from_db_bytes(bytes)?; // null-terminated DbBytes impl!!
         let me = Self::new(s).map_err(EncodingError::BadAtriumStringType)?;
         Ok((me, n))
     }
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        Ok(encode_to_vec(self.as_ref(), bincode_conf())?)
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
+        String::to_db_bytes(&self.to_string()) // null-terminated DbBytes impl!!!!
+    }
+}
+impl SubPrefixBytes<&str> for Nsid {
+    fn sub_prefix(input: &str) -> EncodingResult<Vec<u8>> {
+        String::sub_prefix(input)
     }
 }
 
@@ -291,13 +331,13 @@ impl DbBytes for RecordKey {
         let me = Self::new(s).map_err(EncodingError::BadAtriumStringType)?;
         Ok((me, n))
     }
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         Ok(encode_to_vec(self.as_ref(), bincode_conf())?)
     }
 }
 
 impl DbBytes for Cursor {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         Ok(self.to_raw_u64().to_be_bytes().to_vec())
     }
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
@@ -311,7 +351,7 @@ impl DbBytes for Cursor {
 }
 
 impl DbBytes for serde_json::Value {
-    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+    fn to_db_bytes(&self) -> EncodingResult<Vec<u8>> {
         self.to_string().to_db_bytes()
     }
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
@@ -331,10 +371,13 @@ pub fn db_complete<T: DbBytes>(bytes: &[u8]) -> Result<T, EncodingError> {
 
 #[cfg(test)]
 mod test {
-    use super::{Cursor, DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingError, StaticStr};
+    use super::{
+        Cursor, DbBytes, DbConcat, DbEmpty, DbStaticStr, EncodingResult, Nsid, StaticStr,
+        SubPrefixBytes,
+    };
 
     #[test]
-    fn test_db_empty() -> Result<(), EncodingError> {
+    fn test_db_empty() -> EncodingResult<()> {
         let original = DbEmpty::default();
         let serialized = original.to_db_bytes()?;
         assert_eq!(serialized.len(), 0);
@@ -345,7 +388,7 @@ mod test {
     }
 
     #[test]
-    fn test_string_roundtrip() -> Result<(), EncodingError> {
+    fn test_string_roundtrip() -> EncodingResult<()> {
         for (case, desc) in [
             ("", "empty string"),
             ("a", "basic string"),
@@ -364,7 +407,7 @@ mod test {
     }
 
     #[test]
-    fn test_string_serialized_lexicographic_sort() -> Result<(), EncodingError> {
+    fn test_string_serialized_lexicographic_sort() -> EncodingResult<()> {
         let aa = "aa".to_string().to_db_bytes()?;
         let b = "b".to_string().to_db_bytes()?;
         assert!(b > aa);
@@ -372,7 +415,43 @@ mod test {
     }
 
     #[test]
-    fn test_string_cursor_prefix_roundtrip() -> Result<(), EncodingError> {
+    fn test_nullstring_can_prefix() -> EncodingResult<()> {
+        for (s, pre, is_pre, desc) in [
+            ("", "", true, "empty strings"),
+            ("", "a", false, "longer prefix"),
+            ("a", "", true, "empty prefix matches"),
+            ("a", "a", true, "whole string matches"),
+            ("a", "b", false, "entirely different"),
+            ("ab", "a", true, "prefix matches"),
+            ("ab", "b", false, "shorter and entirely different"),
+        ] {
+            let serialized = s.to_string().to_db_bytes()?;
+            let prefixed = String::sub_prefix(pre)?;
+            assert_eq!(serialized.starts_with(&prefixed), is_pre, "{}", desc);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_nsid_can_prefix() -> EncodingResult<()> {
+        for (s, pre, is_pre, desc) in [
+            ("ab.cd.ef", "", true, "empty prefix"),
+            ("ab.cd.ef", "a", true, "tiny prefix"),
+            ("ab.cd.ef", "abc", false, "bad prefix"),
+            ("ab.cd.ef", "ab", true, "segment prefix"),
+            ("ab.cd.ef", "ab.cd", true, "multi-segment prefix"),
+            ("ab.cd.ef", "ab.cd.ef", true, "full match"),
+            ("ab.cd.ef", "ab.cd.ef.g", false, "prefix longer"),
+        ] {
+            let serialized = Nsid::new(s.to_string()).unwrap().to_db_bytes()?;
+            let prefixed = Nsid::sub_prefix(pre)?;
+            assert_eq!(serialized.starts_with(&prefixed), is_pre, "{}", desc);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_cursor_prefix_roundtrip() -> EncodingResult<()> {
         type TwoThings = DbConcat<String, Cursor>;
         for (lazy_prefix, tired_suffix, desc) in [
             ("", 0, "empty string and cursor"),
@@ -397,7 +476,7 @@ mod test {
     }
 
     #[test]
-    fn test_cursor_string_prefix_roundtrip() -> Result<(), EncodingError> {
+    fn test_cursor_string_prefix_roundtrip() -> EncodingResult<()> {
         type TwoThings = DbConcat<Cursor, String>;
         for (tired_prefix, sad_suffix, desc) in [
             (0, "", "empty string and cursor"),
@@ -422,7 +501,7 @@ mod test {
     }
 
     #[test]
-    fn test_static_str() -> Result<(), EncodingError> {
+    fn test_static_str() -> EncodingResult<()> {
         #[derive(Debug, PartialEq)]
         struct AStaticStr {}
         impl StaticStr for AStaticStr {
@@ -443,7 +522,7 @@ mod test {
     }
 
     #[test]
-    fn test_static_str_empty() -> Result<(), EncodingError> {
+    fn test_static_str_empty() -> EncodingResult<()> {
         #[derive(Debug, PartialEq)]
         struct AnEmptyStr {}
         impl StaticStr for AnEmptyStr {
@@ -463,7 +542,7 @@ mod test {
     }
 
     #[test]
-    fn test_static_prefix() -> Result<(), EncodingError> {
+    fn test_static_prefix() -> EncodingResult<()> {
         #[derive(Debug, PartialEq)]
         struct AStaticPrefix {}
         impl StaticStr for AStaticPrefix {

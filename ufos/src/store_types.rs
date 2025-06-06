@@ -1,51 +1,54 @@
 use crate::db_types::{
-    DbBytes, DbConcat, DbStaticStr, EncodingError, SerdeBytes, StaticStr, UseBincodePlz,
+    DbBytes, DbConcat, DbStaticStr, EncodingError, EncodingResult, SerdeBytes, StaticStr,
+    UseBincodePlz,
 };
-use crate::{Cursor, Did, Nsid, PutAction, RecordKey, UFOsCommit};
+use crate::{Cursor, Did, JustCount, Nsid, PutAction, RecordKey, UFOsCommit};
 use bincode::{Decode, Encode};
-use cardinality_estimator::CardinalityEstimator;
-use std::ops::Range;
+use cardinality_estimator_safe::Sketch;
+use std::ops::{Bound, Range};
 
-/// key format: ["js_cursor"]
-#[derive(Debug, PartialEq)]
-pub struct JetstreamCursorKey {}
-impl StaticStr for JetstreamCursorKey {
-    fn static_str() -> &'static str {
-        "js_cursor"
-    }
+macro_rules! static_str {
+    ($prefix:expr, $name:ident) => {
+        #[derive(Debug, PartialEq)]
+        pub struct $name {}
+        impl StaticStr for $name {
+            fn static_str() -> &'static str {
+                $prefix
+            }
+        }
+    };
 }
+
+// key format: ["js_cursor"]
+static_str!("js_cursor", JetstreamCursorKey);
 pub type JetstreamCursorValue = Cursor;
 
-/// key format: ["rollup_cursor"]
-#[derive(Debug, PartialEq)]
-pub struct NewRollupCursorKey {}
-impl StaticStr for NewRollupCursorKey {
-    fn static_str() -> &'static str {
-        "rollup_cursor"
-    }
-}
+// key format: ["sketch_secret"]
+static_str!("sketch_secret", SketchSecretKey);
+pub type SketchSecretPrefix = [u8; 16];
+
+// key format: ["rollup_cursor"]
+static_str!("rollup_cursor", NewRollupCursorKey);
 // pub type NewRollupCursorKey = DbStaticStr<_NewRollupCursorKey>;
 /// value format: [rollup_cursor(Cursor)|collection(Nsid)]
 pub type NewRollupCursorValue = Cursor;
 
-/// key format: ["js_endpoint"]
-#[derive(Debug, PartialEq)]
-pub struct TakeoffKey {}
-impl StaticStr for TakeoffKey {
-    fn static_str() -> &'static str {
-        "takeoff"
+static_str!("trim_cursor", _TrimCollectionStaticStr);
+type TrimCollectionCursorPrefix = DbStaticStr<_TrimCollectionStaticStr>;
+pub type TrimCollectionCursorKey = DbConcat<TrimCollectionCursorPrefix, Nsid>;
+impl TrimCollectionCursorKey {
+    pub fn new(collection: Nsid) -> Self {
+        Self::from_pair(Default::default(), collection)
     }
 }
+pub type TrimCollectionCursorVal = Cursor;
+
+// key format: ["js_endpoint"]
+static_str!("takeoff", TakeoffKey);
 pub type TakeoffValue = Cursor;
 
-/// key format: ["js_endpoint"]
-#[derive(Debug, PartialEq)]
-pub struct JetstreamEndpointKey {}
-impl StaticStr for JetstreamEndpointKey {
-    fn static_str() -> &'static str {
-        "js_endpoint"
-    }
-}
+// key format: ["js_endpoint"]
+static_str!("js_endpoint", JetstreamEndpointKey);
 #[derive(Debug, PartialEq)]
 pub struct JetstreamEndpointValue(pub String);
 /// String wrapper for jetstream endpoint value
@@ -60,6 +63,14 @@ impl DbBytes for JetstreamEndpointValue {
         let s = std::str::from_utf8(bytes)?.to_string();
         Ok((Self(s), bytes.len()))
     }
+}
+
+pub trait WithCollection {
+    fn collection(&self) -> &Nsid;
+}
+
+pub trait WithRank {
+    fn rank(&self) -> u64;
 }
 
 pub type NsidRecordFeedKey = DbConcat<Nsid, Cursor>;
@@ -171,13 +182,7 @@ impl From<(Cursor, &str, PutAction)> for RecordLocationVal {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct _LiveRecordsStaticStr {}
-impl StaticStr for _LiveRecordsStaticStr {
-    fn static_str() -> &'static str {
-        "live_counts"
-    }
-}
+static_str!("live_counts", _LiveRecordsStaticStr);
 
 type LiveCountsStaticPrefix = DbStaticStr<_LiveRecordsStaticStr>;
 type LiveCountsCursorPrefix = DbConcat<LiveCountsStaticPrefix, Cursor>;
@@ -190,7 +195,9 @@ impl LiveCountsKey {
     pub fn cursor(&self) -> Cursor {
         self.prefix.suffix
     }
-    pub fn collection(&self) -> &Nsid {
+}
+impl WithCollection for LiveCountsKey {
+    fn collection(&self) -> &Nsid {
         &self.suffix
     }
 }
@@ -202,12 +209,24 @@ impl From<(Cursor, &Nsid)> for LiveCountsKey {
         )
     }
 }
-#[derive(Debug, PartialEq, Decode, Encode)]
-pub struct TotalRecordsValue(pub u64);
-impl UseBincodePlz for TotalRecordsValue {}
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct EstimatedDidsValue(pub CardinalityEstimator<Did>);
+#[derive(Debug, Clone, Copy, Default, PartialEq, Decode, Encode)]
+pub struct CommitCounts {
+    pub creates: u64,
+    pub updates: u64,
+    pub deletes: u64,
+}
+impl CommitCounts {
+    pub fn merge(&mut self, other: &Self) {
+        self.creates += other.creates;
+        self.updates += other.updates;
+        self.deletes += other.deletes;
+    }
+}
+impl UseBincodePlz for CommitCounts {}
+
+#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EstimatedDidsValue(pub Sketch<14>);
 impl SerdeBytes for EstimatedDidsValue {}
 impl DbBytes for EstimatedDidsValue {
     #[cfg(test)]
@@ -221,52 +240,50 @@ impl DbBytes for EstimatedDidsValue {
 
     #[cfg(not(test))]
     fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
-        Ok(vec![1, 2, 3]) // TODO: un-stub when their heap overflow is fixed
+        SerdeBytes::to_bytes(self)
     }
     #[cfg(not(test))]
     fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
-        if bytes.len() < 3 {
-            return Err(EncodingError::DecodeNotEnoughBytes);
-        }
-        Ok((Self(CardinalityEstimator::new()), 3)) // TODO: un-stub when their heap overflow is fixed
+        SerdeBytes::from_bytes(bytes)
     }
 }
 
-pub type CountsValue = DbConcat<TotalRecordsValue, EstimatedDidsValue>;
+pub type CountsValue = DbConcat<CommitCounts, EstimatedDidsValue>;
 impl CountsValue {
-    pub fn new(total: u64, dids: CardinalityEstimator<Did>) -> Self {
+    pub fn new(counts: CommitCounts, dids: Sketch<14>) -> Self {
         Self {
-            prefix: TotalRecordsValue(total),
+            prefix: counts,
             suffix: EstimatedDidsValue(dids),
         }
     }
-    pub fn records(&self) -> u64 {
-        self.prefix.0
+    pub fn counts(&self) -> CommitCounts {
+        self.prefix
     }
-    pub fn dids(&self) -> &CardinalityEstimator<Did> {
+    pub fn dids(&self) -> &Sketch<14> {
         &self.suffix.0
     }
     pub fn merge(&mut self, other: &Self) {
-        self.prefix.0 += other.records();
-        self.suffix.0.merge(other.dids());
+        self.prefix.merge(&other.prefix);
+        self.suffix.0.merge(&other.suffix.0);
     }
 }
-impl Default for CountsValue {
-    fn default() -> Self {
+impl From<&CountsValue> for JustCount {
+    fn from(cv: &CountsValue) -> Self {
+        let CommitCounts {
+            creates,
+            updates,
+            deletes,
+        } = cv.counts();
         Self {
-            prefix: TotalRecordsValue(0),
-            suffix: EstimatedDidsValue(CardinalityEstimator::new()),
+            creates,
+            updates,
+            deletes,
+            dids_estimate: cv.dids().estimate() as u64,
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct _DeleteAccountStaticStr {}
-impl StaticStr for _DeleteAccountStaticStr {
-    fn static_str() -> &'static str {
-        "delete_acount"
-    }
-}
+static_str!("delete_acount", _DeleteAccountStaticStr);
 pub type DeleteAccountStaticPrefix = DbStaticStr<_DeleteAccountStaticStr>;
 pub type DeleteAccountQueueKey = DbConcat<DeleteAccountStaticPrefix, Cursor>;
 impl DeleteAccountQueueKey {
@@ -276,67 +293,283 @@ impl DeleteAccountQueueKey {
 }
 pub type DeleteAccountQueueVal = Did;
 
-#[derive(Debug, PartialEq)]
-pub struct _HourlyRollupStaticStr {}
-impl StaticStr for _HourlyRollupStaticStr {
-    fn static_str() -> &'static str {
-        "hourly_counts"
+/// big-endian encoded u64 for LSM prefix-fiendly key
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyRank(u64);
+impl DbBytes for KeyRank {
+    fn to_db_bytes(&self) -> Result<Vec<u8>, EncodingError> {
+        Ok(self.0.to_be_bytes().to_vec())
+    }
+    fn from_db_bytes(bytes: &[u8]) -> Result<(Self, usize), EncodingError> {
+        if bytes.len() < 8 {
+            return Err(EncodingError::DecodeNotEnoughBytes);
+        }
+        let bytes8 = TryInto::<[u8; 8]>::try_into(&bytes[..8])?;
+        let rank = KeyRank(u64::from_be_bytes(bytes8));
+        Ok((rank, 8))
     }
 }
-pub type HourlyRollupStaticPrefix = DbStaticStr<_HourlyRollupStaticStr>;
-pub type HourlyRollupKey = DbConcat<DbConcat<HourlyRollupStaticPrefix, HourTruncatedCursor>, Nsid>;
-impl HourlyRollupKey {
-    pub fn new(hourly_cursor: HourTruncatedCursor, nsid: &Nsid) -> Self {
+impl From<u64> for KeyRank {
+    fn from(n: u64) -> Self {
+        Self(n)
+    }
+}
+impl From<KeyRank> for u64 {
+    fn from(kr: KeyRank) -> Self {
+        kr.0
+    }
+}
+
+pub type BucketedRankRecordsKey<P, C> =
+    DbConcat<DbConcat<DbStaticStr<P>, C>, DbConcat<KeyRank, Nsid>>;
+impl<P, C> BucketedRankRecordsKey<P, C>
+where
+    P: StaticStr + PartialEq + std::fmt::Debug,
+    C: DbBytes + PartialEq + std::fmt::Debug + Clone,
+{
+    pub fn new(cursor: C, rank: KeyRank, nsid: &Nsid) -> Self {
         Self::from_pair(
-            DbConcat::from_pair(Default::default(), hourly_cursor),
+            DbConcat::from_pair(Default::default(), cursor),
+            DbConcat::from_pair(rank, nsid.clone()),
+        )
+    }
+    pub fn with_rank(&self, new_rank: KeyRank) -> Self {
+        Self::new(self.prefix.suffix.clone(), new_rank, &self.suffix.suffix)
+    }
+    pub fn start(cursor: C) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix: DbConcat<DbStaticStr<P>, C> = DbConcat::from_pair(Default::default(), cursor);
+        Ok(Bound::Included(Self::from_prefix_to_db_bytes(&prefix)?))
+    }
+    pub fn end(cursor: C) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix: DbConcat<DbStaticStr<P>, C> = DbConcat::from_pair(Default::default(), cursor);
+        Ok(Bound::Excluded(Self::prefix_range_end(&prefix)?))
+    }
+}
+impl<P: StaticStr, C: DbBytes> WithCollection for BucketedRankRecordsKey<P, C> {
+    fn collection(&self) -> &Nsid {
+        &self.suffix.suffix
+    }
+}
+impl<P: StaticStr, C: DbBytes> WithRank for BucketedRankRecordsKey<P, C> {
+    fn rank(&self) -> u64 {
+        self.suffix.prefix.into()
+    }
+}
+
+static_str!("hourly_counts", _HourlyRollupStaticStr);
+pub type HourlyRollupStaticPrefix = DbStaticStr<_HourlyRollupStaticStr>;
+pub type HourlyRollupKeyHourPrefix = DbConcat<HourlyRollupStaticPrefix, HourTruncatedCursor>;
+pub type HourlyRollupKey = DbConcat<HourlyRollupKeyHourPrefix, Nsid>;
+pub type HourlyRollupPre = DbConcat<HourlyRollupKeyHourPrefix, Vec<u8>>; // bit hack but
+impl HourlyRollupKey {
+    pub fn new(cursor: HourTruncatedCursor, nsid: &Nsid) -> Self {
+        Self::from_pair(
+            DbConcat::from_pair(Default::default(), cursor),
             nsid.clone(),
         )
+    }
+    pub fn new_nsid_prefix(cursor: HourTruncatedCursor, pre: &[u8]) -> HourlyRollupPre {
+        HourlyRollupPre::from_pair(
+            DbConcat::from_pair(Default::default(), cursor),
+            pre.to_vec(),
+        )
+    }
+    pub fn cursor(&self) -> HourTruncatedCursor {
+        self.prefix.suffix
+    }
+    pub fn start(hour: HourTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = HourlyRollupKeyHourPrefix::from_pair(Default::default(), hour);
+        let prefix_bytes = Self::from_prefix_to_db_bytes(&prefix)?;
+        Ok(Bound::Included(prefix_bytes))
+    }
+    pub fn after_nsid(hour: HourTruncatedCursor, nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(Self::new(hour, nsid).to_db_bytes()?))
+    }
+    pub fn after_nsid_prefix(
+        hour: HourTruncatedCursor,
+        pre: &[u8],
+    ) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(hour, pre).to_db_bytes()?,
+        ))
+    }
+    pub fn end(hour: HourTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = HourlyRollupKeyHourPrefix::from_pair(Default::default(), hour);
+        Ok(Bound::Excluded(Self::prefix_range_end(&prefix)?))
+    }
+    pub fn nsid_prefix_end(
+        hour: HourTruncatedCursor,
+        pre: &[u8],
+    ) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(hour, pre).as_prefix_range_end()?,
+        ))
+    }
+}
+impl WithCollection for HourlyRollupKey {
+    fn collection(&self) -> &Nsid {
+        &self.suffix
     }
 }
 pub type HourlyRollupVal = CountsValue;
 
-#[derive(Debug, PartialEq)]
-pub struct _WeeklyRollupStaticStr {}
-impl StaticStr for _WeeklyRollupStaticStr {
-    fn static_str() -> &'static str {
-        "weekly_counts"
-    }
-}
+static_str!("hourly_rank_records", _HourlyRecordsStaticStr);
+pub type HourlyRecordsKey = BucketedRankRecordsKey<_HourlyRecordsStaticStr, HourTruncatedCursor>;
+
+static_str!("hourly_rank_dids", _HourlyDidsStaticStr);
+pub type HourlyDidsKey = BucketedRankRecordsKey<_HourlyDidsStaticStr, HourTruncatedCursor>;
+
+static_str!("weekly_counts", _WeeklyRollupStaticStr);
 pub type WeeklyRollupStaticPrefix = DbStaticStr<_WeeklyRollupStaticStr>;
-pub type WeeklyRollupKey = DbConcat<DbConcat<WeeklyRollupStaticPrefix, WeekTruncatedCursor>, Nsid>;
+pub type WeeklyRollupKeyWeekPrefix = DbConcat<WeeklyRollupStaticPrefix, WeekTruncatedCursor>;
+pub type WeeklyRollupKey = DbConcat<WeeklyRollupKeyWeekPrefix, Nsid>;
+pub type WeeklyRollupPre = DbConcat<WeeklyRollupKeyWeekPrefix, Vec<u8>>;
 impl WeeklyRollupKey {
-    pub fn new(weekly_cursor: WeekTruncatedCursor, nsid: &Nsid) -> Self {
+    pub fn new(cursor: WeekTruncatedCursor, nsid: &Nsid) -> Self {
         Self::from_pair(
-            DbConcat::from_pair(Default::default(), weekly_cursor),
+            DbConcat::from_pair(Default::default(), cursor),
             nsid.clone(),
         )
+    }
+    pub fn new_nsid_prefix(cursor: WeekTruncatedCursor, pre: &[u8]) -> WeeklyRollupPre {
+        WeeklyRollupPre::from_pair(
+            DbConcat::from_pair(Default::default(), cursor),
+            pre.to_vec(),
+        )
+    }
+    pub fn cursor(&self) -> WeekTruncatedCursor {
+        self.prefix.suffix
+    }
+    pub fn start(week: WeekTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), week);
+        let prefix_bytes = Self::from_prefix_to_db_bytes(&prefix)?;
+        Ok(Bound::Included(prefix_bytes))
+    }
+    pub fn after_nsid(week: WeekTruncatedCursor, nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(Self::new(week, nsid).to_db_bytes()?))
+    }
+    pub fn after_nsid_prefix(
+        week: WeekTruncatedCursor,
+        prefix: &[u8],
+    ) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(week, prefix).to_db_bytes()?,
+        ))
+    }
+    pub fn end(week: WeekTruncatedCursor) -> EncodingResult<Bound<Vec<u8>>> {
+        let prefix = WeeklyRollupKeyWeekPrefix::from_pair(Default::default(), week);
+        Ok(Bound::Excluded(Self::prefix_range_end(&prefix)?))
+    }
+    pub fn nsid_prefix_end(
+        week: WeekTruncatedCursor,
+        prefix: &[u8],
+    ) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(week, prefix).as_prefix_range_end()?,
+        ))
+    }
+}
+impl WithCollection for WeeklyRollupKey {
+    fn collection(&self) -> &Nsid {
+        &self.suffix
     }
 }
 pub type WeeklyRollupVal = CountsValue;
 
-#[derive(Debug, PartialEq)]
-pub struct _AllTimeRollupStaticStr {}
-impl StaticStr for _AllTimeRollupStaticStr {
-    fn static_str() -> &'static str {
-        "ever_counts"
-    }
-}
+static_str!("weekly_rank_records", _WeeklyRecordsStaticStr);
+pub type WeeklyRecordsKey = BucketedRankRecordsKey<_WeeklyRecordsStaticStr, WeekTruncatedCursor>;
+
+static_str!("weekly_rank_dids", _WeeklyDidsStaticStr);
+pub type WeeklyDidsKey = BucketedRankRecordsKey<_WeeklyDidsStaticStr, WeekTruncatedCursor>;
+
+static_str!("ever_counts", _AllTimeRollupStaticStr);
 pub type AllTimeRollupStaticPrefix = DbStaticStr<_AllTimeRollupStaticStr>;
 pub type AllTimeRollupKey = DbConcat<AllTimeRollupStaticPrefix, Nsid>;
+pub type AllTimeRollupPre = DbConcat<AllTimeRollupStaticPrefix, Vec<u8>>;
 impl AllTimeRollupKey {
     pub fn new(nsid: &Nsid) -> Self {
         Self::from_pair(Default::default(), nsid.clone())
     }
-    pub fn collection(&self) -> &Nsid {
+    pub fn new_nsid_prefix(pre: &[u8]) -> AllTimeRollupPre {
+        AllTimeRollupPre::from_pair(Default::default(), pre.to_vec())
+    }
+    pub fn start() -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Included(Self::from_prefix_to_db_bytes(
+            &Default::default(),
+        )?))
+    }
+    pub fn after_nsid(nsid: &Nsid) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(Self::new(nsid).to_db_bytes()?))
+    }
+    pub fn after_nsid_prefix(prefix: &[u8]) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(prefix).to_db_bytes()?,
+        ))
+    }
+    pub fn end() -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::prefix_range_end(&Default::default())?,
+        ))
+    }
+    pub fn nsid_prefix_end(prefix: &[u8]) -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::new_nsid_prefix(prefix).as_prefix_range_end()?,
+        ))
+    }
+}
+impl WithCollection for AllTimeRollupKey {
+    fn collection(&self) -> &Nsid {
         &self.suffix
     }
 }
 pub type AllTimeRollupVal = CountsValue;
 
+pub type AllTimeRankRecordsKey<P> = DbConcat<DbStaticStr<P>, DbConcat<KeyRank, Nsid>>;
+impl<P> AllTimeRankRecordsKey<P>
+where
+    P: StaticStr + PartialEq + std::fmt::Debug,
+{
+    pub fn new(rank: KeyRank, nsid: &Nsid) -> Self {
+        Self::from_pair(Default::default(), DbConcat::from_pair(rank, nsid.clone()))
+    }
+    pub fn with_rank(&self, new_rank: KeyRank) -> Self {
+        Self::new(new_rank, &self.suffix.suffix)
+    }
+    pub fn count(&self) -> u64 {
+        self.suffix.prefix.0
+    }
+    pub fn start() -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Included(Self::from_prefix_to_db_bytes(
+            &Default::default(),
+        )?))
+    }
+    pub fn end() -> EncodingResult<Bound<Vec<u8>>> {
+        Ok(Bound::Excluded(
+            Self::prefix_range_end(&Default::default())?,
+        ))
+    }
+}
+impl<P: StaticStr> WithCollection for AllTimeRankRecordsKey<P> {
+    fn collection(&self) -> &Nsid {
+        &self.suffix.suffix
+    }
+}
+impl<P: StaticStr> WithRank for AllTimeRankRecordsKey<P> {
+    fn rank(&self) -> u64 {
+        self.suffix.prefix.into()
+    }
+}
+
+static_str!("ever_rank_records", _AllTimeRecordsStaticStr);
+pub type AllTimeRecordsKey = AllTimeRankRecordsKey<_AllTimeRecordsStaticStr>;
+
+static_str!("ever_rank_dids", _AllTimeDidsStaticStr);
+pub type AllTimeDidsKey = AllTimeRankRecordsKey<_AllTimeDidsStaticStr>;
+
 #[derive(Debug, Copy, Clone, PartialEq, Hash, PartialOrd, Eq)]
 pub struct TruncatedCursor<const MOD: u64>(u64);
 impl<const MOD: u64> TruncatedCursor<MOD> {
-    fn truncate(raw: u64) -> u64 {
+    pub fn truncate(raw: u64) -> u64 {
         (raw / MOD) * MOD
     }
     pub fn try_from_raw_u64(time_us: u64) -> Result<Self, EncodingError> {
@@ -349,10 +582,38 @@ impl<const MOD: u64> TruncatedCursor<MOD> {
     pub fn try_from_cursor(cursor: Cursor) -> Result<Self, EncodingError> {
         Self::try_from_raw_u64(cursor.to_raw_u64())
     }
+    pub fn truncate_raw_u64(raw: u64) -> Self {
+        let truncated = Self::truncate(raw);
+        Self(truncated)
+    }
     pub fn truncate_cursor(cursor: Cursor) -> Self {
         let raw = cursor.to_raw_u64();
         let truncated = Self::truncate(raw);
         Self(truncated)
+    }
+    pub fn to_raw_u64(&self) -> u64 {
+        self.0
+    }
+    pub fn try_as<const MOD_B: u64>(&self) -> Result<TruncatedCursor<MOD_B>, EncodingError> {
+        TruncatedCursor::<MOD_B>::try_from_raw_u64(self.0)
+    }
+    pub fn cycles_until(&self, other: Self) -> u64 {
+        if other < *self {
+            panic!("other must be greater than or equal to self");
+        }
+        (other.0 - self.0) / MOD
+    }
+    pub fn next(&self) -> Self {
+        Self(self.0 + MOD)
+    }
+    pub fn nth_next(&self, n: u64) -> Self {
+        Self(self.0 + (n * MOD))
+    }
+    pub fn prev(&self) -> Self {
+        if self.0 < MOD {
+            panic!("underflow: previous truncation start would be less than zero");
+        }
+        Self(self.0 - MOD)
     }
 }
 impl<const MOD: u64> From<TruncatedCursor<MOD>> for Cursor {
@@ -377,19 +638,53 @@ impl<const MOD: u64> DbBytes for TruncatedCursor<MOD> {
     }
 }
 
-const HOUR_IN_MICROS: u64 = 1_000_000 * 3600;
+pub const HOUR_IN_MICROS: u64 = 1_000_000 * 3600;
 pub type HourTruncatedCursor = TruncatedCursor<HOUR_IN_MICROS>;
 
-const WEEK_IN_MICROS: u64 = HOUR_IN_MICROS * 24 * 7;
+pub const WEEK_IN_MICROS: u64 = HOUR_IN_MICROS * 24 * 7;
 pub type WeekTruncatedCursor = TruncatedCursor<WEEK_IN_MICROS>;
+
+#[derive(Debug, PartialEq)]
+pub enum CursorBucket {
+    Hour(HourTruncatedCursor),
+    Week(WeekTruncatedCursor),
+    AllTime,
+}
+
+impl CursorBucket {
+    pub fn buckets_spanning(
+        since: HourTruncatedCursor,
+        until: HourTruncatedCursor,
+    ) -> Vec<CursorBucket> {
+        if until <= since {
+            return vec![];
+        }
+        let mut out = vec![];
+        let mut current_lower = since;
+        while current_lower < until {
+            if current_lower.cycles_until(until) >= (WEEK_IN_MICROS / HOUR_IN_MICROS) {
+                if let Ok(week) = current_lower.try_as::<WEEK_IN_MICROS>() {
+                    out.push(CursorBucket::Week(week));
+                    current_lower = week.next().try_as().unwrap();
+                    continue;
+                }
+            }
+            out.push(CursorBucket::Hour(current_lower));
+            current_lower = current_lower.next();
+        }
+        out
+    }
+}
 
 #[cfg(test)]
 mod test {
     use super::{
-        CardinalityEstimator, CountsValue, Cursor, Did, EncodingError, HourTruncatedCursor,
-        HourlyRollupKey, Nsid, HOUR_IN_MICROS,
+        CommitCounts, CountsValue, Cursor, CursorBucket, Did, EncodingError, HourTruncatedCursor,
+        HourlyRollupKey, Nsid, Sketch, HOUR_IN_MICROS, WEEK_IN_MICROS,
     };
     use crate::db_types::DbBytes;
+    use cardinality_estimator_safe::Element;
+    use sha2::Sha256;
 
     #[test]
     fn test_by_hourly_rollup_key() -> Result<(), EncodingError> {
@@ -409,20 +704,39 @@ mod test {
 
     #[test]
     fn test_by_hourly_rollup_value() -> Result<(), EncodingError> {
-        let mut estimator = CardinalityEstimator::new();
-        for i in 0..10 {
-            estimator.insert(&Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig7{i}")).unwrap());
+        let mut estimator = Sketch::<14>::default();
+        fn to_element(d: Did) -> Element<14> {
+            Element::from_digest_oneshot::<Sha256>(d.to_string().as_bytes())
         }
-        let original = CountsValue::new(123, estimator.clone());
+        for i in 0..10 {
+            estimator.insert(to_element(
+                Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig7{i}")).unwrap(),
+            ));
+        }
+        let original = CountsValue::new(
+            CommitCounts {
+                creates: 123,
+                ..Default::default()
+            },
+            estimator.clone(),
+        );
         let serialized = original.to_db_bytes()?;
         let (restored, bytes_consumed) = CountsValue::from_db_bytes(&serialized)?;
         assert_eq!(restored, original);
         assert_eq!(bytes_consumed, serialized.len());
 
         for i in 10..1_000 {
-            estimator.insert(&Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig{i}")).unwrap());
+            estimator.insert(to_element(
+                Did::new(format!("did:plc:inze6wrmsm7pjl7yta3oig{i}")).unwrap(),
+            ));
         }
-        let original = CountsValue::new(123, estimator);
+        let original = CountsValue::new(
+            CommitCounts {
+                creates: 123,
+                ..Default::default()
+            },
+            estimator,
+        );
         let serialized = original.to_db_bytes()?;
         let (restored, bytes_consumed) = CountsValue::from_db_bytes(&serialized)?;
         assert_eq!(restored, original);
@@ -449,5 +763,77 @@ mod test {
         assert_eq!(back, us);
         let diff = us.to_raw_u64() - back.to_raw_u64();
         assert_eq!(diff, 0);
+    }
+
+    #[test]
+    fn test_spanning_nothing() {
+        let from = Cursor::from_raw_u64(1_743_775_200_000_000).into();
+        let until = Cursor::from_raw_u64(1_743_775_200_000_000).into();
+        assert!(CursorBucket::buckets_spanning(from, until).is_empty());
+        let until = Cursor::from_raw_u64(0).into();
+        assert!(CursorBucket::buckets_spanning(from, until).is_empty());
+    }
+
+    #[test]
+    fn test_spanning_low_hours() {
+        let from = HourTruncatedCursor::truncate_cursor(Cursor::from_start());
+        let until = from.next();
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, until),
+            vec![CursorBucket::Hour(from)]
+        );
+        let until2 = until.next();
+        let until3 = until2.next();
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, until3),
+            vec![
+                CursorBucket::Hour(from),
+                CursorBucket::Hour(until),
+                CursorBucket::Hour(until2),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_spanning_week_aligned() {
+        let from = HourTruncatedCursor::truncate_cursor(Cursor::from_start());
+        let until = HourTruncatedCursor::truncate_cursor(Cursor::from_raw_u64(WEEK_IN_MICROS));
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, until),
+            vec![CursorBucket::Week(from.try_as().unwrap()),]
+        );
+        let next_hour = until.next();
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, next_hour),
+            vec![
+                CursorBucket::Week(from.try_as().unwrap()),
+                CursorBucket::Hour(until),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_spanning_week_unaligned() {
+        let from = HourTruncatedCursor::truncate_cursor(Cursor::from_raw_u64(
+            WEEK_IN_MICROS - HOUR_IN_MICROS,
+        ));
+        let until = HourTruncatedCursor::truncate_cursor(Cursor::from_raw_u64(
+            from.to_raw_u64() + WEEK_IN_MICROS,
+        ));
+        let span = CursorBucket::buckets_spanning(from, until);
+        assert_eq!(span.len(), 168);
+        for b in &span {
+            let CursorBucket::Hour(_) = b else {
+                panic!("found week bucket in a span that should only have hourlies");
+            };
+        }
+        let until2 = until.next();
+        assert_eq!(
+            CursorBucket::buckets_spanning(from, until2),
+            vec![
+                CursorBucket::Hour(from),
+                CursorBucket::Week(from.next().try_as().unwrap()),
+            ]
+        );
     }
 }
