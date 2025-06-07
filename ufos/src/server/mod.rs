@@ -610,7 +610,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     let context = Context {
         spec: Arc::new(
             api.openapi(
-                "UFOs: Every lexicon in the ATmosphere",
+                "UFOs API: Every lexicon in the ATmosphere",
                 env!("CARGO_PKG_VERSION")
                     .parse()
                     .inspect_err(|e| {
