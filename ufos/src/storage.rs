@@ -137,4 +137,6 @@ pub trait StoreReader: Send + Sync {
         limit: usize,
         expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>>;
+
+    async fn search_collections(&self, terms: Vec<String>) -> StorageResult<Vec<NsidCount>>;
 }

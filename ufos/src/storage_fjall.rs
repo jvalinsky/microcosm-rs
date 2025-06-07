@@ -982,6 +982,34 @@ impl FjallReader {
         }
         Ok(merged)
     }
+
+    fn search_collections(&self, terms: Vec<String>) -> StorageResult<Vec<NsidCount>> {
+        let start = AllTimeRollupKey::start()?;
+        let end = AllTimeRollupKey::end()?;
+        let mut matches = Vec::new();
+        let limit = 16; // TODO: param
+        for kv in self.rollups.range((start, end)) {
+            let (key_bytes, val_bytes) = kv?;
+            let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
+            let nsid = key.collection().as_str().to_string();
+            for term in &terms {
+                if nsid.contains(term) {
+                    let counts = db_complete::<CountsValue>(&val_bytes)?;
+                    matches.push(NsidCount {
+                        nsid: nsid.clone(),
+                        creates: counts.counts().creates,
+                        dids_estimate: counts.dids().estimate() as u64,
+                    });
+                    break;
+                }
+            }
+            if matches.len() >= limit {
+                break;
+            }
+        }
+        // TODO: indicate incomplete results
+        Ok(matches)
+    }
 }
 
 #[async_trait]
@@ -1061,6 +1089,10 @@ impl StoreReader for FjallReader {
             FjallReader::get_records_by_collections(&s, collections, limit, expand_each_collection)
         })
         .await?
+    }
+    async fn search_collections(&self, terms: Vec<String>) -> StorageResult<Vec<NsidCount>> {
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || FjallReader::search_collections(&s, terms)).await?
     }
 }
 

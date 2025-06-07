@@ -589,6 +589,38 @@ async fn get_timeseries(
     OkCors(CollectionTimeseriesResponse { range, series }).into()
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SearchQuery {
+    /// Query
+    ///
+    /// at least two alphanumeric (+hyphen) characters must be present
+    q: String,
+}
+#[derive(Debug, Serialize, JsonSchema)]
+struct SearchResponse {
+    matches: Vec<NsidCount>,
+}
+/// Search lexicons
+#[endpoint {
+    method = GET,
+    path = "/search"
+}]
+async fn search_collections(
+    ctx: RequestContext<Context>,
+    query: Query<SearchQuery>,
+) -> OkCorsResponse<SearchResponse> {
+    let Context { storage, .. } = ctx.context();
+    let q = query.into_inner();
+    // TODO: query validation
+    // TODO: also handle multi-space stuff (ufos-app tries to on client)
+    let terms: Vec<String> = q.q.split(' ').map(Into::into).collect();
+    let matches = storage
+        .search_collections(terms)
+        .await
+        .map_err(|e| HttpError::for_internal_error(format!("oh ugh: {e:?}")))?;
+    OkCors(SearchResponse { matches }).into()
+}
+
 pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     let log = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
@@ -606,6 +638,7 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     api.register(get_collections).unwrap();
     api.register(get_prefix).unwrap();
     api.register(get_timeseries).unwrap();
+    api.register(search_collections).unwrap();
 
     let context = Context {
         spec: Arc::new(
