@@ -507,11 +507,7 @@ impl FjallReader {
                     merged.merge(&counts);
                 }
             }
-            out.push(NsidCount {
-                nsid: nsid.to_string(),
-                creates: merged.counts().creates,
-                dids_estimate: merged.dids().estimate() as u64,
-            });
+            out.push(NsidCount::new(&nsid, &merged));
         }
 
         let next_cursor = current_nsid.map(|s| s.to_db_bytes()).transpose()?;
@@ -617,11 +613,7 @@ impl FjallReader {
             .into_iter()
             .rev()
             .take(limit)
-            .map(|(nsid, cv)| NsidCount {
-                nsid: nsid.to_string(),
-                creates: cv.counts().creates,
-                dids_estimate: cv.dids().estimate() as u64,
-            })
+            .map(|(nsid, cv)| NsidCount::new(&nsid, &cv))
             .collect();
         Ok(counts)
     }
@@ -727,13 +719,13 @@ impl FjallReader {
         let mut prefix_count = CountsValue::default();
         #[derive(Debug, Clone, PartialEq)]
         enum Child {
-            FullNsid(String),
+            FullNsid(Nsid),
             ChildPrefix(String),
         }
         impl Child {
             fn from_prefix(nsid: &Nsid, prefix: &NsidPrefix) -> Option<Self> {
                 if prefix.is_group_of(nsid) {
-                    return Some(Child::FullNsid(nsid.to_string()));
+                    return Some(Child::FullNsid(nsid.clone()));
                 }
                 let suffix = nsid.as_str().strip_prefix(&format!("{}.", prefix.0))?;
                 let (segment, _) = suffix.split_once('.').unwrap();
@@ -742,17 +734,17 @@ impl FjallReader {
             }
             fn is_before(&self, other: &Child) -> bool {
                 match (self, other) {
-                    (Child::FullNsid(s), Child::ChildPrefix(o)) if s == o => true,
-                    (Child::ChildPrefix(s), Child::FullNsid(o)) if s == o => false,
-                    (Child::FullNsid(s), Child::FullNsid(o)) => s < o,
+                    (Child::FullNsid(s), Child::ChildPrefix(o)) if s.as_str() == o => true,
+                    (Child::ChildPrefix(s), Child::FullNsid(o)) if s == o.as_str() => false,
+                    (Child::FullNsid(s), Child::FullNsid(o)) => s.as_str() < o.as_str(),
                     (Child::ChildPrefix(s), Child::ChildPrefix(o)) => s < o,
-                    (Child::FullNsid(s), Child::ChildPrefix(o)) => s < o,
-                    (Child::ChildPrefix(s), Child::FullNsid(o)) => s < o,
+                    (Child::FullNsid(s), Child::ChildPrefix(o)) => s.to_string() < *o,
+                    (Child::ChildPrefix(s), Child::FullNsid(o)) => *s < o.to_string(),
                 }
             }
             fn into_inner(self) -> String {
                 match self {
-                    Child::FullNsid(s) => s,
+                    Child::FullNsid(s) => s.to_string(),
                     Child::ChildPrefix(s) => s,
                 }
             }
@@ -791,16 +783,10 @@ impl FjallReader {
                 }
             }
             items.push(match child {
-                Child::FullNsid(nsid) => PrefixChild::Collection(NsidCount {
-                    nsid,
-                    creates: merged.counts().creates,
-                    dids_estimate: merged.dids().estimate() as u64,
-                }),
-                Child::ChildPrefix(prefix) => PrefixChild::Prefix(PrefixCount {
-                    prefix,
-                    creates: merged.counts().creates,
-                    dids_estimate: merged.dids().estimate() as u64,
-                }),
+                Child::FullNsid(nsid) => PrefixChild::Collection(NsidCount::new(&nsid, &merged)),
+                Child::ChildPrefix(prefix) => {
+                    PrefixChild::Prefix(PrefixCount::new(&prefix, &merged))
+                }
             });
         }
 
@@ -991,15 +977,11 @@ impl FjallReader {
         for kv in self.rollups.range((start, end)) {
             let (key_bytes, val_bytes) = kv?;
             let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
-            let nsid = key.collection().as_str().to_string();
+            let nsid = key.collection();
             for term in &terms {
                 if nsid.contains(term) {
                     let counts = db_complete::<CountsValue>(&val_bytes)?;
-                    matches.push(NsidCount {
-                        nsid: nsid.clone(),
-                        creates: counts.counts().creates,
-                        dids_estimate: counts.dids().estimate() as u64,
-                    });
+                    matches.push(NsidCount::new(nsid, &counts));
                     break;
                 }
             }
@@ -2649,6 +2631,8 @@ mod tests {
             vec![PrefixChild::Collection(NsidCount {
                 nsid: "a.a.a".to_string(),
                 creates: 1,
+                updates: 0,
+                deletes: 0,
                 dids_estimate: 1
             }),]
         );
@@ -2695,7 +2679,9 @@ mod tests {
             vec![PrefixChild::Prefix(PrefixCount {
                 prefix: "a.a.a".to_string(),
                 creates: 1,
-                dids_estimate: 1
+                updates: 0,
+                deletes: 0,
+                dids_estimate: 1,
             }),]
         );
         assert_eq!(cursor, None);
@@ -2750,6 +2736,8 @@ mod tests {
             vec![PrefixChild::Prefix(PrefixCount {
                 prefix: "a.a.a".to_string(),
                 creates: 2,
+                updates: 0,
+                deletes: 0,
                 dids_estimate: 1
             }),]
         );
@@ -2818,11 +2806,15 @@ mod tests {
                 PrefixChild::Collection(NsidCount {
                     nsid: "a.a.a.a".to_string(),
                     creates: 1,
+                    updates: 0,
+                    deletes: 0,
                     dids_estimate: 1
                 }),
                 PrefixChild::Prefix(PrefixCount {
                     prefix: "a.a.a.a".to_string(),
                     creates: 1,
+                    updates: 0,
+                    deletes: 0,
                     dids_estimate: 1
                 }),
             ]
