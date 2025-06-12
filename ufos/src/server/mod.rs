@@ -19,16 +19,80 @@ use dropshot::ConfigDropshot;
 use dropshot::ConfigLogging;
 use dropshot::ConfigLoggingLevel;
 use dropshot::HttpError;
+use dropshot::HttpResponse;
 use dropshot::Query;
 use dropshot::RequestContext;
 use dropshot::ServerBuilder;
-
-use http::{Response, StatusCode};
+use dropshot::ServerContext;
+use http::{
+    header::{ORIGIN, USER_AGENT},
+    Response, StatusCode,
+};
+use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+fn describe_metrics() {
+    describe_counter!(
+        "server_requests_total",
+        Unit::Count,
+        "total requests handled"
+    );
+    describe_histogram!(
+        "server_handler_latency",
+        Unit::Microseconds,
+        "time to respond to a request in microseconds, excluding dropshot overhead"
+    );
+}
+
+async fn instrument_handler<T, H, R>(ctx: &RequestContext<T>, handler: H) -> Result<R, HttpError>
+where
+    R: HttpResponse,
+    H: Future<Output = Result<R, HttpError>>,
+    T: ServerContext,
+{
+    let start = Instant::now();
+    let result = handler.await;
+    let latency = start.elapsed();
+    let status_code = match &result {
+        Ok(response) => response.status_code(),
+        Err(ref e) => e.status_code.as_status(),
+    }
+    .to_string();
+    let endpoint = ctx.endpoint.operation_id.clone();
+    let headers = ctx.request.headers();
+    let origin = headers
+        .get(ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let ua = headers
+        .get(USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|ua| {
+            if ua.starts_with("Mozilla/5.0 ") {
+                "browser"
+            } else {
+                ua
+            }
+        })
+        .unwrap_or("")
+        .to_string();
+    counter!("server_requests_total",
+        "endpoint" => endpoint.clone(),
+        "origin" => origin,
+        "ua" => ua,
+        "status_code" => status_code,
+    )
+    .increment(1);
+    histogram!("server_handler_latency", "endpoint" => endpoint).record(latency.as_micros() as f64);
+    result
+}
 
 struct Context {
     pub spec: Arc<serde_json::Value>,
@@ -63,11 +127,14 @@ fn dt_to_cursor(dt: DateTime<Utc>) -> Result<HourTruncatedCursor, HttpError> {
      */
     unpublished = true,
 }]
-async fn index(_ctx: RequestContext<Context>) -> Result<Response<Body>, HttpError> {
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(http::header::CONTENT_TYPE, "text/html")
-        .body(INDEX_HTML.into())?)
+async fn index(ctx: RequestContext<Context>) -> Result<Response<Body>, HttpError> {
+    instrument_handler(&ctx, async {
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(http::header::CONTENT_TYPE, "text/html")
+            .body(INDEX_HTML.into())?)
+    })
+    .await
 }
 
 /// Meta: get the openapi spec for this api
@@ -80,8 +147,11 @@ async fn index(_ctx: RequestContext<Context>) -> Result<Response<Body>, HttpErro
     unpublished = true,
 }]
 async fn get_openapi(ctx: RequestContext<Context>) -> OkCorsResponse<serde_json::Value> {
-    let spec = (*ctx.context().spec).clone();
-    OkCors(spec).into()
+    instrument_handler(&ctx, async {
+        let spec = (*ctx.context().spec).clone();
+        OkCors(spec).into()
+    })
+    .await
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -100,22 +170,25 @@ async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo>
     let failed_to_get =
         |what| move |e| HttpError::for_internal_error(format!("failed to get {what}: {e:?}"));
 
-    let storage_info = storage
-        .get_storage_stats()
-        .await
-        .map_err(failed_to_get("storage info"))?;
+    instrument_handler(&ctx, async {
+        let storage_info = storage
+            .get_storage_stats()
+            .await
+            .map_err(failed_to_get("storage info"))?;
 
-    let consumer = storage
-        .get_consumer_info()
-        .await
-        .map_err(failed_to_get("consumer info"))?;
+        let consumer = storage
+            .get_consumer_info()
+            .await
+            .map_err(failed_to_get("consumer info"))?;
 
-    OkCors(MetaInfo {
-        storage_name: storage.name(),
-        storage: storage_info,
-        consumer,
+        OkCors(MetaInfo {
+            storage_name: storage.name(),
+            storage: storage_info,
+            consumer,
+        })
+        .into()
     })
-    .into()
+    .await
 }
 
 // TODO: replace with normal (🙃) multi-qs value somehow
@@ -168,39 +241,42 @@ async fn get_records_by_collections(
     collection_query: Query<RecordsCollectionsQuery>,
 ) -> OkCorsResponse<Vec<ApiRecord>> {
     let Context { storage, .. } = ctx.context();
-    let mut limit = 42;
-    let query = collection_query.into_inner();
-    let collections = if let Some(provided_collection) = query.collection {
-        to_multiple_nsids(&provided_collection)
-            .map_err(|reason| HttpError::for_bad_request(None, reason))?
-    } else {
-        limit = 12;
-        let min_time_ago = SystemTime::now() - Duration::from_secs(86_400 * 3); // we want at least 3 days of data
-        let since: WeekTruncatedCursor = Cursor::at(min_time_ago).into();
-        let (collections, _) = storage
-            .get_collections(
-                1000,
-                Default::default(),
-                Some(since.try_as().unwrap()),
-                None,
-            )
+    instrument_handler(&ctx, async {
+        let mut limit = 42;
+        let query = collection_query.into_inner();
+        let collections = if let Some(provided_collection) = query.collection {
+            to_multiple_nsids(&provided_collection)
+                .map_err(|reason| HttpError::for_bad_request(None, reason))?
+        } else {
+            limit = 12;
+            let min_time_ago = SystemTime::now() - Duration::from_secs(86_400 * 3); // we want at least 3 days of data
+            let since: WeekTruncatedCursor = Cursor::at(min_time_ago).into();
+            let (collections, _) = storage
+                .get_collections(
+                    1000,
+                    Default::default(),
+                    Some(since.try_as().unwrap()),
+                    None,
+                )
+                .await
+                .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
+            collections
+                .into_iter()
+                .map(|c| Nsid::new(c.nsid).unwrap())
+                .collect()
+        };
+
+        let records = storage
+            .get_records_by_collections(collections, limit, true)
             .await
-            .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
-        collections
+            .map_err(|e| HttpError::for_internal_error(e.to_string()))?
             .into_iter()
-            .map(|c| Nsid::new(c.nsid).unwrap())
-            .collect()
-    };
+            .map(|r| r.into())
+            .collect();
 
-    let records = storage
-        .get_records_by_collections(collections, limit, true)
-        .await
-        .map_err(|e| HttpError::for_internal_error(e.to_string()))?
-        .into_iter()
-        .map(|r| r.into())
-        .collect();
-
-    OkCors(records).into()
+        OkCors(records).into()
+    })
+    .await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -232,29 +308,33 @@ async fn get_collection_stats(
     query: Query<CollectionsStatsQuery>,
 ) -> OkCorsResponse<HashMap<String, JustCount>> {
     let Context { storage, .. } = ctx.context();
-    let q = query.into_inner();
-    let collections: HashSet<Nsid> = collections_query.try_into()?;
 
-    let since = q.since.map(dt_to_cursor).transpose()?.unwrap_or_else(|| {
-        let week_ago_secs = 7 * 86_400;
-        let week_ago = SystemTime::now() - Duration::from_secs(week_ago_secs);
-        Cursor::at(week_ago).into()
-    });
+    instrument_handler(&ctx, async {
+        let q = query.into_inner();
+        let collections: HashSet<Nsid> = collections_query.try_into()?;
 
-    let until = q.until.map(dt_to_cursor).transpose()?;
+        let since = q.since.map(dt_to_cursor).transpose()?.unwrap_or_else(|| {
+            let week_ago_secs = 7 * 86_400;
+            let week_ago = SystemTime::now() - Duration::from_secs(week_ago_secs);
+            Cursor::at(week_ago).into()
+        });
 
-    let mut seen_by_collection = HashMap::with_capacity(collections.len());
+        let until = q.until.map(dt_to_cursor).transpose()?;
 
-    for collection in &collections {
-        let counts = storage
-            .get_collection_counts(collection, since, until)
-            .await
-            .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
+        let mut seen_by_collection = HashMap::with_capacity(collections.len());
 
-        seen_by_collection.insert(collection.to_string(), counts);
-    }
+        for collection in &collections {
+            let counts = storage
+                .get_collection_counts(collection, since, until)
+                .await
+                .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
-    OkCors(seen_by_collection).into()
+            seen_by_collection.insert(collection.to_string(), counts);
+        }
+
+        OkCors(seen_by_collection).into()
+    })
+    .await
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -337,49 +417,53 @@ async fn get_collections(
     let Context { storage, .. } = ctx.context();
     let q = query.into_inner();
 
-    if q.cursor.is_some() && q.order.is_some() {
-        let msg = "`cursor` is mutually exclusive with `order`. ordered results cannot be paged.";
-        return Err(HttpError::for_bad_request(None, msg.to_string()));
-    }
+    instrument_handler(&ctx, async {
+        if q.cursor.is_some() && q.order.is_some() {
+            let msg =
+                "`cursor` is mutually exclusive with `order`. ordered results cannot be paged.";
+            return Err(HttpError::for_bad_request(None, msg.to_string()));
+        }
 
-    let order = if let Some(ref o) = q.order {
-        o.into()
-    } else {
-        let cursor = q
-            .cursor
-            .and_then(|c| if c.is_empty() { None } else { Some(c) })
-            .map(|c| URL_SAFE_NO_PAD.decode(&c))
-            .transpose()
-            .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
-        OrderCollectionsBy::Lexi { cursor }
-    };
+        let order = if let Some(ref o) = q.order {
+            o.into()
+        } else {
+            let cursor = q
+                .cursor
+                .and_then(|c| if c.is_empty() { None } else { Some(c) })
+                .map(|c| URL_SAFE_NO_PAD.decode(&c))
+                .transpose()
+                .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
+            OrderCollectionsBy::Lexi { cursor }
+        };
 
-    let limit = match (q.limit, q.order) {
-        (Some(limit), _) => limit,
-        (None, Some(_)) => 32,
-        (None, None) => 100,
-    };
+        let limit = match (q.limit, q.order) {
+            (Some(limit), _) => limit,
+            (None, Some(_)) => 32,
+            (None, None) => 100,
+        };
 
-    if !(1..=200).contains(&limit) {
-        let msg = format!("limit not in 1..=200: {}", limit);
-        return Err(HttpError::for_bad_request(None, msg));
-    }
+        if !(1..=200).contains(&limit) {
+            let msg = format!("limit not in 1..=200: {}", limit);
+            return Err(HttpError::for_bad_request(None, msg));
+        }
 
-    let since = q.since.map(dt_to_cursor).transpose()?;
-    let until = q.until.map(dt_to_cursor).transpose()?;
+        let since = q.since.map(dt_to_cursor).transpose()?;
+        let until = q.until.map(dt_to_cursor).transpose()?;
 
-    let (collections, next_cursor) = storage
-        .get_collections(limit, order, since, until)
-        .await
-        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
+        let (collections, next_cursor) = storage
+            .get_collections(limit, order, since, until)
+            .await
+            .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
 
-    let next_cursor = next_cursor.map(|c| URL_SAFE_NO_PAD.encode(c));
+        let next_cursor = next_cursor.map(|c| URL_SAFE_NO_PAD.encode(c));
 
-    OkCors(CollectionsResponse {
-        collections,
-        cursor: next_cursor,
+        OkCors(CollectionsResponse {
+            collections,
+            cursor: next_cursor,
+        })
+        .into()
     })
-    .into()
+    .await
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -459,57 +543,61 @@ async fn get_prefix(
     let Context { storage, .. } = ctx.context();
     let q = query.into_inner();
 
-    let prefix = NsidPrefix::new(&q.prefix).map_err(|e| {
-        HttpError::for_bad_request(
-            None,
-            format!("{:?} was not a valid NSID prefix: {e:?}", q.prefix),
-        )
-    })?;
+    instrument_handler(&ctx, async {
+        let prefix = NsidPrefix::new(&q.prefix).map_err(|e| {
+            HttpError::for_bad_request(
+                None,
+                format!("{:?} was not a valid NSID prefix: {e:?}", q.prefix),
+            )
+        })?;
 
-    if q.cursor.is_some() && q.order.is_some() {
-        let msg = "`cursor` is mutually exclusive with `order`. ordered results cannot be paged.";
-        return Err(HttpError::for_bad_request(None, msg.to_string()));
-    }
+        if q.cursor.is_some() && q.order.is_some() {
+            let msg =
+                "`cursor` is mutually exclusive with `order`. ordered results cannot be paged.";
+            return Err(HttpError::for_bad_request(None, msg.to_string()));
+        }
 
-    let order = if let Some(ref o) = q.order {
-        o.into()
-    } else {
-        let cursor = q
-            .cursor
-            .and_then(|c| if c.is_empty() { None } else { Some(c) })
-            .map(|c| URL_SAFE_NO_PAD.decode(&c))
-            .transpose()
-            .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
-        OrderCollectionsBy::Lexi { cursor }
-    };
+        let order = if let Some(ref o) = q.order {
+            o.into()
+        } else {
+            let cursor = q
+                .cursor
+                .and_then(|c| if c.is_empty() { None } else { Some(c) })
+                .map(|c| URL_SAFE_NO_PAD.decode(&c))
+                .transpose()
+                .map_err(|e| HttpError::for_bad_request(None, format!("invalid cursor: {e:?}")))?;
+            OrderCollectionsBy::Lexi { cursor }
+        };
 
-    let limit = match (q.limit, q.order) {
-        (Some(limit), _) => limit,
-        (None, Some(_)) => 32,
-        (None, None) => 100,
-    };
+        let limit = match (q.limit, q.order) {
+            (Some(limit), _) => limit,
+            (None, Some(_)) => 32,
+            (None, None) => 100,
+        };
 
-    if !(1..=200).contains(&limit) {
-        let msg = format!("limit not in 1..=200: {}", limit);
-        return Err(HttpError::for_bad_request(None, msg));
-    }
+        if !(1..=200).contains(&limit) {
+            let msg = format!("limit not in 1..=200: {}", limit);
+            return Err(HttpError::for_bad_request(None, msg));
+        }
 
-    let since = q.since.map(dt_to_cursor).transpose()?;
-    let until = q.until.map(dt_to_cursor).transpose()?;
+        let since = q.since.map(dt_to_cursor).transpose()?;
+        let until = q.until.map(dt_to_cursor).transpose()?;
 
-    let (total, children, next_cursor) = storage
-        .get_prefix(prefix, limit, order, since, until)
-        .await
-        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
+        let (total, children, next_cursor) = storage
+            .get_prefix(prefix, limit, order, since, until)
+            .await
+            .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
 
-    let next_cursor = next_cursor.map(|c| URL_SAFE_NO_PAD.encode(c));
+        let next_cursor = next_cursor.map(|c| URL_SAFE_NO_PAD.encode(c));
 
-    OkCors(PrefixResponse {
-        total,
-        children,
-        cursor: next_cursor,
+        OkCors(PrefixResponse {
+            total,
+            children,
+            cursor: next_cursor,
+        })
+        .into()
     })
-    .into()
+    .await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -549,44 +637,47 @@ async fn get_timeseries(
     let Context { storage, .. } = ctx.context();
     let q = query.into_inner();
 
-    let since = q.since.map(dt_to_cursor).transpose()?.unwrap_or_else(|| {
-        let week_ago_secs = 7 * 86_400;
-        let week_ago = SystemTime::now() - Duration::from_secs(week_ago_secs);
-        Cursor::at(week_ago).into()
-    });
+    instrument_handler(&ctx, async {
+        let since = q.since.map(dt_to_cursor).transpose()?.unwrap_or_else(|| {
+            let week_ago_secs = 7 * 86_400;
+            let week_ago = SystemTime::now() - Duration::from_secs(week_ago_secs);
+            Cursor::at(week_ago).into()
+        });
 
-    let until = q.until.map(dt_to_cursor).transpose()?;
+        let until = q.until.map(dt_to_cursor).transpose()?;
 
-    let step = if let Some(secs) = q.step {
-        if secs < 3600 {
-            let msg = format!("step is too small: {}", secs);
-            Err(HttpError::for_bad_request(None, msg))?;
-        }
-        (secs / 3600) * 3600 // trucate to hour
-    } else {
-        86_400
-    };
+        let step = if let Some(secs) = q.step {
+            if secs < 3600 {
+                let msg = format!("step is too small: {}", secs);
+                Err(HttpError::for_bad_request(None, msg))?;
+            }
+            (secs / 3600) * 3600 // trucate to hour
+        } else {
+            86_400
+        };
 
-    let nsid = Nsid::new(q.collection).map_err(|e| {
-        HttpError::for_bad_request(None, format!("collection was not a valid NSID: {:?}", e))
-    })?;
+        let nsid = Nsid::new(q.collection).map_err(|e| {
+            HttpError::for_bad_request(None, format!("collection was not a valid NSID: {:?}", e))
+        })?;
 
-    let (range_cursors, series) = storage
-        .get_timeseries(vec![nsid], since, until, step)
-        .await
-        .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
+        let (range_cursors, series) = storage
+            .get_timeseries(vec![nsid], since, until, step)
+            .await
+            .map_err(|e| HttpError::for_internal_error(format!("oh shoot: {e:?}")))?;
 
-    let range = range_cursors
-        .into_iter()
-        .map(|c| DateTime::<Utc>::from_timestamp_micros(c.to_raw_u64() as i64).unwrap())
-        .collect();
+        let range = range_cursors
+            .into_iter()
+            .map(|c| DateTime::<Utc>::from_timestamp_micros(c.to_raw_u64() as i64).unwrap())
+            .collect();
 
-    let series = series
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.iter().map(Into::into).collect()))
-        .collect();
+        let series = series
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.iter().map(Into::into).collect()))
+            .collect();
 
-    OkCors(CollectionTimeseriesResponse { range, series }).into()
+        OkCors(CollectionTimeseriesResponse { range, series }).into()
+    })
+    .await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -611,21 +702,25 @@ async fn search_collections(
 ) -> OkCorsResponse<SearchResponse> {
     let Context { storage, .. } = ctx.context();
     let q = query.into_inner();
-    // TODO: query validation
-    // TODO: also handle multi-space stuff (ufos-app tries to on client)
-    let terms: Vec<String> = q.q.split(' ').map(Into::into).collect();
-    let matches = storage
-        .search_collections(terms)
-        .await
-        .map_err(|e| HttpError::for_internal_error(format!("oh ugh: {e:?}")))?;
-    OkCors(SearchResponse { matches }).into()
+    instrument_handler(&ctx, async {
+        // TODO: query validation
+        // TODO: also handle multi-space stuff (ufos-app tries to on client)
+        let terms: Vec<String> = q.q.split(' ').map(Into::into).collect();
+        let matches = storage
+            .search_collections(terms)
+            .await
+            .map_err(|e| HttpError::for_internal_error(format!("oh ugh: {e:?}")))?;
+        OkCors(SearchResponse { matches }).into()
+    })
+    .await
 }
 
 pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
+    describe_metrics();
     let log = ConfigLogging::StderrTerminal {
-        level: ConfigLoggingLevel::Info,
+        level: ConfigLoggingLevel::Warn,
     }
-    .to_logger("hello-ufos")
+    .to_logger("server")
     .map_err(|e| e.to_string())?;
 
     let mut api = ApiDescription::new();
