@@ -1,5 +1,7 @@
 use clap::Parser;
 use jetstream::events::Cursor;
+use metrics::{describe_gauge, gauge, Unit};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use ufos::consumer;
@@ -104,6 +106,8 @@ async fn go<B: StoreBackground>(
 
     let stating = do_update_stuff(read_store);
 
+    install_metrics_server()?;
+
     tokio::select! {
         z = serving => log::warn!("serve task ended: {z:?}"),
         z = rolling => log::warn!("rollup task ended: {z:?}"),
@@ -116,7 +120,38 @@ async fn go<B: StoreBackground>(
     Ok(())
 }
 
+fn install_metrics_server() -> anyhow::Result<()> {
+    log::info!("installing metrics server...");
+    let host = [0, 0, 0, 0];
+    let port = 8765;
+    PrometheusBuilder::new()
+        .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
+        .set_bucket_duration(Duration::from_secs(60))?
+        .set_bucket_count(std::num::NonZero::new(10).unwrap()) // count * duration = 10 mins. stuff doesn't happen that fast here.
+        .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
+        .with_http_listener((host, port))
+        .install()?;
+    log::info!(
+        "metrics server installed! listening on http://{}.{}.{}.{}:{port}",
+        host[0],
+        host[1],
+        host[2],
+        host[3]
+    );
+    Ok(())
+}
+
 async fn do_update_stuff(read_store: impl StoreReader) {
+    describe_gauge!(
+        "persisted_cursor_age",
+        Unit::Microseconds,
+        "microseconds between our clock and the latest persisted event's cursor"
+    );
+    describe_gauge!(
+        "rollup_cursor_age",
+        Unit::Microseconds,
+        "microseconds between our clock and the latest rollup cursor"
+    );
     let started_at = std::time::SystemTime::now();
     let mut first_cursor = None;
     let mut first_rollup = None;
@@ -170,6 +205,13 @@ fn backfill_info(
     started_at: SystemTime,
     now: SystemTime,
 ) {
+    if let Some(cursor) = latest_cursor {
+        gauge!("persisted_cursor_age").set(cursor.elapsed_micros_f64());
+    }
+    if let Some(cursor) = rollup_cursor {
+        gauge!("rollup_cursor_age").set(cursor.elapsed_micros_f64());
+    }
+
     let nice_dt_two_maybes = |earlier: Option<Cursor>, later: Option<Cursor>| match (earlier, later)
     {
         (Some(earlier), Some(later)) => match later.duration_since(&earlier) {
@@ -208,7 +250,7 @@ fn backfill_info(
     let rollup_rate = rate(rollup_cursor, last_rollup, dt_real);
     let rollup_avg = rate(rollup_cursor, first_rollup, dt_real_total);
 
-    log::info!(
+    log::trace!(
         "cursor: {} behind (→{}, {cursor_rate}x, {cursor_avg}x avg). rollup: {} behind (→{}, {rollup_rate}x, {rollup_avg}x avg).",
         latest_cursor.map(|c| c.elapsed().map(nice_duration).unwrap_or("++".to_string())).unwrap_or("?".to_string()),
         nice_dt_two_maybes(last_cursor, latest_cursor),

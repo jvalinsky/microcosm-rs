@@ -23,6 +23,7 @@ use fjall::{
     Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Snapshot,
 };
 use jetstream::events::Cursor;
+use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
 use std::collections::{HashMap, HashSet};
 use std::iter::Peekable;
 use std::ops::Bound;
@@ -1263,28 +1264,42 @@ impl FjallWriter {
 impl StoreWriter<FjallBackground> for FjallWriter {
     fn background_tasks(&mut self, reroll: bool) -> StorageResult<FjallBackground> {
         if self.bg_taken.swap(true, Ordering::SeqCst) {
-            Err(StorageError::BackgroundAlreadyStarted)
-        } else {
-            if reroll {
-                log::info!("reroll: resetting rollup cursor...");
-                insert_static_neu::<NewRollupCursorKey>(&self.global, Cursor::from_start())?;
-                log::info!("reroll: clearing trim cursors...");
-                let mut batch = self.keyspace.batch();
-                for kv in self
-                    .global
-                    .prefix(TrimCollectionCursorKey::from_prefix_to_db_bytes(
-                        &Default::default(),
-                    )?)
-                {
-                    let (k, _) = kv?;
-                    batch.remove(&self.global, k);
-                }
-                let n = batch.len();
-                batch.commit()?;
-                log::info!("reroll: cleared {n} trim cursors.");
-            }
-            Ok(FjallBackground(self.clone()))
+            return Err(StorageError::BackgroundAlreadyStarted);
         }
+        describe_histogram!(
+            "storage_trim_dirty_nsids",
+            Unit::Count,
+            "number of NSIDs trimmed"
+        );
+        describe_histogram!(
+            "storage_trim_duration",
+            Unit::Microseconds,
+            "how long it took to trim the dirty NSIDs"
+        );
+        describe_counter!(
+            "storage_trim_removed",
+            Unit::Count,
+            "how many records were removed during trim"
+        );
+        if reroll {
+            log::info!("reroll: resetting rollup cursor...");
+            insert_static_neu::<NewRollupCursorKey>(&self.global, Cursor::from_start())?;
+            log::info!("reroll: clearing trim cursors...");
+            let mut batch = self.keyspace.batch();
+            for kv in self
+                .global
+                .prefix(TrimCollectionCursorKey::from_prefix_to_db_bytes(
+                    &Default::default(),
+                )?)
+            {
+                let (k, _) = kv?;
+                batch.remove(&self.global, k);
+            }
+            let n = batch.len();
+            batch.commit()?;
+            log::info!("reroll: cleared {n} trim cursors.");
+        }
+        Ok(FjallBackground(self.clone()))
     }
 
     fn insert_batch<const LIMIT: usize>(
@@ -1599,10 +1614,15 @@ impl StoreBackground for FjallBackground {
                             break;
                         }
                     }
+                    let dt = t0.elapsed();
+                    log::trace!("finished trimming {n} nsids in {:?}: {total_danglers} dangling and {total_deleted} total removed.", dt);
+                    histogram!("storage_trim_dirty_nsids").record(completed.len() as f64);
+                    histogram!("storage_trim_duration").record(dt.as_micros() as f64);
+                    counter!("storage_trim_removed", "dangling" => "true").increment(total_danglers as u64);
+                    counter!("storage_trim_removed", "dangling" => "false").increment((total_deleted - total_danglers) as u64);
                     for c in completed {
                         dirty_nsids.remove(&c);
                     }
-                    log::info!("finished trimming {n} nsids in {:?}: {total_danglers} dangling and {total_deleted} total removed.", t0.elapsed());
                 },
             };
         }

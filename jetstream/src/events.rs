@@ -142,6 +142,17 @@ impl Cursor {
         let t: SystemTime = self.into();
         t.elapsed()
     }
+    /// Compute the age of the cursor vs the local clock
+    ///
+    /// Converts the resulting duration into an f64, which can be negative!
+    ///
+    /// Warning: this exploits the internal implementation detail of jetstream cursors
+    pub fn elapsed_micros_f64(&self) -> f64 {
+        match self.elapsed() {
+            Ok(d) => d.as_micros() as f64,
+            Err(e) => -(e.duration().as_micros() as f64),
+        }
+    }
     /// Get the immediate next cursor value
     ///
     /// This is possible for the implementation of jetstream cursors
