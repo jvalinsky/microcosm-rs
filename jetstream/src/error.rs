@@ -36,14 +36,9 @@ pub enum ConnectionError {
 /// See [websocket_task](crate::websocket_task).
 #[derive(Error, Debug)]
 pub enum JetstreamEventError {
-    #[error("received websocket message that could not be deserialized as JSON: {0}")]
-    ReceivedMalformedJSON(#[from] serde_json::Error),
     #[error("failed to load built-in zstd dictionary for decoding: {0}")]
     CompressionDictionaryError(io::Error),
-    #[error("failed to decode zstd-compressed message: {0}")]
-    CompressionDecoderError(io::Error),
-    #[error("all receivers were dropped but the websocket connection failed to close cleanly")]
-    WebSocketCloseFailure,
+
     #[error("failed to send ping or pong: {0}")]
     PingPongError(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("jetstream event receiver closed")]

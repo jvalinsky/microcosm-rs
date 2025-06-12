@@ -14,6 +14,12 @@ use futures_util::{
     stream::StreamExt,
     SinkExt,
 };
+#[cfg(feature = "metrics")]
+use metrics::{
+    counter,
+    describe_counter,
+    Unit,
+};
 use tokio::{
     net::TcpStream,
     sync::mpsc::{
@@ -299,11 +305,48 @@ impl JetstreamConfig {
     }
 }
 
+#[cfg(feature = "metrics")]
+fn describe_metrics() {
+    describe_counter!(
+        "jetstream_connects",
+        Unit::Count,
+        "how many times we've tried to connect"
+    );
+    describe_counter!(
+        "jetstream_disconnects",
+        Unit::Count,
+        "how many times we've been disconnected"
+    );
+    describe_counter!(
+        "jetstream_total_events_received",
+        Unit::Count,
+        "total number of events received"
+    );
+    describe_counter!(
+        "jetstream_total_bytes_received",
+        Unit::Count,
+        "total uncompressed bytes received, not including websocket overhead"
+    );
+    describe_counter!(
+        "jetstream_total_event_errors",
+        Unit::Count,
+        "total errors when handling events"
+    );
+    describe_counter!(
+        "jetstream_total_events_sent",
+        Unit::Count,
+        "total events sent to the consumer"
+    );
+}
+
 impl JetstreamConnector {
     /// Create a Jetstream connector with a valid [JetstreamConfig].
     ///
     /// After creation, you can call [connect] to connect to the provided Jetstream instance.
     pub fn new(config: JetstreamConfig) -> Result<Self, ConfigValidationError> {
+        #[cfg(feature = "metrics")]
+        describe_metrics();
+
         // We validate the configuration here so any issues are caught early.
         config.validate()?;
         Ok(JetstreamConnector { config })
@@ -359,6 +402,13 @@ impl JetstreamConnector {
                     }
                 };
 
+                #[cfg(feature = "metrics")]
+                if let Some(host) = req.uri().host() {
+                    let retry = if retry_attempt > 0 { "yes" } else { "no" };
+                    counter!("jetstream_connects", "host" => host.to_string(), "retry" => retry)
+                        .increment(1);
+                }
+
                 let mut last_cursor = connect_cursor;
                 retry_attempt += 1;
                 if let Ok((ws_stream, _)) = connect_async(req).await {
@@ -368,12 +418,27 @@ impl JetstreamConnector {
                         websocket_task(dict, ws_stream, send_channel.clone(), &mut last_cursor)
                             .await
                     {
-                        if let JetstreamEventError::ReceiverClosedError = e {
-                            log::error!("Jetstream receiver channel closed. Exiting consumer.");
-                            return;
+                        match e {
+                            JetstreamEventError::ReceiverClosedError => {
+                                #[cfg(feature="metrics")]
+                                counter!("jetstream_disconnects", "reason" => "channel", "fatal" => "yes").increment(1);
+                                log::error!("Jetstream receiver channel closed. Exiting consumer.");
+                                return;
+                            }
+                            JetstreamEventError::CompressionDictionaryError(_) => {
+                                #[cfg(feature="metrics")]
+                                counter!("jetstream_disconnects", "reason" => "zstd", "fatal" => "no").increment(1);
+                            }
+                            JetstreamEventError::PingPongError(_) => {
+                                #[cfg(feature="metrics")]
+                                counter!("jetstream_disconnects", "reason" => "pingpong", "fatal" => "no").increment(1);
+                            }
                         }
-                        log::error!("Jetstream closed after encountering error: {e:?}");
+                        log::warn!("Jetstream closed after encountering error: {e:?}");
                     } else {
+                        #[cfg(feature = "metrics")]
+                        counter!("jetstream_disconnects", "reason" => "close", "fatal" => "no")
+                            .increment(1);
                         log::warn!("Jetstream connection closed cleanly");
                     }
                     if t_connected.elapsed() > Duration::from_secs(success_threshold_s) {
@@ -425,9 +490,19 @@ async fn websocket_task(
         match socket_read.next().await {
             Some(Ok(message)) => match message {
                 Message::Text(json) => {
+                    #[cfg(feature = "metrics")]
+                    {
+                        counter!("jetstream_total_events_received", "compressed" => "false")
+                            .increment(1);
+                        counter!("jetstream_total_bytes_received", "compressed" => "false")
+                            .increment(json.len() as u64);
+                    }
                     let event: JetstreamEvent = match serde_json::from_str(&json) {
                         Ok(ev) => ev,
                         Err(e) => {
+                            #[cfg(feature = "metrics")]
+                            counter!("jetstream_total_event_errors", "reason" => "deserialize")
+                                .increment(1);
                             log::warn!(
                                 "failed to parse json: {e:?} (from {})",
                                 json.get(..24).unwrap_or(&json)
@@ -439,6 +514,9 @@ async fn websocket_task(
 
                     if let Some(last) = last_cursor {
                         if event_cursor <= *last {
+                            #[cfg(feature = "metrics")]
+                            counter!("jetstream_total_event_errors", "reason" => "old")
+                                .increment(1);
                             log::warn!("event cursor {event_cursor:?} was not newer than the last one: {last:?}. dropping event.");
                             continue;
                         }
@@ -453,8 +531,17 @@ async fn websocket_task(
                     } else if let Some(last) = last_cursor.as_mut() {
                         *last = event_cursor;
                     }
+                    #[cfg(feature = "metrics")]
+                    counter!("jetstream_total_events_sent").increment(1);
                 }
                 Message::Binary(zstd_json) => {
+                    #[cfg(feature = "metrics")]
+                    {
+                        counter!("jetstream_total_events_received", "compressed" => "true")
+                            .increment(1);
+                        counter!("jetstream_total_bytes_received", "compressed" => "true")
+                            .increment(zstd_json.len() as u64);
+                    }
                     let mut cursor = IoCursor::new(zstd_json);
                     let decoder =
                         zstd::stream::Decoder::with_prepared_dictionary(&mut cursor, &dictionary)
@@ -463,6 +550,9 @@ async fn websocket_task(
                     let event: JetstreamEvent = match serde_json::from_reader(decoder) {
                         Ok(ev) => ev,
                         Err(e) => {
+                            #[cfg(feature = "metrics")]
+                            counter!("jetstream_total_event_errors", "reason" => "deserialize")
+                                .increment(1);
                             log::warn!("failed to parse json: {e:?}");
                             continue;
                         }
@@ -471,6 +561,9 @@ async fn websocket_task(
 
                     if let Some(last) = last_cursor {
                         if event_cursor <= *last {
+                            #[cfg(feature = "metrics")]
+                            counter!("jetstream_total_event_errors", "reason" => "old")
+                                .increment(1);
                             log::warn!("event cursor {event_cursor:?} was not newer than the last one: {last:?}. dropping event.");
                             continue;
                         }
@@ -485,6 +578,8 @@ async fn websocket_task(
                     } else if let Some(last) = last_cursor.as_mut() {
                         *last = event_cursor;
                     }
+                    #[cfg(feature = "metrics")]
+                    counter!("jetstream_total_events_sent").increment(1);
                 }
                 Message::Ping(vec) => {
                     log::trace!("Ping recieved, responding");

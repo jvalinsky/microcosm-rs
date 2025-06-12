@@ -2,7 +2,7 @@
 all: check
 
 test:
-	cargo test
+	cargo test --all-features
 
 fmt:
 	cargo fmt --package links --package constellation --package ufos

@@ -20,6 +20,7 @@ tokio-tungstenite = { version = "0.26.2", features = [
     "url",
 ] }
 futures-util = "0.3.31"
+metrics = { version = "0.24.2", optional = true }
 url = "2.5.4"
 serde = { version = "1.0.215", features = ["derive"] }
 serde_json = { version = "1.0.140", features = ["raw_value"] }
@@ -31,3 +32,7 @@ log = "0.4.22"
 [dev-dependencies]
 anyhow = "1.0.93"
 clap = { version = "4.5.20", features = ["derive"] }
+
+[features]
+default = []
+metrics = ["dep:metrics"]
