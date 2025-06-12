@@ -5,9 +5,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use jetstream::exports::{Did, Nsid};
+use metrics::{describe_histogram, histogram, Unit};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
 
@@ -35,21 +36,29 @@ where
         self,
         mut batches: Receiver<EventBatch<LIMIT>>,
     ) -> StorageResult<()> {
+        describe_histogram!(
+            "storage_slow_batches",
+            Unit::Microseconds,
+            "batches that took more than 3s to insert"
+        );
         while let Some(event_batch) = batches.recv().await {
             let token = CancellationToken::new();
             let cancelled = token.clone();
             tokio::spawn(async move {
-                let started = SystemTime::now();
+                let started = Instant::now();
                 let mut concerned = false;
                 loop {
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs_f64(3.)) => {
-                            log::warn!("taking a long time to insert an event batch ({:?})...", started.elapsed());
+                        _ = tokio::time::sleep(Duration::from_secs(3)) => {
+                            if !concerned {
+                                log::warn!("taking a long time to insert an event batch...");
+                            }
                             concerned = true;
                         }
                         _ = cancelled.cancelled() => {
                             if concerned {
                                 log::warn!("finally inserted slow event batch (or failed) after {:?}", started.elapsed());
+                                histogram!("storage_slow_batches").record(started.elapsed().as_micros() as f64);
                             }
                             break
                         }
