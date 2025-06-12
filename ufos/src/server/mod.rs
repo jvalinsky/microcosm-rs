@@ -63,6 +63,7 @@ where
         Ok(response) => response.status_code(),
         Err(ref e) => e.status_code.as_status(),
     }
+    .as_str() // just the number (.to_string()'s Display does eg `200 OK`)
     .to_string();
     let endpoint = ctx.endpoint.operation_id.clone();
     let headers = ctx.request.headers();
