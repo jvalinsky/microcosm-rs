@@ -1,11 +1,11 @@
-use crate::{ClientEvent, LinkEvent};
+use crate::{ClientLinkEvent, LinkEvent};
 use dropshot::{
     ApiDescription, ConfigDropshot, ConfigLogging, ConfigLoggingLevel, Query, RequestContext,
     ServerBuilder, WebsocketConnection, channel,
 };
 use futures::SinkExt;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
@@ -31,6 +31,13 @@ pub async fn serve(b: broadcast::Sender<LinkEvent>) -> Result<(), String> {
         .map_err(|error| format!("failed to create server: {}", error))?;
 
     server.await
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all="snake_case")]
+struct ClientEvent {
+    r#type: String,
+    link: ClientLinkEvent,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -61,7 +68,11 @@ async fn subscribe(
     loop {
         match sub.recv().await {
             Ok(link) => {
-                let json = serde_json::to_string::<ClientEvent>(&link.into())?;
+                let ev = ClientEvent {
+                    r#type: "link".to_string(),
+                    link: link.into(),
+                };
+                let json = serde_json::to_string(&ev)?;
                 if let Err(e) = ws.send(Message::Text(json.into())).await {
                     eprintln!("client: failed to send event: {e:?}");
                     ws.close(None).await?; // TODO: do we need this one??

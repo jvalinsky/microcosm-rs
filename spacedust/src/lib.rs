@@ -12,20 +12,25 @@ pub struct LinkEvent {
 }
 
 #[derive(Debug, Serialize)]
-struct ClientEvent {
+struct ClientLinkEvent {
+    operation: String,
     source: String,
-    origin: String,
-    target: String,
+    source_record: String,
+    subject: String,
     // TODO: include the record too? would save clients a level of hydration
 }
 
-impl From<LinkEvent> for ClientEvent {
+impl From<LinkEvent> for ClientLinkEvent {
     fn from(link: LinkEvent) -> Self {
-        let undotted = link.path.get(1..).unwrap_or("");
+        let undotted = link.path.strip_prefix('.').unwrap_or_else(|| {
+            eprintln!("link path did not have expected '.' prefix: {}", link.path);
+            ""
+        });
         Self {
+            operation: "create".to_string(),
             source: format!("{}:{undotted}", link.collection),
-            origin: link.origin,
-            target: link.target,
+            source_record: link.origin,
+            subject: link.target,
         }
     }
 }
