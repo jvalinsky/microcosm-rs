@@ -3381,15 +3381,19 @@ dependencies = [
 name = "spacedust"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "dropshot",
  "futures",
+ "http",
  "jetstream",
  "links",
  "metrics",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
+ "serde_qs",
  "tinyjson",
  "tokio",
  "tokio-tungstenite 0.27.0",

@@ -72,6 +72,7 @@ pub async fn consume(
                     &*commit.collection,
                     &*commit.rkey,
                 ),
+                rev: commit.rev.to_string(),
                 target: link.target.into_string(),
             };
             let _ = b.send(link_ev); // only errors if no subscribers are connected, which is just fine.
