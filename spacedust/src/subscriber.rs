@@ -51,6 +51,7 @@ pub async fn subscribe(
 
                 let ev = ClientEvent {
                     kind: "link".to_string(),
+                    origin: "live".to_string(),
                     link: link.into(),
                 };
                 let json = serde_json::to_string(&ev)?;

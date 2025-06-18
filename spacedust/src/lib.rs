@@ -16,13 +16,14 @@ pub struct LinkEvent {
 #[derive(Debug, Serialize)]
 #[serde(rename_all="snake_case")]
 pub struct ClientEvent {
-    kind: String,
+    kind: String, // "link"
+    origin: String, // "live", "replay", "backfill"
     link: ClientLinkEvent,
 }
 
 #[derive(Debug, Serialize)]
 struct ClientLinkEvent {
-    operation: String,
+    operation: String, // "create", "delete" (prob no update, though maybe for rev?)
     source: String,
     source_record: String,
     source_rev: String,
