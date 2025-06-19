@@ -1,4 +1,4 @@
-use crate::subscriber;
+use crate::subscriber::Subscriber;
 use metrics::{histogram, counter};
 use std::sync::Arc;
 use crate::LinkEvent;
@@ -19,13 +19,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_util::sync::CancellationToken;
 use async_trait::async_trait;
 use std::collections::HashSet;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 
-pub async fn serve(b: broadcast::Sender<LinkEvent>) -> Result<(), String> {
+pub async fn serve(b: broadcast::Sender<LinkEvent>, shutdown: CancellationToken) -> Result<(), String> {
     let config_logging = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
     };
@@ -58,7 +59,8 @@ pub async fn serve(b: broadcast::Sender<LinkEvent>) -> Result<(), String> {
         .map_err(|e| e.to_string())?,
     );
 
-    let ctx = Context { spec, b };
+    let sub_shutdown = shutdown.clone();
+    let ctx = Context { spec, b, shutdown: sub_shutdown };
 
     let server = ServerBuilder::new(api, ctx, log)
         .config(ConfigDropshot {
@@ -68,13 +70,24 @@ pub async fn serve(b: broadcast::Sender<LinkEvent>) -> Result<(), String> {
         .start()
         .map_err(|error| format!("failed to create server: {}", error))?;
 
-    server.await
+    tokio::select! {
+        s = server.wait_for_shutdown() => {
+            log::error!("dropshot server ended: {s:?}");
+            s
+        },
+        _ = shutdown.cancelled() => {
+            log::info!("shutting down server");
+            server.close().await?;
+            Err("shutdown requested".to_string())
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct Context {
     pub spec: Arc<serde_json::Value>,
     pub b: broadcast::Sender<LinkEvent>,
+    pub shutdown: CancellationToken,
 }
 
 async fn instrument_handler<T, H, R>(ctx: &RequestContext<T>, handler: H) -> Result<R, HttpError>
@@ -266,17 +279,12 @@ impl SharedExtractor for MultiSubscribeQuery {
     }
 }
 
-#[derive(Deserialize, JsonSchema)]
-struct QueryParams {
-    _hello: Option<String>,
-}
-
 #[channel {
     protocol = WEBSOCKETS,
     path = "/subscribe",
 }]
 async fn subscribe(
-    ctx: RequestContext<Context>,
+    reqctx: RequestContext<Context>,
     query: MultiSubscribeQuery,
     upgraded: WebsocketConnection,
 ) -> dropshot::WebsocketChannelResult {
@@ -287,9 +295,12 @@ async fn subscribe(
     )
     .await;
 
-    let b = ctx.context().b.subscribe();
+    let Context { b, shutdown, .. } = reqctx.context();
+    let sub_token = shutdown.child_token();
+    let subscription = b.subscribe();
 
-    subscriber::subscribe(b, ws, query)
+    Subscriber::new(query, sub_token)
+        .start(ws, subscription)
         .await
         .map_err(|e| format!("boo: {e:?}"))?;
 

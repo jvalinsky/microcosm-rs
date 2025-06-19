@@ -1,25 +1,27 @@
+use tokio_util::sync::CancellationToken;
 use crate::LinkEvent;
+use crate::error::ConsumerError;
 use jetstream::{
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
     events::{CommitOp, Cursor, EventKind},
 };
 use links::collect_links;
-use std::error::Error;
 use tokio::sync::broadcast;
 
 const MAX_LINKS_PER_EVENT: usize = 100;
 
 pub async fn consume(
     b: broadcast::Sender<LinkEvent>,
-    jetstream_endpoint: &str,
+    jetstream_endpoint: String,
     cursor: Option<Cursor>,
     no_zstd: bool,
-) -> Result<(), Box<dyn Error>> {
-    let endpoint = DefaultJetstreamEndpoints::endpoint_or_shortcut(jetstream_endpoint);
+    shutdown: CancellationToken,
+) -> Result<(), ConsumerError> {
+    let endpoint = DefaultJetstreamEndpoints::endpoint_or_shortcut(&jetstream_endpoint);
     if endpoint == jetstream_endpoint {
-        std::println!("connecting to jetstream at {endpoint}");
+        log::info!("connecting to jetstream at {endpoint}");
     } else {
-        std::println!("connecting to jetstream at {jetstream_endpoint} => {endpoint}");
+        log::info!("connecting to jetstream at {jetstream_endpoint} => {endpoint}");
     }
     let config: JetstreamConfig = JetstreamConfig {
         endpoint,
@@ -36,12 +38,23 @@ pub async fn consume(
         .connect_cursor(cursor)
         .await?;
 
-    while let Some(event) = receiver.recv().await {
+    log::info!("receiving jetstream messages..");
+    loop {
+        if shutdown.is_cancelled() {
+            log::info!("exiting consumer for shutdown");
+            break;
+        }
+        let Some(event) = receiver.recv().await else {
+            log::error!("could not receive jetstream event, shutting down...");
+            shutdown.cancel();
+            break;
+        };
+
         if event.kind != EventKind::Commit {
             continue;
         }
         let Some(commit) = event.commit else {
-            eprintln!("jetstream commit event missing commit data, ignoring");
+            log::warn!("jetstream commit event missing commit data, ignoring");
             continue;
         };
 
@@ -51,7 +64,7 @@ pub async fn consume(
             continue;
         }
         let Some(record) = commit.record else {
-            eprintln!("jetstream commit update/delete missing record, ignoring");
+            log::warn!("jetstream commit update/delete missing record, ignoring");
             continue;
         };
 
@@ -60,7 +73,7 @@ pub async fn consume(
         // todo: indicate if the link limit was reached (-> links omitted)
         for (i, link) in collect_links(&jv).into_iter().enumerate() {
             if i >= MAX_LINKS_PER_EVENT {
-                eprintln!("jetstream event has too many links, ignoring the rest");
+                log::warn!("jetstream event has too many links, ignoring the rest");
                 break;
             }
             let link_ev = LinkEvent {
@@ -79,5 +92,5 @@ pub async fn consume(
         }
     }
 
-    Err("jetstream consumer ended".into())
+    Err(ConsumerError::JetstreamEnded)
 }

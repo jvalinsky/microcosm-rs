@@ -3,6 +3,7 @@ use spacedust::server;
 
 use clap::Parser;
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug, Clone)]
@@ -21,7 +22,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let args = Args::parse();
+    env_logger::init();
 
     // tokio broadcast keeps a single main output queue for all subscribers.
     // each subscriber clones off a copy of an individual value for each recv.
@@ -40,15 +41,30 @@ async fn main() -> Result<(), String> {
     // TODO: determine if a pathological case could blow this up (eg 1MB link
     // paths + slow subscriber -> 16GiB queue)
     let (b, _) = broadcast::channel(16_384);
+    let consumer_sender = b.clone();
 
-    let consuming = consumer::consume(b.clone(), &args.jetstream, None, args.jetstream_no_zstd);
+    let shutdown = CancellationToken::new();
 
-    let serving = server::serve(b);
+    let ctrlc_shutdown = shutdown.clone();
+    ctrlc::set_handler(move || ctrlc_shutdown.cancel()).expect("failed to set ctrl-c handler");
 
-    tokio::select! {
-        e = serving => eprintln!("serving failed: {e:?}"),
-        e = consuming => eprintln!("consuming failed: {e:?}"),
-    };
+    let args = Args::parse();
+
+    let server_shutdown = shutdown.clone();
+    let serving = tokio::spawn(async move {
+        server::serve(b, server_shutdown).await
+    });
+
+    let consumer_shutdown = shutdown.clone();
+    let consuming = tokio::spawn(async move {
+        consumer::consume(consumer_sender, args.jetstream, None, args.jetstream_no_zstd, consumer_shutdown).await
+    });
+
+    let (served, consumed) = tokio::join!(serving, consuming);
+    log::info!("serving ended: {served:?}");
+    log::info!("consuming ended: {consumed:?}");
+
+    log::info!("bye!");
 
     Ok(())
 }
