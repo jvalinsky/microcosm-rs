@@ -123,9 +123,7 @@ impl Subscriber {
         let target_did = if link.target.starts_with("did:") {
             link.target.clone()
         } else {
-            let Some(rest) = link.target.strip_prefix("at://") else {
-                return None
-            };
+            let rest = link.target.strip_prefix("at://")?;
             if let Some((did, _)) = rest.split_once("/") {
                 did
             } else {
