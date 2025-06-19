@@ -2,6 +2,7 @@ use spacedust::consumer;
 use spacedust::server;
 
 use clap::Parser;
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -50,6 +51,10 @@ async fn main() -> Result<(), String> {
 
     let args = Args::parse();
 
+    if let Err(e) = install_metrics_server() {
+        log::error!("failed to install metrics server: {e:?}");
+    };
+
     let server_shutdown = shutdown.clone();
     let serving = tokio::spawn(async move {
         server::serve(b, server_shutdown).await
@@ -66,5 +71,26 @@ async fn main() -> Result<(), String> {
 
     log::info!("bye!");
 
+    Ok(())
+}
+
+fn install_metrics_server() -> Result<(), metrics_exporter_prometheus::BuildError> {
+    log::info!("installing metrics server...");
+    let host = [0, 0, 0, 0];
+    let port = 8765;
+    PrometheusBuilder::new()
+        .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
+        .set_bucket_duration(std::time::Duration::from_secs(60))?
+        .set_bucket_count(std::num::NonZero::new(10).unwrap()) // count * duration = 10 mins. stuff doesn't happen that fast here.
+        .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
+        .with_http_listener((host, port))
+        .install()?;
+    log::info!(
+        "metrics server installed! listening on http://{}.{}.{}.{}:{port}",
+        host[0],
+        host[1],
+        host[2],
+        host[3]
+    );
     Ok(())
 }
