@@ -40,6 +40,8 @@ impl Subscriber {
 
         // TODO: do we need to timeout ws sends??
 
+        metrics::gauge!("subscribers_connected_total").increment(1);
+
         loop {
             tokio::select! {
                 l = receiver.recv() => match l {
@@ -109,6 +111,7 @@ impl Subscriber {
             }
         }
         log::trace!("end of subscriber. bye!");
+        metrics::gauge!("subscribers_connected_total").decrement(1);
         Ok(())
     }
 
