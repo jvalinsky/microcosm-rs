@@ -1,3 +1,4 @@
+use spacedust::error::MainTaskError;
 use spacedust::consumer;
 use spacedust::server;
 
@@ -55,19 +56,46 @@ async fn main() -> Result<(), String> {
         log::error!("failed to install metrics server: {e:?}");
     };
 
+    let mut tasks: tokio::task::JoinSet<Result<(), MainTaskError>> = tokio::task::JoinSet::new();
+
     let server_shutdown = shutdown.clone();
-    let serving = tokio::spawn(async move {
-        server::serve(b, server_shutdown).await
+    tasks.spawn(async move {
+        server::serve(b, server_shutdown).await?;
+        Ok(())
     });
 
     let consumer_shutdown = shutdown.clone();
-    let consuming = tokio::spawn(async move {
-        consumer::consume(consumer_sender, args.jetstream, None, args.jetstream_no_zstd, consumer_shutdown).await
+    tasks.spawn(async move {
+        consumer::consume(
+            consumer_sender,
+            args.jetstream,
+            None,
+            args.jetstream_no_zstd,
+            consumer_shutdown
+        )
+            .await?;
+        Ok(())
     });
 
-    let (served, consumed) = tokio::join!(serving, consuming);
-    log::info!("serving ended: {served:?}");
-    log::info!("consuming ended: {consumed:?}");
+    tokio::select! {
+        _ = shutdown.cancelled() => log::warn!("shutdown requested"),
+        Some(r) = tasks.join_next() => {
+            log::warn!("a task exited, shutting down: {r:?}");
+            shutdown.cancel();
+        }
+    }
+
+    tokio::select! {
+        _ = async {
+            while let Some(completed) = tasks.join_next().await {
+                log::info!("shutdown: task completed: {completed:?}");
+            }
+        } => {},
+        _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+            log::info!("shutdown: not all tasks completed on time. aborting...");
+            tasks.shutdown().await;
+        },
+    }
 
     log::info!("bye!");
 

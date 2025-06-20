@@ -1,3 +1,4 @@
+use crate::error::ServerError;
 use crate::subscriber::Subscriber;
 use metrics::{histogram, counter};
 use std::sync::Arc;
@@ -26,14 +27,14 @@ use std::collections::HashSet;
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 
-pub async fn serve(b: broadcast::Sender<LinkEvent>, shutdown: CancellationToken) -> Result<(), String> {
+pub async fn serve(b: broadcast::Sender<LinkEvent>, shutdown: CancellationToken) -> Result<(), ServerError> {
     let config_logging = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
     };
 
     let log = config_logging
         .to_logger("example-basic")
-        .map_err(|error| format!("failed to create logger: {}", error))?;
+        .map_err(ServerError::ConfigLogError)?;
 
     let mut api = ApiDescription::new();
     api.register(index).unwrap();
@@ -56,7 +57,7 @@ pub async fn serve(b: broadcast::Sender<LinkEvent>, shutdown: CancellationToken)
         .contact_name("part of @microcosm.blue")
         .contact_url("https://microcosm.blue")
         .json()
-        .map_err(|e| e.to_string())?,
+        .map_err(ServerError::OpenApiJsonFail)?,
     );
 
     let sub_shutdown = shutdown.clone();
@@ -67,20 +68,19 @@ pub async fn serve(b: broadcast::Sender<LinkEvent>, shutdown: CancellationToken)
             bind_address: "0.0.0.0:9998".parse().unwrap(),
             ..Default::default()
         })
-        .start()
-        .map_err(|error| format!("failed to create server: {}", error))?;
+        .start()?;
 
     tokio::select! {
         s = server.wait_for_shutdown() => {
-            log::error!("dropshot server ended: {s:?}");
-            s
+            s.map_err(ServerError::ServerExited)?;
+            log::info!("server shut down normally.");
         },
         _ = shutdown.cancelled() => {
-            log::info!("shutting down server");
-            server.close().await?;
-            Err("shutdown requested".to_string())
-        }
+            log::info!("shutting down: closing server");
+            server.close().await.map_err(ServerError::BadClose)?;
+        },
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

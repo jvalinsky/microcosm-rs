@@ -42,11 +42,10 @@ pub async fn consume(
     loop {
         if shutdown.is_cancelled() {
             log::info!("exiting consumer for shutdown");
-            break;
+            return Ok(());
         }
         let Some(event) = receiver.recv().await else {
-            log::error!("could not receive jetstream event, shutting down...");
-            shutdown.cancel();
+            log::error!("could not receive jetstream event, bailing");
             break;
         };
 
@@ -68,7 +67,13 @@ pub async fn consume(
             continue;
         };
 
-        let jv = record.get().parse()?;
+        let jv = match record.get().parse() {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("jetstream record failed to parse, ignoring: {e}");
+                continue;
+            }
+        };
 
         // todo: indicate if the link limit was reached (-> links omitted)
         for (i, link) in collect_links(&jv).into_iter().enumerate() {
