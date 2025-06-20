@@ -23,7 +23,6 @@ impl Subscriber {
         query: MultiSubscribeQuery,
         shutdown: CancellationToken,
     ) -> Self {
-        log::warn!("new sub...");
         Self { query, shutdown }
     }
 
@@ -32,7 +31,6 @@ impl Subscriber {
         ws: WebSocketStream<WebsocketConnectionRaw>,
         mut receiver: broadcast::Receiver<LinkEvent>
     ) -> Result<(), Box<dyn Error>> {
-        log::warn!("starting new sub...");
         let mut ping_state = None;
         let (mut ws_sender, mut ws_receiver) = ws.split();
         let mut ping_interval = interval(PING_PERIOD);
@@ -40,7 +38,8 @@ impl Subscriber {
 
         // TODO: do we need to timeout ws sends??
 
-        metrics::gauge!("subscribers_connected_total").increment(1);
+        metrics::counter!("subscribers_connected_total").increment(1);
+        metrics::gauge!("subscribers_connected").increment(1);
 
         loop {
             tokio::select! {
@@ -111,7 +110,7 @@ impl Subscriber {
             }
         }
         log::trace!("end of subscriber. bye!");
-        metrics::gauge!("subscribers_connected_total").decrement(1);
+        metrics::gauge!("subscribers_connected").decrement(1);
         Ok(())
     }
 

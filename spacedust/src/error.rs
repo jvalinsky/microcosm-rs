@@ -6,6 +6,8 @@ pub enum MainTaskError {
     ConsumerTaskError(#[from] ConsumerError),
     #[error(transparent)]
     ServerTaskError(#[from] ServerError),
+    #[error(transparent)]
+    DelayTaskError(#[from] DelayError),
 }
 
 #[derive(Debug, Error)]
@@ -15,7 +17,15 @@ pub enum ConsumerError {
     #[error(transparent)]
     JetstreamConfigValidationError(#[from] jetstream::error::ConfigValidationError),
     #[error("jetstream ended")]
-    JetstreamEnded
+    JetstreamEnded,
+    #[error("delay queue output dropped")]
+    DelayQueueOutputDropped,
+}
+
+#[derive(Debug, Error)]
+pub enum DelayError {
+    #[error("delay ended")]
+    DelayEnded,
 }
 
 #[derive(Debug, Error)]

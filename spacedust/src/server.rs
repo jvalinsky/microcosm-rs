@@ -27,7 +27,11 @@ use std::collections::HashSet;
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 
-pub async fn serve(b: broadcast::Sender<LinkEvent>, shutdown: CancellationToken) -> Result<(), ServerError> {
+pub async fn serve(
+    b: broadcast::Sender<LinkEvent>,
+    d: broadcast::Sender<LinkEvent>,
+    shutdown: CancellationToken
+) -> Result<(), ServerError> {
     let config_logging = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
     };
@@ -61,7 +65,7 @@ pub async fn serve(b: broadcast::Sender<LinkEvent>, shutdown: CancellationToken)
     );
 
     let sub_shutdown = shutdown.clone();
-    let ctx = Context { spec, b, shutdown: sub_shutdown };
+    let ctx = Context { spec, b, d, shutdown: sub_shutdown };
 
     let server = ServerBuilder::new(api, ctx, log)
         .config(ConfigDropshot {
@@ -87,6 +91,7 @@ pub async fn serve(b: broadcast::Sender<LinkEvent>, shutdown: CancellationToken)
 struct Context {
     pub spec: Arc<serde_json::Value>,
     pub b: broadcast::Sender<LinkEvent>,
+    pub d: broadcast::Sender<LinkEvent>,
     pub shutdown: CancellationToken,
 }
 
@@ -279,6 +284,13 @@ impl SharedExtractor for MultiSubscribeQuery {
     }
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ScalarSubscribeQuery {
+    #[serde(default)]
+    pub instant: bool,
+}
+
 #[channel {
     protocol = WEBSOCKETS,
     path = "/subscribe",
@@ -286,6 +298,7 @@ impl SharedExtractor for MultiSubscribeQuery {
 async fn subscribe(
     reqctx: RequestContext<Context>,
     query: MultiSubscribeQuery,
+    scalar_query: Query<ScalarSubscribeQuery>,
     upgraded: WebsocketConnection,
 ) -> dropshot::WebsocketChannelResult {
     let ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
@@ -295,9 +308,12 @@ async fn subscribe(
     )
     .await;
 
-    let Context { b, shutdown, .. } = reqctx.context();
+    let Context { b, d, shutdown, .. } = reqctx.context();
     let sub_token = shutdown.child_token();
-    let subscription = b.subscribe();
+
+    let q = scalar_query.into_inner();
+    let subscription = if q.instant { b } else { d }.subscribe();
+    log::info!("starting subscriber with broadcast: instant={}", q.instant);
 
     Subscriber::new(query, sub_token)
         .start(ws, subscription)

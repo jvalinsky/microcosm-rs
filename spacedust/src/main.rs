@@ -1,11 +1,14 @@
 use spacedust::error::MainTaskError;
 use spacedust::consumer;
 use spacedust::server;
+use spacedust::delay;
+use spacedust::removable_delay_queue::removable_delay_queue;
 
 use clap::Parser;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
+use std::time::Duration;
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug, Clone)]
@@ -44,6 +47,11 @@ async fn main() -> Result<(), String> {
     // paths + slow subscriber -> 16GiB queue)
     let (b, _) = broadcast::channel(16_384);
     let consumer_sender = b.clone();
+    let (d, _) = broadcast::channel(16_384);
+    let consumer_delayed_sender = d.clone();
+
+    let delay = Duration::from_secs(21);
+    let (delay_queue_sender, delay_queue_receiver) = removable_delay_queue(delay);
 
     let shutdown = CancellationToken::new();
 
@@ -60,7 +68,7 @@ async fn main() -> Result<(), String> {
 
     let server_shutdown = shutdown.clone();
     tasks.spawn(async move {
-        server::serve(b, server_shutdown).await?;
+        server::serve(b, d, server_shutdown).await?;
         Ok(())
     });
 
@@ -68,12 +76,19 @@ async fn main() -> Result<(), String> {
     tasks.spawn(async move {
         consumer::consume(
             consumer_sender,
+            delay_queue_sender,
             args.jetstream,
             None,
             args.jetstream_no_zstd,
             consumer_shutdown
         )
             .await?;
+        Ok(())
+    });
+
+    let delay_shutdown = shutdown.clone();
+    tasks.spawn(async move {
+        delay::to_broadcast(delay_queue_receiver, consumer_delayed_sender, delay_shutdown).await?;
         Ok(())
     });
 

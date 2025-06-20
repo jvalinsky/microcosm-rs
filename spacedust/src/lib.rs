@@ -1,7 +1,9 @@
 pub mod consumer;
+pub mod delay;
 pub mod error;
 pub mod server;
 pub mod subscriber;
+pub mod removable_delay_queue;
 
 use serde::Serialize;
 

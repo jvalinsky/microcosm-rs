@@ -1,6 +1,7 @@
 use tokio_util::sync::CancellationToken;
 use crate::LinkEvent;
 use crate::error::ConsumerError;
+use crate::removable_delay_queue;
 use jetstream::{
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
     events::{CommitOp, Cursor, EventKind},
@@ -12,6 +13,7 @@ const MAX_LINKS_PER_EVENT: usize = 100;
 
 pub async fn consume(
     b: broadcast::Sender<LinkEvent>,
+    d: removable_delay_queue::Input<(String, usize), LinkEvent>,
     jetstream_endpoint: String,
     cursor: Option<Cursor>,
     no_zstd: bool,
@@ -57,9 +59,12 @@ pub async fn consume(
             continue;
         };
 
+        let at_uri = format!("at://{}/{}/{}", &*event.did, &*commit.collection, &*commit.rkey);
+
         // TODO: keep a buffer and remove quick deletes to debounce notifs
         // for now we just drop all deletes eek
         if commit.operation == CommitOp::Delete {
+            d.remove_range((at_uri.clone(), 0)..=(at_uri.clone(), MAX_LINKS_PER_EVENT)).await;
             continue;
         }
         let Some(record) = commit.record else {
@@ -84,16 +89,14 @@ pub async fn consume(
             let link_ev = LinkEvent {
                 collection: commit.collection.to_string(),
                 path: link.path,
-                origin: format!(
-                    "at://{}/{}/{}",
-                    &*event.did,
-                    &*commit.collection,
-                    &*commit.rkey,
-                ),
+                origin: at_uri.clone(),
                 rev: commit.rev.to_string(),
                 target: link.target.into_string(),
             };
-            let _ = b.send(link_ev); // only errors if no subscribers are connected, which is just fine.
+            let _ = b.send(link_ev.clone()); // only errors if no subscribers are connected, which is just fine.
+            d.enqueue((at_uri.clone(), i), link_ev)
+                .await
+                .map_err(|_| ConsumerError::DelayQueueOutputDropped)?;
         }
     }
 
