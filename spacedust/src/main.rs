@@ -123,8 +123,8 @@ fn install_metrics_server() -> Result<(), metrics_exporter_prometheus::BuildErro
     let port = 8765;
     PrometheusBuilder::new()
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
-        .set_bucket_duration(std::time::Duration::from_secs(60))?
-        .set_bucket_count(std::num::NonZero::new(10).unwrap()) // count * duration = 10 mins. stuff doesn't happen that fast here.
+        .set_bucket_duration(std::time::Duration::from_secs(300))?
+        .set_bucket_count(std::num::NonZero::new(12).unwrap()) // count * duration = 60 mins. stuff doesn't happen that fast here.
         .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
         .with_http_listener((host, port))
         .install()?;
