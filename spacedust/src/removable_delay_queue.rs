@@ -73,6 +73,8 @@ impl<K: Key, T> Output<K, T> {
     pub async fn next(&self) -> Option<T> {
         let get = || async {
             let mut q = self.q.lock().await;
+            metrics::gauge!("delay_queue_queue_len").set(q.queue.len() as f64);
+            metrics::gauge!("delay_queue_queue_capacity").set(q.queue.capacity() as f64);
             while let Some((t, k)) = q.queue.pop_front() {
                 // skip over queued keys that were removed from items
                 if let Some(item) = q.items.remove(&k) {
