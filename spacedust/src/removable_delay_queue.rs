@@ -83,14 +83,15 @@ impl<K: Key, T> Output<K, T> {
         };
         loop {
             if let Some((t, item)) = get().await {
-                let expected_release = t + self.delay;
                 let now = Instant::now();
-                if expected_release > now {
+                let expected_release = t + self.delay;
+                if expected_release.saturating_duration_since(now) > Duration::from_millis(1) {
                     tokio::time::sleep_until(expected_release.into()).await;
                     metrics::counter!("delay_queue_emit_total", "early" => "yes").increment(1);
+                    metrics::histogram!("delay_queue_emit_overshoot").record(0);
                 } else {
+                    let overshoot = now.saturating_duration_since(expected_release);
                     metrics::counter!("delay_queue_emit_total", "early" => "no").increment(1);
-                    let overshoot = now - expected_release;
                     metrics::histogram!("delay_queue_emit_overshoot").record(overshoot.as_secs_f64());
                 }
                 return Some(item)
