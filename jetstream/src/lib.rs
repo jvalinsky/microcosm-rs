@@ -27,6 +27,7 @@ use tokio::{
         Receiver,
         Sender,
     },
+    time::timeout,
 };
 use tokio_tungstenite::{
     connect_async,
@@ -200,6 +201,10 @@ pub struct JetstreamConfig {
     /// can help prevent that if your consumer sometimes pauses, at a cost of higher memory
     /// usage while events are buffered.
     pub channel_size: usize,
+    /// How long since the last jetstream message before we consider the connection dead
+    ///
+    /// Default: 15s
+    pub liveliness_ttl: Duration,
 }
 
 impl Default for JetstreamConfig {
@@ -213,6 +218,7 @@ impl Default for JetstreamConfig {
             omit_user_agent_jetstream_info: false,
             replay_on_reconnect: false,
             channel_size: 4096, // a few seconds of firehose buffer
+            liveliness_ttl: Duration::from_secs(15),
         }
     }
 }
@@ -380,6 +386,7 @@ impl JetstreamConnector {
 
         let (send_channel, receive_channel) = channel(self.config.channel_size);
         let replay_on_reconnect = self.config.replay_on_reconnect;
+        let liveliness_ttl = self.config.liveliness_ttl;
         let build_request = self.config.get_request_builder();
 
         tokio::task::spawn(async move {
@@ -414,9 +421,14 @@ impl JetstreamConnector {
                 if let Ok((ws_stream, _)) = connect_async(req).await {
                     let t_connected = Instant::now();
                     log::info!("jetstream connected. starting websocket task...");
-                    if let Err(e) =
-                        websocket_task(dict, ws_stream, send_channel.clone(), &mut last_cursor)
-                            .await
+                    if let Err(e) = websocket_task(
+                        dict,
+                        ws_stream,
+                        send_channel.clone(),
+                        &mut last_cursor,
+                        liveliness_ttl,
+                    )
+                    .await
                     {
                         match e {
                             JetstreamEventError::ReceiverClosedError => {
@@ -428,6 +440,10 @@ impl JetstreamConnector {
                             JetstreamEventError::CompressionDictionaryError(_) => {
                                 #[cfg(feature="metrics")]
                                 counter!("jetstream_disconnects", "reason" => "zstd", "fatal" => "no").increment(1);
+                            }
+                            JetstreamEventError::NoMessagesReceived => {
+                                #[cfg(feature="metrics")]
+                                counter!("jetstream_disconnects", "reason" => "ttl", "fatal" => "no").increment(1);
                             }
                             JetstreamEventError::PingPongError(_) => {
                                 #[cfg(feature="metrics")]
@@ -481,13 +497,22 @@ async fn websocket_task(
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     send_channel: JetstreamSender,
     last_cursor: &mut Option<Cursor>,
+    liveliness_ttl: Duration,
 ) -> Result<(), JetstreamEventError> {
     // TODO: Use the write half to allow the user to change configuration settings on the fly.
     let (mut socket_write, mut socket_read) = ws.split();
 
     let mut closing_connection = false;
     loop {
-        match socket_read.next().await {
+        let next = match timeout(liveliness_ttl, socket_read.next()).await {
+            Ok(n) => n,
+            Err(_) => {
+                log::warn!("jetstream no events for {liveliness_ttl:?}, closing");
+                _ = socket_write.close().await;
+                return Err(JetstreamEventError::NoMessagesReceived);
+            }
+        };
+        match next {
             Some(Ok(message)) => match message {
                 Message::Text(json) => {
                     #[cfg(feature = "metrics")]

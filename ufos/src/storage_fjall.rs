@@ -40,7 +40,7 @@ const MAX_BATCHED_ROLLUP_COUNTS: usize = 256;
 ///
 /// new data format, roughly:
 ///
-/// Partion: 'global'
+/// Partition: 'global'
 ///
 ///  - Global sequence counter (is the jetstream cursor -- monotonic with many gaps)
 ///      - key: "js_cursor" (literal)

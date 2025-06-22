@@ -38,9 +38,10 @@ pub enum ConnectionError {
 pub enum JetstreamEventError {
     #[error("failed to load built-in zstd dictionary for decoding: {0}")]
     CompressionDictionaryError(io::Error),
-
     #[error("failed to send ping or pong: {0}")]
     PingPongError(#[from] tokio_tungstenite::tungstenite::Error),
+    #[error("no messages received within ttl")]
+    NoMessagesReceived,
     #[error("jetstream event receiver closed")]
     ReceiverClosedError,
 }

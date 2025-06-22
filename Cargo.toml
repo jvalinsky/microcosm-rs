@@ -6,4 +6,5 @@ members = [
     "jetstream",
     "ufos",
     "ufos/fuzz",
+    "spacedust",
 ]
