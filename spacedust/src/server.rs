@@ -287,6 +287,17 @@ impl SharedExtractor for MultiSubscribeQuery {
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct ScalarSubscribeQuery {
+    /// Bypass the 21-sec delay buffer
+    ///
+    /// By default, spacedust holds all firehose links for 21 seconds before
+    /// emitting them, to prevent quickly- undone interactions from generating
+    /// notifications.
+    ///
+    /// Setting `instant` to true bypasses this buffer, allowing faster (and
+    /// noisier) notification delivery.
+    ///
+    /// Typically [a little less than 1%](https://bsky.app/profile/bad-example.com/post/3ls32wctsrs2l)
+    /// of links links get deleted within 21s of being created.
     #[serde(default)]
     pub instant: bool,
 }
