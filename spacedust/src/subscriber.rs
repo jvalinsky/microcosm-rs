@@ -1,8 +1,8 @@
+use std::sync::Arc;
 use tokio::time::interval;
 use std::time::Duration;
 use futures::StreamExt;
-use crate::ClientEvent;
-use crate::LinkEvent;
+use crate::{ClientMessage, FilterableProperties};
 use crate::server::MultiSubscribeQuery;
 use futures::SinkExt;
 use std::error::Error;
@@ -29,7 +29,7 @@ impl Subscriber {
     pub async fn start(
         self,
         ws: WebSocketStream<WebsocketConnectionRaw>,
-        mut receiver: broadcast::Receiver<LinkEvent>
+        mut receiver: broadcast::Receiver<Arc<ClientMessage>>
     ) -> Result<(), Box<dyn Error>> {
         let mut ping_state = None;
         let (mut ws_sender, mut ws_receiver) = ws.split();
@@ -44,8 +44,8 @@ impl Subscriber {
         loop {
             tokio::select! {
                 l = receiver.recv() => match l {
-                    Ok(link) => if let Some(message) = self.filter(link) {
-                        if let Err(e) = ws_sender.send(message).await {
+                    Ok(link) => if self.filter(&link.properties) {
+                        if let Err(e) = ws_sender.send(link.message.clone()).await {
                             log::warn!("failed to send link, dropping subscriber: {e:?}");
                             break;
                         }
@@ -116,48 +116,24 @@ impl Subscriber {
 
     fn filter(
         &self,
-        link: LinkEvent,
-        // mut sender: impl Sink<Message> + Unpin
-    ) -> Option<Message> {
+        properties: &FilterableProperties,
+    ) -> bool {
         let query = &self.query;
 
         // subject + subject DIDs are logical OR
-        let target_did = if link.target.starts_with("did:") {
-            link.target.clone()
-        } else {
-            let rest = link.target.strip_prefix("at://")?;
-            if let Some((did, _)) = rest.split_once("/") {
-                did
-            } else {
-                rest
-            }.to_string()
-        };
-        if !(query.wanted_subjects.contains(&link.target) || query.wanted_subject_dids.contains(&target_did) || query.wanted_subjects.is_empty() && query.wanted_subject_dids.is_empty()) {
-            // wowwww ^^ fix that
-            return None
+        if !(
+            query.wanted_subjects.is_empty() && query.wanted_subject_dids.is_empty() ||
+            query.wanted_subjects.contains(&properties.subject) ||
+            properties.subject_did.as_ref().map(|did| query.wanted_subject_dids.contains(did)).unwrap_or(false)
+        ) { // wowwww ^^ fix that
+            return false
         }
 
         // subjects together with sources are logical AND
-
-        if !query.wanted_sources.is_empty() {
-            let undotted = link.path.strip_prefix('.').unwrap_or_else(|| {
-                eprintln!("link path did not have expected '.' prefix: {}", link.path);
-                ""
-            });
-            let source = format!("{}:{undotted}", link.collection);
-            if !query.wanted_sources.contains(&source) {
-                return None
-            }
+        if !(query.wanted_sources.is_empty() || query.wanted_sources.contains(&properties.source)) {
+            return false
         }
 
-        let ev = ClientEvent {
-            kind: "link".to_string(),
-            origin: "live".to_string(),
-            link: link.into(),
-        };
-
-        let json = serde_json::to_string(&ev).unwrap();
-
-        Some(Message::Text(json.into()))
+        true
     }
 }

@@ -2,7 +2,7 @@ use crate::error::ServerError;
 use crate::subscriber::Subscriber;
 use metrics::{histogram, counter};
 use std::sync::Arc;
-use crate::LinkEvent;
+use crate::ClientMessage;
 use http::{
     header::{ORIGIN, USER_AGENT},
     Response, StatusCode,
@@ -28,8 +28,8 @@ const INDEX_HTML: &str = include_str!("../static/index.html");
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 
 pub async fn serve(
-    b: broadcast::Sender<LinkEvent>,
-    d: broadcast::Sender<LinkEvent>,
+    b: broadcast::Sender<Arc<ClientMessage>>,
+    d: broadcast::Sender<Arc<ClientMessage>>,
     shutdown: CancellationToken
 ) -> Result<(), ServerError> {
     let config_logging = ConfigLogging::StderrTerminal {
@@ -90,8 +90,8 @@ pub async fn serve(
 #[derive(Debug, Clone)]
 struct Context {
     pub spec: Arc<serde_json::Value>,
-    pub b: broadcast::Sender<LinkEvent>,
-    pub d: broadcast::Sender<LinkEvent>,
+    pub b: broadcast::Sender<Arc<ClientMessage>>,
+    pub d: broadcast::Sender<Arc<ClientMessage>>,
     pub shutdown: CancellationToken,
 }
 
