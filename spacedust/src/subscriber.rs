@@ -1,8 +1,9 @@
+use crate::error::SubscriberUpdateError;
 use std::sync::Arc;
 use tokio::time::interval;
 use std::time::Duration;
 use futures::StreamExt;
-use crate::{ClientMessage, FilterableProperties};
+use crate::{ClientMessage, FilterableProperties, SubscriberSourcedMessage};
 use crate::server::MultiSubscribeQuery;
 use futures::SinkExt;
 use std::error::Error;
@@ -27,7 +28,7 @@ impl Subscriber {
     }
 
     pub async fn start(
-        self,
+        mut self,
         ws: WebSocketStream<WebsocketConnectionRaw>,
         mut receiver: broadcast::Receiver<Arc<ClientMessage>>
     ) -> Result<(), Box<dyn Error>> {
@@ -76,6 +77,13 @@ impl Subscriber {
                             self.shutdown.cancel();
                         }
                     }
+                    Some(Ok(Message::Text(raw))) => {
+                        if let Err(e) = self.query.update_from_raw(&raw) {
+                            log::error!("subscriber options could not be updated, dropping: {e:?}");
+                            // TODO: send client an explanation
+                            self.shutdown.cancel();
+                        }
+                    },
                     Some(Ok(m)) => log::trace!("subscriber sent an unexpected message: {m:?}"),
                     Some(Err(e)) => {
                         log::error!("failed to receive subscriber message: {e:?}");
@@ -135,5 +143,25 @@ impl Subscriber {
         }
 
         true
+    }
+}
+
+
+
+impl MultiSubscribeQuery {
+    pub fn update_from_raw(&mut self, s: &str) -> Result<(), SubscriberUpdateError> {
+        let SubscriberSourcedMessage::OptionsUpdate(opts) = serde_json::from_str(s)
+            .map_err(SubscriberUpdateError::FailedToParseMessage)?;
+        if opts.wanted_sources.len() > 1_000 {
+            return Err(SubscriberUpdateError::TooManySourcesWanted);
+        }
+        if opts.wanted_subject_dids.len() > 10_000 {
+            return Err(SubscriberUpdateError::TooManyDidsWanted);
+        }
+        if opts.wanted_subjects.len() > 50_000 {
+            return Err(SubscriberUpdateError::TooManySubjectsWanted);
+        }
+        *self = opts;
+        Ok(())
     }
 }

@@ -8,7 +8,8 @@ pub mod removable_delay_queue;
 use links::CollectedLink;
 use jetstream::events::CommitEvent;
 use tokio_tungstenite::tungstenite::Message;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use server::MultiSubscribeQuery;
 
 #[derive(Debug)]
 pub struct FilterableProperties {
@@ -83,4 +84,10 @@ struct ClientLinkEvent {
     subject: String,
     // TODO: include the record too? would save clients a level of hydration
     // ^^ no, not for now. until we backfill + support broader deletes at *least*.
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum SubscriberSourcedMessage {
+    OptionsUpdate(MultiSubscribeQuery),
 }

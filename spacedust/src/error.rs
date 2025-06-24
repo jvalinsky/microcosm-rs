@@ -23,6 +23,18 @@ pub enum ConsumerError {
 }
 
 #[derive(Debug, Error)]
+pub enum SubscriberUpdateError {
+    #[error("failed to parse json for subscriber update: {0}")]
+    FailedToParseMessage(serde_json::Error),
+    #[error("more wantedSources were requested than allowed (max 1,000)")]
+    TooManySourcesWanted,
+    #[error("more wantedSubjectDids were requested than allowed (max 10,000)")]
+    TooManyDidsWanted,
+    #[error("more wantedSubjects were requested than allowed (max 50,000)")]
+    TooManySubjectsWanted,
+}
+
+#[derive(Debug, Error)]
 pub enum DelayError {
     #[error("delay ended")]
     DelayEnded,

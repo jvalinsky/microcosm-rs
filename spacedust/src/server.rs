@@ -19,7 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_util::sync::CancellationToken;
 use async_trait::async_trait;
 use std::collections::HashSet;
@@ -315,7 +315,9 @@ async fn subscribe(
     let ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
         upgraded.into_inner(),
         Role::Server,
-        None,
+        Some(WebSocketConfig::default().max_message_size(
+            Some(10 * 2_usize.pow(20)) // 10MiB, matching jetstream
+        )),
     )
     .await;
 
