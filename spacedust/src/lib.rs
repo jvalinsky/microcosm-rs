@@ -1,15 +1,15 @@
 pub mod consumer;
 pub mod delay;
 pub mod error;
+pub mod removable_delay_queue;
 pub mod server;
 pub mod subscriber;
-pub mod removable_delay_queue;
 
-use links::CollectedLink;
 use jetstream::events::CommitEvent;
-use tokio_tungstenite::tungstenite::Message;
+use links::CollectedLink;
 use serde::{Deserialize, Serialize};
 use server::MultiSubscribeQuery;
+use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Debug)]
 pub struct FilterableProperties {
@@ -32,7 +32,11 @@ pub struct ClientMessage {
 }
 
 impl ClientMessage {
-    pub fn new_link(link: CollectedLink, at_uri: &str, commit: &CommitEvent) -> Result<Self, serde_json::Error> {
+    pub fn new_link(
+        link: CollectedLink,
+        at_uri: &str,
+        commit: &CommitEvent,
+    ) -> Result<Self, serde_json::Error> {
         let subject_did = link.target.did();
 
         let subject = link.target.into_string();
@@ -61,16 +65,23 @@ impl ClientMessage {
 
         let message = Message::Text(client_event_json.into());
 
-        let properties = FilterableProperties { subject, subject_did, source };
+        let properties = FilterableProperties {
+            subject,
+            subject_did,
+            source,
+        };
 
-        Ok(ClientMessage { message, properties })
+        Ok(ClientMessage {
+            message,
+            properties,
+        })
     }
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all="snake_case")]
+#[serde(rename_all = "snake_case")]
 pub struct ClientEvent {
-    kind: &'static str, // "link"
+    kind: &'static str,   // "link"
     origin: &'static str, // "live", "replay", "backfill"
     link: ClientLinkEvent,
 }

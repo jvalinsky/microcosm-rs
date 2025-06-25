@@ -1,14 +1,14 @@
-use spacedust::error::MainTaskError;
 use spacedust::consumer;
-use spacedust::server;
 use spacedust::delay;
+use spacedust::error::MainTaskError;
 use spacedust::removable_delay_queue::removable_delay_queue;
+use spacedust::server;
 
 use clap::Parser;
 use metrics_exporter_prometheus::PrometheusBuilder;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
-use std::time::Duration;
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug, Clone)]
@@ -80,15 +80,20 @@ async fn main() -> Result<(), String> {
             args.jetstream,
             None,
             args.jetstream_no_zstd,
-            consumer_shutdown
+            consumer_shutdown,
         )
-            .await?;
+        .await?;
         Ok(())
     });
 
     let delay_shutdown = shutdown.clone();
     tasks.spawn(async move {
-        delay::to_broadcast(delay_queue_receiver, consumer_delayed_sender, delay_shutdown).await?;
+        delay::to_broadcast(
+            delay_queue_receiver,
+            consumer_delayed_sender,
+            delay_shutdown,
+        )
+        .await?;
         Ok(())
     });
 

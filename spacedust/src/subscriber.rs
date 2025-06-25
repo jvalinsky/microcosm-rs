@@ -1,16 +1,16 @@
 use crate::error::SubscriberUpdateError;
-use std::sync::Arc;
-use tokio::time::interval;
-use std::time::Duration;
-use futures::StreamExt;
-use crate::{ClientMessage, FilterableProperties, SubscriberSourcedMessage};
 use crate::server::MultiSubscribeQuery;
+use crate::{ClientMessage, FilterableProperties, SubscriberSourcedMessage};
+use dropshot::WebsocketConnectionRaw;
 use futures::SinkExt;
+use futures::StreamExt;
 use std::error::Error;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::time::interval;
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
-use dropshot::WebsocketConnectionRaw;
 
 const PING_PERIOD: Duration = Duration::from_secs(30);
 
@@ -20,17 +20,14 @@ pub struct Subscriber {
 }
 
 impl Subscriber {
-    pub fn new(
-        query: MultiSubscribeQuery,
-        shutdown: CancellationToken,
-    ) -> Self {
+    pub fn new(query: MultiSubscribeQuery, shutdown: CancellationToken) -> Self {
         Self { query, shutdown }
     }
 
     pub async fn start(
         mut self,
         ws: WebSocketStream<WebsocketConnectionRaw>,
-        mut receiver: broadcast::Receiver<Arc<ClientMessage>>
+        mut receiver: broadcast::Receiver<Arc<ClientMessage>>,
     ) -> Result<(), Box<dyn Error>> {
         let mut ping_state = None;
         let (mut ws_sender, mut ws_receiver) = ws.split();
@@ -83,6 +80,7 @@ impl Subscriber {
                             // TODO: send client an explanation
                             self.shutdown.cancel();
                         }
+                        log::trace!("subscriber updated with opts: {:?}", self.query);
                     },
                     Some(Ok(m)) => log::trace!("subscriber sent an unexpected message: {m:?}"),
                     Some(Err(e)) => {
@@ -122,36 +120,35 @@ impl Subscriber {
         Ok(())
     }
 
-    fn filter(
-        &self,
-        properties: &FilterableProperties,
-    ) -> bool {
+    fn filter(&self, properties: &FilterableProperties) -> bool {
         let query = &self.query;
 
         // subject + subject DIDs are logical OR
-        if !(
-            query.wanted_subjects.is_empty() && query.wanted_subject_dids.is_empty() ||
-            query.wanted_subjects.contains(&properties.subject) ||
-            properties.subject_did.as_ref().map(|did| query.wanted_subject_dids.contains(did)).unwrap_or(false)
-        ) { // wowwww ^^ fix that
-            return false
+        if !(query.wanted_subjects.is_empty() && query.wanted_subject_dids.is_empty()
+            || query.wanted_subjects.contains(&properties.subject)
+            || properties
+                .subject_did
+                .as_ref()
+                .map(|did| query.wanted_subject_dids.contains(did))
+                .unwrap_or(false))
+        {
+            // wowwww ^^ fix that
+            return false;
         }
 
         // subjects together with sources are logical AND
         if !(query.wanted_sources.is_empty() || query.wanted_sources.contains(&properties.source)) {
-            return false
+            return false;
         }
 
         true
     }
 }
 
-
-
 impl MultiSubscribeQuery {
     pub fn update_from_raw(&mut self, s: &str) -> Result<(), SubscriberUpdateError> {
-        let SubscriberSourcedMessage::OptionsUpdate(opts) = serde_json::from_str(s)
-            .map_err(SubscriberUpdateError::FailedToParseMessage)?;
+        let SubscriberSourcedMessage::OptionsUpdate(opts) =
+            serde_json::from_str(s).map_err(SubscriberUpdateError::FailedToParseMessage)?;
         if opts.wanted_sources.len() > 1_000 {
             return Err(SubscriberUpdateError::TooManySourcesWanted);
         }

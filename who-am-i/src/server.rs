@@ -1,17 +1,16 @@
-
 use atrium_api::agent::SessionManager;
-use std::error::Error;
-use metrics::{histogram, counter};
-use std::sync::Arc;
-use http::{
-    header::{ORIGIN, USER_AGENT},
-    Response, StatusCode,
-};
 use dropshot::{
-    Body, HttpResponseSeeOther, http_response_see_other,
-    ApiDescription, ConfigDropshot, ConfigLogging, ConfigLoggingLevel, RequestContext,
-    ServerBuilder, endpoint, HttpResponse, HttpError, ServerContext, Query,
+    ApiDescription, Body, ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpError,
+    HttpResponse, HttpResponseSeeOther, Query, RequestContext, ServerBuilder, ServerContext,
+    endpoint, http_response_see_other,
 };
+use http::{
+    Response, StatusCode,
+    header::{ORIGIN, USER_AGENT},
+};
+use metrics::{counter, histogram};
+use std::error::Error;
+use std::sync::Arc;
 
 use atrium_oauth::CallbackParams;
 use schemars::JsonSchema;
@@ -19,20 +18,17 @@ use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Client, client, authorize};
+use crate::{Client, authorize, client};
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 
-pub async fn serve(
-    shutdown: CancellationToken
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn serve(shutdown: CancellationToken) -> Result<(), Box<dyn Error + Send + Sync>> {
     let config_logging = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
     };
 
-    let log = config_logging
-        .to_logger("example-basic")?;
+    let log = config_logging.to_logger("example-basic")?;
 
     let mut api = ApiDescription::new();
     api.register(index).unwrap();
@@ -58,7 +54,10 @@ pub async fn serve(
         .json()?,
     );
 
-    let ctx = Context { spec, client: client().into() };
+    let ctx = Context {
+        spec,
+        client: client().into(),
+    };
 
     let server = ServerBuilder::new(api, ctx, log)
         .config(ConfigDropshot {
@@ -152,7 +151,6 @@ where
 }
 
 // TODO: cors for HttpError
-
 
 /// Serve index page as html
 #[endpoint {

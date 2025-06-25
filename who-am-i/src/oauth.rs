@@ -1,15 +1,14 @@
+use crate::HickoryDnsTxtResolver;
 use atrium_identity::{
     did::{CommonDidResolver, CommonDidResolverConfig, DEFAULT_PLC_DIRECTORY_URL},
     handle::{AtprotoHandleResolver, AtprotoHandleResolverConfig},
 };
 use atrium_oauth::{
-    AuthorizeOptions,
+    AtprotoLocalhostClientMetadata, AuthorizeOptions, DefaultHttpClient, KnownScope, OAuthClient,
+    OAuthClientConfig, OAuthResolverConfig, Scope,
     store::{session::MemorySessionStore, state::MemoryStateStore},
-    AtprotoLocalhostClientMetadata, DefaultHttpClient, KnownScope, OAuthClient, OAuthClientConfig,
-    OAuthResolverConfig, Scope,
 };
 use std::sync::Arc;
-use crate::HickoryDnsTxtResolver;
 
 pub type Client = OAuthClient<
     MemoryStateStore,
@@ -23,9 +22,7 @@ pub fn client() -> Client {
     let config = OAuthClientConfig {
         client_metadata: AtprotoLocalhostClientMetadata {
             redirect_uris: Some(vec![String::from("http://127.0.0.1:9997/authorized")]),
-            scopes: Some(vec![
-                Scope::Known(KnownScope::Atproto),
-            ]),
+            scopes: Some(vec![Scope::Known(KnownScope::Atproto)]),
         },
         keys: None,
         resolver: OAuthResolverConfig {
@@ -52,16 +49,16 @@ pub fn client() -> Client {
 }
 
 pub async fn authorize(client: &Client, handle: &str) -> String {
-    let Ok(url) = client.authorize(
-        handle,
-        AuthorizeOptions {
-            scopes: vec![
-                Scope::Known(KnownScope::Atproto),
-            ],
-            ..Default::default()
-        },
-    )
-    .await else {
+    let Ok(url) = client
+        .authorize(
+            handle,
+            AuthorizeOptions {
+                scopes: vec![Scope::Known(KnownScope::Atproto)],
+                ..Default::default()
+            },
+        )
+        .await
+    else {
         panic!("failed to authorize");
     };
     url

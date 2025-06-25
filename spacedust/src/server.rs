@@ -1,28 +1,26 @@
+use crate::ClientMessage;
 use crate::error::ServerError;
 use crate::subscriber::Subscriber;
-use metrics::{histogram, counter};
-use std::sync::Arc;
-use crate::ClientMessage;
-use http::{
-    header::{ORIGIN, USER_AGENT},
-    Response, StatusCode,
-};
 use dropshot::{
-    Body,
-    ApiDescription, ConfigDropshot, ConfigLogging, ConfigLoggingLevel, Query, RequestContext,
-    ServerBuilder, WebsocketConnection, channel, endpoint, HttpResponse,
-    ApiEndpointBodyContentType, ExtractorMetadata, HttpError, ServerContext,
-    SharedExtractor,
+    ApiDescription, ApiEndpointBodyContentType, Body, ConfigDropshot, ConfigLogging,
+    ConfigLoggingLevel, ExtractorMetadata, HttpError, HttpResponse, Query, RequestContext,
+    ServerBuilder, ServerContext, SharedExtractor, WebsocketConnection, channel, endpoint,
 };
+use http::{
+    Response, StatusCode,
+    header::{ORIGIN, USER_AGENT},
+};
+use metrics::{counter, histogram};
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use tokio::sync::broadcast;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_util::sync::CancellationToken;
-use async_trait::async_trait;
-use std::collections::HashSet;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
@@ -30,7 +28,7 @@ const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 pub async fn serve(
     b: broadcast::Sender<Arc<ClientMessage>>,
     d: broadcast::Sender<Arc<ClientMessage>>,
-    shutdown: CancellationToken
+    shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
     let config_logging = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
@@ -65,7 +63,12 @@ pub async fn serve(
     );
 
     let sub_shutdown = shutdown.clone();
-    let ctx = Context { spec, b, d, shutdown: sub_shutdown };
+    let ctx = Context {
+        spec,
+        b,
+        d,
+        shutdown: sub_shutdown,
+    };
 
     let server = ServerBuilder::new(api, ctx, log)
         .config(ConfigDropshot {
@@ -161,7 +164,6 @@ where
 }
 
 // TODO: cors for HttpError
-
 
 /// Serve index page as html
 #[endpoint {
@@ -316,7 +318,7 @@ async fn subscribe(
         upgraded.into_inner(),
         Role::Server,
         Some(WebSocketConfig::default().max_message_size(
-            Some(10 * 2_usize.pow(20)) // 10MiB, matching jetstream
+            Some(10 * 2_usize.pow(20)), // 10MiB, matching jetstream
         )),
     )
     .await;

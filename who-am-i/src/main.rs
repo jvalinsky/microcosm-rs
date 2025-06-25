@@ -1,5 +1,5 @@
-use who_am_i::serve;
 use tokio_util::sync::CancellationToken;
+use who_am_i::serve;
 
 #[tokio::main]
 async fn main() {

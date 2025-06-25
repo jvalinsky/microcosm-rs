@@ -1,5 +1,3 @@
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 use crate::ClientMessage;
 use crate::error::ConsumerError;
 use crate::removable_delay_queue;
@@ -8,7 +6,9 @@ use jetstream::{
     events::{CommitOp, Cursor, EventKind},
 };
 use links::collect_links;
+use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 const MAX_LINKS_PER_EVENT: usize = 100;
 
@@ -61,12 +61,16 @@ pub async fn consume(
         };
 
         // TODO: something a bit more robust
-        let at_uri = format!("at://{}/{}/{}", &*event.did, &*commit.collection, &*commit.rkey);
+        let at_uri = format!(
+            "at://{}/{}/{}",
+            &*event.did, &*commit.collection, &*commit.rkey
+        );
 
         // TODO: keep a buffer and remove quick deletes to debounce notifs
         // for now we just drop all deletes eek
         if commit.operation == CommitOp::Delete {
-            d.remove_range((at_uri.clone(), 0)..=(at_uri.clone(), MAX_LINKS_PER_EVENT)).await;
+            d.remove_range((at_uri.clone(), 0)..=(at_uri.clone(), MAX_LINKS_PER_EVENT))
+                .await;
             continue;
         }
         let Some(ref record) = commit.record else {
@@ -86,7 +90,8 @@ pub async fn consume(
             if i >= MAX_LINKS_PER_EVENT {
                 // todo: indicate if the link limit was reached (-> links omitted)
                 log::warn!("consumer: event has too many links, ignoring the rest");
-                metrics::counter!("consumer_dropped_links", "reason" => "too_many_links").increment(1);
+                metrics::counter!("consumer_dropped_links", "reason" => "too_many_links")
+                    .increment(1);
                 break;
             }
             let client_message = match ClientMessage::new_link(link, &at_uri, commit) {
@@ -94,7 +99,8 @@ pub async fn consume(
                 Err(e) => {
                     // TODO indicate to clients that a link has been dropped
                     log::warn!("consumer: failed to serialize link to json: {e:?}");
-                    metrics::counter!("consumer_dropped_links", "reason" => "failed_to_serialize").increment(1);
+                    metrics::counter!("consumer_dropped_links", "reason" => "failed_to_serialize")
+                        .increment(1);
                     continue;
                 }
             };

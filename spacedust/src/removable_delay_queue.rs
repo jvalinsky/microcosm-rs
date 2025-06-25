@@ -1,9 +1,9 @@
-use std::ops::RangeBounds;
 use std::collections::{BTreeMap, VecDeque};
-use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use std::ops::RangeBounds;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Error)]
 pub enum EnqueueError<T> {
@@ -17,7 +17,7 @@ impl<T: Eq + Ord + Clone> Key for T {}
 #[derive(Debug)]
 struct Queue<K: Key, T> {
     queue: VecDeque<(Instant, K)>,
-    items: BTreeMap<K, T>
+    items: BTreeMap<K, T>,
 }
 
 pub struct Input<K: Key, T> {
@@ -49,7 +49,12 @@ impl<K: Key, T> Input<K, T> {
     pub async fn remove_range(&self, range: impl RangeBounds<K>) {
         let n = {
             let mut q = self.q.lock().await;
-            let keys = q.items.range(range).map(|(k, _)| k).cloned().collect::<Vec<_>>();
+            let keys = q
+                .items
+                .range(range)
+                .map(|(k, _)| k)
+                .cloned()
+                .collect::<Vec<_>>();
             for k in &keys {
                 q.items.remove(k);
             }
@@ -94,22 +99,21 @@ impl<K: Key, T> Output<K, T> {
                 } else {
                     let overshoot = now.saturating_duration_since(expected_release);
                     metrics::counter!("delay_queue_emit_total", "early" => "no").increment(1);
-                    metrics::histogram!("delay_queue_emit_overshoot").record(overshoot.as_secs_f64());
+                    metrics::histogram!("delay_queue_emit_overshoot")
+                        .record(overshoot.as_secs_f64());
                 }
-                return Some(item)
+                return Some(item);
             } else if Arc::strong_count(&self.q) == 1 {
                 return None;
             }
             // the queue is *empty*, so we need to wait at least as long as the current delay
             tokio::time::sleep(self.delay).await;
             metrics::counter!("delay_queue_entirely_empty_total").increment(1);
-        };
+        }
     }
 }
 
-pub fn removable_delay_queue<K: Key, T>(
-    delay: Duration,
-) -> (Input<K, T>, Output<K, T>) {
+pub fn removable_delay_queue<K: Key, T>(delay: Duration) -> (Input<K, T>, Output<K, T>) {
     let q: Arc<Mutex<Queue<K, T>>> = Arc::new(Mutex::new(Queue {
         queue: VecDeque::new(),
         items: BTreeMap::new(),
