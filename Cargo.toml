@@ -7,4 +7,5 @@ members = [
     "ufos",
     "ufos/fuzz",
     "spacedust",
+    "who-am-i",
 ]
