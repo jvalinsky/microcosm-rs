@@ -1,0 +1,96 @@
+<!doctype html>
+
+<style>
+body {
+  color: #434;
+  font-family: 'Iowan Old Style', 'Palatino Linotype', 'URW Palladio L', P052, serif;
+  margin: 0;
+  min-height: 100vh;
+  padding: 0;
+}
+.wrap {
+  border: 2px solid #221828;
+  border-radius: 0.5rem;
+  box-sizing: border-box;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+header {
+  background: #221828;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 0.25rem;
+  color: #c9b;
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+header > * {
+  flex-basis: 33%;
+}
+header > .title {
+  text-align: center;
+}
+header > a.micro {
+  text-decoration: none;
+  font-size: 0.8rem;
+  text-align: right;
+  opacity: 0.5;
+}
+header > a.micro:hover {
+  opacity: 1;
+}
+main {
+  padding: 0.25rem 0.5rem;
+  background: #ccc;
+  flex-grow: 1;
+}
+p {
+  margin: 0.5rem 0;
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="empty"></div>
+    <code class="title" style="font-family: monospace;"
+      >who-am-i</code>
+    <a href="https://microcosm.blue" target="_blank" class="micro"
+      ><span style="color: #f396a9">m</span
+      ><span style="color: #f49c5c">i</span
+      ><span style="color: #c7b04c">c</span
+      ><span style="color: #92be4c">r</span
+      ><span style="color: #4ec688">o</span
+      ><span style="color: #51c2b6">c</span
+      ><span style="color: #54bed7">o</span
+      ><span style="color: #8fb1f1">s</span
+      ><span style="color: #ce9df1">m</span
+    ></a>
+  </header>
+
+  <main>
+    <p>Share your identity with {{ parent_host }}?</p>
+    <div id="user-info">Loading&hellip;</div>
+  </main>
+</div>
+
+
+<script>
+const infoEl = document.getElementById('user-info');
+var DID = {{{json did}}};
+let user_info = new URL('/user-info', window.location);
+user_info.searchParams.set('fetch-key', {{{json fetch_key}}});
+fetch(user_info).then(
+  info => {
+    infoEl.textContent = 'yay';
+    console.log(info);
+  },
+  err => {
+    infoEl.textContent = 'ohno';
+    console.error(err);
+  },
+);
+
+</script>
