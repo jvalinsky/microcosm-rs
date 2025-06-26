@@ -3,10 +3,10 @@ use atrium_oauth::CallbackParams;
 use axum::{
     Router,
     extract::{FromRef, Query, State},
-    response::{Html, Redirect},
+    response::{Html, IntoResponse, Redirect},
     routing::get,
 };
-use axum_extra::extract::cookie::{Cookie, Key, SignedCookieJar};
+use axum_extra::extract::cookie::{Cookie, Key, SameSite, SignedCookieJar};
 
 use serde::Deserialize;
 use std::sync::Arc;
@@ -55,7 +55,7 @@ impl FromRef<AppState> for Key {
     }
 }
 
-async fn prompt(jar: SignedCookieJar) -> (SignedCookieJar, Html<String>) {
+async fn prompt(jar: SignedCookieJar) -> impl IntoResponse {
     let m = if let Some(did) = jar.get("did") {
         format!("oh i know you: {did}")
     } else {
@@ -89,6 +89,11 @@ async fn complete_oauth(
         panic!("failed to do client callback");
     };
     let did = oauth_session.did().await.expect("a did to be present");
-    let jar = jar.add(Cookie::new("did", did.to_string()));
+    let cookie = Cookie::build(("did", did.to_string()))
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::None)
+        .max_age(std::time::Duration::from_secs(86_400).try_into().unwrap());
+    let jar = jar.add(cookie);
     (jar, Html(format!("sup: {did:?}")))
 }

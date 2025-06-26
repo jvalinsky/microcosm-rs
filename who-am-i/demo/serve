@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+echo "note: you might need to access via http://127.0.0.1:8888 (not localhost) for the iframe to get its cookies"
+python3 -m http.server 8888
