@@ -13,6 +13,7 @@ use handlebars::{Handlebars, handlebars_helper};
 
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -31,6 +32,7 @@ type AppEngine = Engine<Handlebars<'static>>;
 #[derive(Clone)]
 struct AppState {
     pub key: Key,
+    pub one_clicks: Arc<HashSet<String>>,
     pub engine: AppEngine,
     pub client: Arc<Client>,
     pub resolving: ExpiringTaskMap<Option<String>>,
@@ -43,7 +45,12 @@ impl FromRef<AppState> for Key {
     }
 }
 
-pub async fn serve(shutdown: CancellationToken, app_secret: String, dev: bool) {
+pub async fn serve(
+    shutdown: CancellationToken,
+    app_secret: String,
+    one_click: Vec<String>,
+    dev: bool,
+) {
     let mut hbs = Handlebars::new();
     hbs.set_dev_mode(dev);
     hbs.register_templates_directory("templates", Default::default())
@@ -58,6 +65,7 @@ pub async fn serve(shutdown: CancellationToken, app_secret: String, dev: bool) {
     let state = AppState {
         engine: Engine::new(hbs),
         key: Key::from(app_secret.as_bytes()), // TODO: via config
+        one_clicks: Arc::new(HashSet::from_iter(one_click)),
         client: Arc::new(client()),
         resolving: ExpiringTaskMap::new(task_pickup_expiration),
         shutdown: shutdown.clone(),
@@ -85,6 +93,7 @@ pub async fn serve(shutdown: CancellationToken, app_secret: String, dev: bool) {
 async fn prompt(
     State(AppState {
         engine,
+        one_clicks,
         resolving,
         shutdown,
         ..
@@ -104,6 +113,10 @@ async fn prompt(
     let Some(parent_host) = url.host_str() else {
         return "could nto get host from url".into_response();
     };
+    if !one_clicks.contains(parent_host) {
+        return format!("host {parent_host:?} not in one_clicks, disallowing for now")
+            .into_response();
+    }
     if let Some(did) = jar.get(DID_COOKIE_KEY) {
         let did = did.value_trimmed().to_string();
 

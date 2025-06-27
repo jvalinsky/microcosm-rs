@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use tokio_util::sync::CancellationToken;
 use who_am_i::serve;
 
@@ -18,6 +18,11 @@ struct Args {
     /// enables automatic template reloading
     #[arg(long, action)]
     dev: bool,
+    /// Hosts who are allowed to one-click auth
+    ///
+    /// Pass this argument multiple times to allow multiple hosts
+    #[arg(long, short = 'o', action = ArgAction::Append)]
+    one_click: Vec<String>,
 }
 
 #[tokio::main]
@@ -29,5 +34,14 @@ async fn main() {
 
     let args = Args::parse();
 
-    serve(shutdown, args.app_secret, args.dev).await;
+    if args.one_click.is_empty() {
+        panic!("at least one --one-click host must be set");
+    }
+
+    println!("starting with allowed hosts:");
+    for host in &args.one_click {
+        println!(" - {host}");
+    }
+
+    serve(shutdown, args.app_secret, args.one_click, args.dev).await;
 }
