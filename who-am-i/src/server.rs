@@ -12,7 +12,7 @@ use axum_template::{RenderHtml, engine::Engine};
 use handlebars::{Handlebars, handlebars_helper};
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -49,7 +49,7 @@ pub async fn serve(shutdown: CancellationToken, app_secret: String, dev: bool) {
     hbs.register_templates_directory("templates", Default::default())
         .unwrap();
 
-    handlebars_helper!(json: |v: Value| serde_json::to_string(&v).unwrap());
+    handlebars_helper!(json: |v: String| serde_json::to_string(&v).unwrap());
     hbs.register_helper("json", Box::new(json));
 
     // clients have to pick up their identity-resolving tasks within this period
@@ -110,14 +110,12 @@ async fn prompt(
         let task_shutdown = shutdown.child_token();
         let fetch_key = resolving.dispatch(resolve_identity(did.clone()), task_shutdown);
 
-        let json_did = Value::String(did);
-        let json_fetch_key = Value::String(fetch_key);
         RenderHtml(
             "prompt-known",
             engine,
             json!({
-                "did": json_did,
-                "fetch_key": json_fetch_key,
+                "did": did,
+                "fetch_key": fetch_key,
                 "parent_host": parent_host,
             }),
         )
@@ -183,14 +181,29 @@ async fn complete_oauth(
         panic!("failed to do client callback");
     };
     let did = oauth_session.did().await.expect("a did to be present");
+
     let cookie = Cookie::build((DID_COOKIE_KEY, did.to_string()))
         .http_only(true)
         .secure(true)
         .same_site(SameSite::None)
         .max_age(std::time::Duration::from_secs(86_400).try_into().unwrap());
+
     let jar = jar.add(cookie);
+
+    let task_shutdown = state.shutdown.child_token();
+    let fetch_key = state
+        .resolving
+        .dispatch(resolve_identity(did.to_string()), task_shutdown);
+
     (
         jar,
-        RenderHtml("authorized", state.engine, json!({ "did": did })),
+        RenderHtml(
+            "authorized",
+            state.engine,
+            json!({
+                "did": did,
+                "fetch_key": fetch_key,
+            }),
+        ),
     )
 }

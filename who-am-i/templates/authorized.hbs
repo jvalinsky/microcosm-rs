@@ -4,6 +4,10 @@
 
 <script>
 // TODO: tie this back to its source...........
-localStorage.setItem("did", {{{json did}}});
+
+localStorage.setItem("who-am-i", JSON.stringify({
+  did: {{{json did}}},
+  fetch_key: {{{json fetch_key}}},
+}));
 window.close();
 </script>

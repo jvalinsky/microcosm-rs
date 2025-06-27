@@ -4,6 +4,10 @@
   <span class="parent-host">{{ parent_host }}</span>?
 </p>
 
+<div id="loader" class="hidden">
+  <span class="spinner"></span>
+</div>
+
 <div id="user-info">
   <form id="action" action="/auth" method="GET" target="_blank">
     <label>
@@ -14,20 +18,59 @@
 </div>
 
 <script>
+var loaderEl = document.getElementById('loader');
+var infoEl = document.getElementById('user-info');
 const formEl = document.getElementById('action');
 const handleEl = document.getElementById('handle');
+
 formEl.onsubmit = e => {
   e.preventDefault();
   // TODO: include expected referer! (..this system is probably bad)
+  // maybe a random localstorage key that we specifically listen for?
   var url = new URL('/auth', window.location);
   url.searchParams.set('handle', handleEl.value);
   var flow = window.open(url, '_blank');
   window.f = flow;
 
   window.addEventListener('storage', e => {
-    location.reload();
+    var details = localStorage.getItem("who-am-i");
+    if (!details) {
+      console.error("hmm, heard from localstorage but did not get DID");
+    }
+    var parsed = JSON.parse(details);
+
+    infoEl.classList.add('hidden');
+    loaderEl.classList.remove('hidden');
+    lookUpAndShare(parsed.fetch_key);
   });
 }
+
+function lookUpAndShare(fetch_key) {
+  let user_info = new URL('/user-info', window.location);
+  user_info.searchParams.set('fetch-key', fetch_key);
+  fetch(user_info)
+    .then(resp => {
+      if (!resp.ok) throw new Error('request failed');
+      return resp.json();
+    })
+    .then(
+      ({ handle }) => {
+        loaderEl.remove();
+        handleEl.textContent = `@${handle}`;
+        infoEl.classList.remove('hidden');
+        share(handle);
+      },
+      err => {
+        infoEl.textContent = 'ohno';
+        console.error(err);
+      },
+    );
+}
+
+function share(handle) {
+  top.postMessage({ source: 'whoami', handle }, '*'); // TODO: pass the referrer back from server
+}
+
 </script>
 {{/inline}}
 
