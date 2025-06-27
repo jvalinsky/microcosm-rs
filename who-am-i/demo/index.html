@@ -1,12 +1,26 @@
 <!doctype html>
-<style>
-body {
-  background: #333;
-  color: #ccc;
-  font-family: sans-serif;
-}
-</style>
+<html>
+  <head>
+    <style>
+    body {
+      background: #333;
+      color: #ccc;
+      font-family: sans-serif;
+    }
+    </style>
+  </head>
 
-<h1>hey</h1>
+  <body>
+    <h1>hey <span id="who"></span></h1>
 
-<iframe src="http://127.0.0.1:9997/prompt" style="border: none" height="140" width="280" />
+    <iframe src="http://127.0.0.1:9997/prompt" id="whoami" style="border: none" height="130" width="280"></iframe>
+
+    <script type="text/javascript">
+      window.onmessage = message => {
+        if (!message || !message.data || message.data.source !== 'whoami') return;
+        document.getElementById('whoami').remove();
+        document.getElementById('who').textContent = message.data.handle;
+      };
+    </script>
+  </body>
+</html>

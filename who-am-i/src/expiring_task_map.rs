@@ -3,21 +3,29 @@ use rand::{Rng, distr::Alphanumeric};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::{JoinHandle, spawn};
-use tokio::time::sleep; // 0.8
+use tokio::time::sleep;
+use tokio_util::sync::{CancellationToken, DropGuard};
 
 #[derive(Clone)]
-pub struct ExpiringTaskMap<T>(Arc<TaskMap<T>>);
+pub struct ExpiringTaskMap<T>(TaskMap<T>);
 
 impl<T: Send + 'static> ExpiringTaskMap<T> {
     pub fn new(expiration: Duration) -> Self {
         let map = TaskMap {
-            map: DashMap::new(),
+            map: Arc::new(DashMap::new()),
             expiration,
         };
-        Self(Arc::new(map))
+        Self(map)
     }
 
-    pub fn dispatch(&self, task: impl Future<Output = T> + Send + 'static) -> String {
+    pub fn dispatch<F>(&self, task: F, cancel: CancellationToken) -> String
+    where
+        F: Future<Output = T> + Send + 'static,
+    {
+        let TaskMap {
+            ref map,
+            expiration,
+        } = self.0;
         let task_key: String = rand::rng()
             .sample_iter(&Alphanumeric)
             .take(24)
@@ -25,16 +33,19 @@ impl<T: Send + 'static> ExpiringTaskMap<T> {
             .collect();
 
         // spawn a tokio task and put the join handle in the map for later retrieval
-        self.0.map.insert(task_key.clone(), spawn(task));
+        map.insert(task_key.clone(), (cancel.clone().drop_guard(), spawn(task)));
 
         // spawn a second task to clean up the map in case it doesn't get claimed
-        spawn({
-            let me = self.0.clone();
-            let key = task_key.clone();
-            async move {
-                sleep(me.expiration).await;
-                let _ = me.map.remove(&key);
-                // TODO: also use a cancellation token so taking and expiring can mutually cancel
+        let k = task_key.clone();
+        let map = map.clone();
+        spawn(async move {
+            if cancel
+                .run_until_cancelled(sleep(expiration))
+                .await
+                .is_some()
+            {
+                map.remove(&k);
+                cancel.cancel();
             }
         });
 
@@ -42,12 +53,13 @@ impl<T: Send + 'static> ExpiringTaskMap<T> {
     }
 
     pub fn take(&self, key: &str) -> Option<JoinHandle<T>> {
-        eprintln!("trying to take...");
-        self.0.map.remove(key).map(|(_, handle)| handle)
+        // when the _guard drops, the token gets cancelled for us
+        self.0.map.remove(key).map(|(_, (_guard, handle))| handle)
     }
 }
 
+#[derive(Clone)]
 struct TaskMap<T> {
-    map: DashMap<String, JoinHandle<T>>,
+    map: Arc<DashMap<String, (DropGuard, JoinHandle<T>)>>,
     expiration: Duration,
 }

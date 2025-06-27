@@ -4,7 +4,7 @@ use axum::{
     Router,
     extract::{FromRef, Query, State},
     http::header::{HeaderMap, REFERER},
-    response::{Html, IntoResponse, Redirect},
+    response::{Html, IntoResponse, Json, Redirect},
     routing::get,
 };
 use axum_extra::extract::cookie::{Cookie, Key, SameSite, SignedCookieJar};
@@ -12,7 +12,7 @@ use axum_template::{RenderHtml, engine::Engine};
 use handlebars::{Handlebars, handlebars_helper};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -34,7 +34,8 @@ struct AppState {
     pub key: Key,
     pub engine: AppEngine,
     pub client: Arc<Client>,
-    pub resolving: ExpiringTaskMap<String>,
+    pub resolving: ExpiringTaskMap<Option<String>>,
+    pub shutdown: CancellationToken,
 }
 
 impl FromRef<AppState> for Key {
@@ -60,6 +61,7 @@ pub async fn serve(shutdown: CancellationToken, app_secret: String, dev: bool) {
         key: Key::from(app_secret.as_bytes()), // TODO: via config
         client: Arc::new(client()),
         resolving: ExpiringTaskMap::new(task_pickup_expiration),
+        shutdown: shutdown.clone(),
     };
 
     let app = Router::new()
@@ -89,7 +91,10 @@ struct Known {
 }
 async fn prompt(
     State(AppState {
-        engine, resolving, ..
+        engine,
+        resolving,
+        shutdown,
+        ..
     }): State<AppState>,
     jar: SignedCookieJar,
     headers: HeaderMap,
@@ -109,7 +114,8 @@ async fn prompt(
     let m = if let Some(did) = jar.get(DID_COOKIE_KEY) {
         let did = did.value_trimmed().to_string();
 
-        let fetch_key = resolving.dispatch(resolve_identity(did.clone()));
+        let task_shutdown = shutdown.child_token();
+        let fetch_key = resolving.dispatch(resolve_identity(did.clone()), task_shutdown);
 
         let json_did = Value::String(did);
         let json_fetch_key = Value::String(fetch_key);
@@ -134,12 +140,19 @@ async fn user_info(
     State(AppState { resolving, .. }): State<AppState>,
     Query(params): Query<UserInfoParams>,
 ) -> impl IntoResponse {
-    // let fetch_key: [char; 16] = params.fetch_key.chars().collect::<Vec<_>>().try_into().unwrap();
-    let Some(handle) = resolving.take(&params.fetch_key) else {
+    let Some(task_handle) = resolving.take(&params.fetch_key) else {
         return "oops, task does not exist or is gone".into_response();
     };
-    let s = handle.await.unwrap();
-    format!("sup: {s}").into_response()
+    if let Some(handle) = task_handle.await.unwrap() {
+        // TODO: get active state etc.
+        // ...but also, that's a bsky thing?
+        let Some(handle) = handle.strip_prefix("at://") else {
+            return "hmm, handle did not start with at://".into_response();
+        };
+        Json(json!({ "handle": handle })).into_response()
+    } else {
+        "no handle?".into_response()
+    }
 }
 
 #[derive(Debug, Deserialize)]
