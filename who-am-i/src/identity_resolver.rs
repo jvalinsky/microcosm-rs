@@ -11,7 +11,6 @@ pub async fn resolve_identity(did: String) -> Option<String> {
         http_client: Arc::clone(&http_client),
     });
     let doc = resolver.resolve(&Did::new(did).unwrap()).await.unwrap(); // TODO: this is only half the resolution? or is atrium checking dns?
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     doc.also_known_as.and_then(|mut aka| {
         if aka.is_empty() {
             None

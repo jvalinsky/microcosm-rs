@@ -54,7 +54,17 @@ main {
   padding: 0.25rem 0.5rem;
 }
 p {
-  margin: 0.5rem 0;
+  margin: 1rem 0 0;
+  text-align: center;
+}
+.parent-host {
+  font-weight: bold;
+  color: #48c;
+  display: inline-block;
+  padding: 0 0.125rem;
+  border-radius: 0.25rem;
+  border: 1px solid #aaa;
+  font-size: 0.8rem;
 }
 
 #loader {
@@ -62,7 +72,6 @@ p {
   flex-grow: 1;
   justify-content: center;
   align-items: center;
-  margin-bottom: 1rem;
 }
 .spinner {
   animation: rotation 1.618s ease-in-out infinite;
@@ -83,7 +92,6 @@ p {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  margin-bottom: 1rem;
 }
 #action {
   background: #eee;
@@ -109,9 +117,16 @@ p {
   cursor: pointer;
 }
 #action:hover #allow {
-  color: #396;
+  color: #285;
 }
 
+#or {
+  font-size: 0.8rem;
+  text-align: center;
+}
+#or p {
+  margin: 0 0 1rem;
+}
 
 .hidden {
   display: none !important;
@@ -138,7 +153,10 @@ p {
   </header>
 
   <main>
-    <p>Share your identity with {{ parent_host }}?</p>
+    <p>
+      Share your identity with
+      <span class="parent-host">{{ parent_host }}</span>?
+    </p>
     <div id="loader">
       <span class="spinner"></span>
     </div>
@@ -147,6 +165,9 @@ p {
         <span id="handle"></span>
         <button id="allow">Allow</button>
       </div>
+    </div>
+    <div id="or">
+      <p>or, <a id="switch" href="#">use another account</a></p>
     </div>
   </main>
 </div>
@@ -158,6 +179,12 @@ var infoEl = document.getElementById('user-info');
 var actionEl = document.getElementById('action');
 var handleEl = document.getElementById('handle');
 var allowEl = document.getElementById('allow');
+var switchEl = document.getElementById('switch');
+
+switchEl.addEventListener('click', e => {
+  e.preventDefault();
+  console.log('switch plz');
+});
 
 var DID = {{{json did}}};
 let user_info = new URL('/user-info', window.location);
