@@ -1,0 +1,34 @@
+{{#*inline "main"}}
+<p>
+  Share your identity with
+  <span class="parent-host">{{ parent_host }}</span>?
+</p>
+
+<div id="user-info">
+  <form id="action" action="/auth" method="GET" target="_blank">
+    <label>
+      @<input id="handle" name="handle" placeholder="example.bsky.social" />
+    </label>
+    <button id="allow" type="submit">connect</button>
+  </form>
+</div>
+
+<script>
+const formEl = document.getElementById('action');
+const handleEl = document.getElementById('handle');
+formEl.onsubmit = e => {
+  e.preventDefault();
+  // TODO: include expected referer! (..this system is probably bad)
+  var url = new URL('/auth', window.location);
+  url.searchParams.set('handle', handleEl.value);
+  var flow = window.open(url, '_blank');
+  window.f = flow;
+
+  window.addEventListener('storage', e => {
+    location.reload();
+  });
+}
+</script>
+{{/inline}}
+
+{{#> prompt-base}}{{/prompt-base}}

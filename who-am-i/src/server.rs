@@ -11,7 +11,7 @@ use axum_extra::extract::cookie::{Cookie, Key, SameSite, SignedCookieJar};
 use axum_template::{RenderHtml, engine::Engine};
 use handlebars::{Handlebars, handlebars_helper};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +23,6 @@ use crate::{Client, ExpiringTaskMap, authorize, client, resolve_identity};
 
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 const INDEX_HTML: &str = include_str!("../static/index.html");
-const LOGIN_HTML: &str = include_str!("../static/login.html");
 
 const DID_COOKIE_KEY: &str = "did";
 
@@ -83,12 +82,6 @@ pub async fn serve(shutdown: CancellationToken, app_secret: String, dev: bool) {
         .unwrap();
 }
 
-#[derive(Debug, Serialize)]
-struct Known {
-    did: Value,
-    fetch_key: Value,
-    parent_host: String,
-}
 async fn prompt(
     State(AppState {
         engine,
@@ -111,7 +104,7 @@ async fn prompt(
     let Some(parent_host) = url.host_str() else {
         return "could nto get host from url".into_response();
     };
-    let m = if let Some(did) = jar.get(DID_COOKIE_KEY) {
+    if let Some(did) = jar.get(DID_COOKIE_KEY) {
         let did = did.value_trimmed().to_string();
 
         let task_shutdown = shutdown.child_token();
@@ -119,16 +112,26 @@ async fn prompt(
 
         let json_did = Value::String(did);
         let json_fetch_key = Value::String(fetch_key);
-        let known = Known {
-            did: json_did,
-            fetch_key: json_fetch_key,
-            parent_host: parent_host.to_string(),
-        };
-        return (jar, RenderHtml("prompt-known", engine, known)).into_response();
+        RenderHtml(
+            "prompt-known",
+            engine,
+            json!({
+                "did": json_did,
+                "fetch_key": json_fetch_key,
+                "parent_host": parent_host,
+            }),
+        )
+        .into_response()
     } else {
-        LOGIN_HTML.into_response()
-    };
-    (jar, Html(m)).into_response()
+        RenderHtml(
+            "prompt-anon",
+            engine,
+            json!({
+                "parent_host": parent_host,
+            }),
+        )
+        .into_response()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,7 +178,7 @@ async fn complete_oauth(
     State(state): State<AppState>,
     Query(params): Query<CallbackParams>,
     jar: SignedCookieJar,
-) -> (SignedCookieJar, Html<String>) {
+) -> (SignedCookieJar, impl IntoResponse) {
     let Ok((oauth_session, _)) = state.client.callback(params).await else {
         panic!("failed to do client callback");
     };
@@ -186,5 +189,8 @@ async fn complete_oauth(
         .same_site(SameSite::None)
         .max_age(std::time::Duration::from_secs(86_400).try_into().unwrap());
     let jar = jar.add(cookie);
-    (jar, Html(format!("sup: {did:?}")))
+    (
+        jar,
+        RenderHtml("authorized", state.engine, json!({ "did": did })),
+    )
 }

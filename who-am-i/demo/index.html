@@ -16,11 +16,19 @@
     <iframe src="http://127.0.0.1:9997/prompt" id="whoami" style="border: none" height="160" width="320"></iframe>
 
     <script type="text/javascript">
-      window.onmessage = message => {
-        if (!message || !message.data || message.data.source !== 'whoami') return;
-        document.getElementById('whoami').remove();
-        document.getElementById('who').textContent = message.data.handle;
-      };
+      (whoami => {
+        const handleMessage = ev => {
+          if (ev.source !== whoami.contentWindow) {
+            console.log('nah');
+            return;
+          }
+          whoami.remove();
+          window.removeEventListener('message', handleMessage);
+
+          document.getElementById('who').textContent = ev.data.handle;
+        }
+        window.addEventListener('message', handleMessage);
+      })(document.getElementById('whoami'));
     </script>
   </body>
 </html>
