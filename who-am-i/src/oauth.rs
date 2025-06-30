@@ -46,8 +46,12 @@ pub struct OAuth {
 }
 
 #[derive(Debug, Error)]
-#[error(transparent)]
-pub struct AuthSetupError(#[from] atrium_oauth::Error);
+pub enum AuthSetupError {
+    #[error("failed to intiialize atrium client: {0}")]
+    AtriumClientError(atrium_oauth::Error),
+    #[error("failed to initialize hickory dns resolver: {0}")]
+    HickoryResolverError(hickory_resolver::ResolveError),
+}
 
 #[derive(Debug, Error)]
 #[error(transparent)]
@@ -93,6 +97,8 @@ impl OAuth {
                 http_client: http_client.clone(),
             })
         };
+        let dns_txt_resolver =
+            HickoryDnsTxtResolver::new().map_err(AuthSetupError::HickoryResolverError)?;
         let client_config = OAuthClientConfig {
             client_metadata: AtprotoLocalhostClientMetadata {
                 redirect_uris: Some(vec![String::from("http://127.0.0.1:9997/authorized")]),
@@ -102,7 +108,7 @@ impl OAuth {
             resolver: OAuthResolverConfig {
                 did_resolver: did_resolver(),
                 handle_resolver: AtprotoHandleResolver::new(AtprotoHandleResolverConfig {
-                    dns_txt_resolver: HickoryDnsTxtResolver::default(),
+                    dns_txt_resolver,
                     http_client: Arc::clone(&http_client),
                 }),
                 authorization_server_metadata: Default::default(),
@@ -112,7 +118,7 @@ impl OAuth {
             session_store: MemorySessionStore::default(),
         };
 
-        let client = OAuthClient::new(client_config)?;
+        let client = OAuthClient::new(client_config).map_err(AuthSetupError::AtriumClientError)?;
 
         Ok(Self {
             client: Arc::new(client),
@@ -185,17 +191,12 @@ impl OAuth {
     }
 }
 
-pub struct HickoryDnsTxtResolver {
-    resolver: TokioResolver,
-}
+pub struct HickoryDnsTxtResolver(TokioResolver);
 
-impl Default for HickoryDnsTxtResolver {
-    fn default() -> Self {
-        Self {
-            resolver: TokioResolver::builder_tokio()
-                .expect("failed to create resolver")
-                .build(),
-        }
+impl HickoryDnsTxtResolver {
+    fn new() -> Result<Self, hickory_resolver::ResolveError> {
+        let resolver = TokioResolver::builder_tokio()?.build();
+        Ok(Self(resolver))
     }
 }
 
@@ -205,7 +206,7 @@ impl DnsTxtResolver for HickoryDnsTxtResolver {
         query: &str,
     ) -> core::result::Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(self
-            .resolver
+            .0
             .txt_lookup(query)
             .await?
             .iter()
