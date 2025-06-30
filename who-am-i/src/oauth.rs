@@ -9,7 +9,7 @@ use atrium_oauth::{
     KnownScope, OAuthClient, OAuthClientConfig, OAuthResolverConfig, Scope,
     store::{session::MemorySessionStore, state::MemoryStateStore},
 };
-use hickory_resolver::TokioResolver;
+use hickory_resolver::{ResolveError, TokioResolver};
 use serde::Deserialize;
 use std::sync::Arc;
 use thiserror::Error;
@@ -50,7 +50,7 @@ pub enum AuthSetupError {
     #[error("failed to intiialize atrium client: {0}")]
     AtriumClientError(atrium_oauth::Error),
     #[error("failed to initialize hickory dns resolver: {0}")]
-    HickoryResolverError(hickory_resolver::ResolveError),
+    HickoryResolverError(ResolveError),
 }
 
 #[derive(Debug, Error)]
@@ -194,9 +194,8 @@ impl OAuth {
 pub struct HickoryDnsTxtResolver(TokioResolver);
 
 impl HickoryDnsTxtResolver {
-    fn new() -> Result<Self, hickory_resolver::ResolveError> {
-        let resolver = TokioResolver::builder_tokio()?.build();
-        Ok(Self(resolver))
+    fn new() -> Result<Self, ResolveError> {
+        Ok(Self(TokioResolver::builder_tokio()?.build()))
     }
 }
 
