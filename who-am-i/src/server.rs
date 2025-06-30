@@ -1,5 +1,4 @@
-use atrium_api::agent::SessionManager;
-use atrium_oauth::CallbackParams;
+use atrium_api::types::string::Did;
 use axum::{
     Router,
     extract::{FromRef, Query, State},
@@ -20,7 +19,7 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::{Client, ExpiringTaskMap, authorize, client, resolve_identity};
+use crate::{ExpiringTaskMap, OAuth, OauthCallbackParams, ResolveHandleError};
 
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 const INDEX_HTML: &str = include_str!("../static/index.html");
@@ -34,8 +33,8 @@ struct AppState {
     pub key: Key,
     pub one_clicks: Arc<HashSet<String>>,
     pub engine: AppEngine,
-    pub client: Arc<Client>,
-    pub resolving: ExpiringTaskMap<Option<String>>,
+    pub oauth: Arc<OAuth>,
+    pub resolving: ExpiringTaskMap<Result<String, ResolveHandleError>>,
     pub shutdown: CancellationToken,
 }
 
@@ -62,11 +61,13 @@ pub async fn serve(
     // clients have to pick up their identity-resolving tasks within this period
     let task_pickup_expiration = Duration::from_secs(15);
 
+    let oauth = OAuth::new().unwrap();
+
     let state = AppState {
         engine: Engine::new(hbs),
         key: Key::from(app_secret.as_bytes()), // TODO: via config
         one_clicks: Arc::new(HashSet::from_iter(one_click)),
-        client: Arc::new(client()),
+        oauth: Arc::new(oauth),
         resolving: ExpiringTaskMap::new(task_pickup_expiration),
         shutdown: shutdown.clone(),
     };
@@ -92,8 +93,9 @@ pub async fn serve(
 
 async fn prompt(
     State(AppState {
-        engine,
         one_clicks,
+        engine,
+        oauth,
         resolving,
         shutdown,
         ..
@@ -118,10 +120,18 @@ async fn prompt(
             .into_response();
     }
     if let Some(did) = jar.get(DID_COOKIE_KEY) {
-        let did = did.value_trimmed().to_string();
+        let Ok(did) = Did::new(did.value_trimmed().to_string()) else {
+            return "did from cookie failed to parse".into_response();
+        };
 
-        let task_shutdown = shutdown.child_token();
-        let fetch_key = resolving.dispatch(resolve_identity(did.clone()), task_shutdown);
+        let fetch_key = resolving.dispatch(
+            {
+                let oauth = oauth.clone();
+                let did = did.clone();
+                async move { oauth.resolve_handle(did.clone()).await }
+            },
+            shutdown.child_token(),
+        );
 
         RenderHtml(
             "prompt-known",
@@ -157,12 +167,7 @@ async fn user_info(
     let Some(task_handle) = resolving.take(&params.fetch_key) else {
         return "oops, task does not exist or is gone".into_response();
     };
-    if let Some(handle) = task_handle.await.unwrap() {
-        // TODO: get active state etc.
-        // ...but also, that's a bsky thing?
-        let Some(handle) = handle.strip_prefix("at://") else {
-            return "hmm, handle did not start with at://".into_response();
-        };
+    if let Ok(handle) = task_handle.await.unwrap() {
         Json(json!({ "handle": handle })).into_response()
     } else {
         "no handle?".into_response()
@@ -174,26 +179,31 @@ struct BeginOauthParams {
     handle: String,
 }
 async fn start_oauth(
-    State(state): State<AppState>,
+    State(AppState { oauth, .. }): State<AppState>,
     Query(params): Query<BeginOauthParams>,
     jar: SignedCookieJar,
 ) -> (SignedCookieJar, Redirect) {
     // if any existing session was active, clear it first
     let jar = jar.remove(DID_COOKIE_KEY);
 
-    let auth_url = authorize(&state.client, &params.handle).await;
+    let auth_url = oauth.begin(&params.handle).await.unwrap();
     (jar, Redirect::to(&auth_url))
 }
 
 async fn complete_oauth(
-    State(state): State<AppState>,
-    Query(params): Query<CallbackParams>,
+    State(AppState {
+        engine,
+        resolving,
+        oauth,
+        shutdown,
+        ..
+    }): State<AppState>,
+    Query(params): Query<OauthCallbackParams>,
     jar: SignedCookieJar,
 ) -> (SignedCookieJar, impl IntoResponse) {
-    let Ok((oauth_session, _)) = state.client.callback(params).await else {
+    let Ok(did) = oauth.complete(params).await else {
         panic!("failed to do client callback");
     };
-    let did = oauth_session.did().await.expect("a did to be present");
 
     let cookie = Cookie::build((DID_COOKIE_KEY, did.to_string()))
         .http_only(true)
@@ -203,16 +213,20 @@ async fn complete_oauth(
 
     let jar = jar.add(cookie);
 
-    let task_shutdown = state.shutdown.child_token();
-    let fetch_key = state
-        .resolving
-        .dispatch(resolve_identity(did.to_string()), task_shutdown);
+    let fetch_key = resolving.dispatch(
+        {
+            let oauth = oauth.clone();
+            let did = did.clone();
+            async move { oauth.resolve_handle(did.clone()).await }
+        },
+        shutdown.child_token(),
+    );
 
     (
         jar,
         RenderHtml(
             "authorized",
-            state.engine,
+            engine,
             json!({
                 "did": did,
                 "fetch_key": fetch_key,

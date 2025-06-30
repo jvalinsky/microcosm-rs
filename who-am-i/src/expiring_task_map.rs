@@ -6,8 +6,14 @@ use tokio::task::{JoinHandle, spawn};
 use tokio::time::sleep;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
-#[derive(Clone)]
 pub struct ExpiringTaskMap<T>(TaskMap<T>);
+
+/// need to manually implement clone because T is allowed to not be clone
+impl<T> Clone for ExpiringTaskMap<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<T: Send + 'static> ExpiringTaskMap<T> {
     pub fn new(expiration: Duration) -> Self {
@@ -58,8 +64,17 @@ impl<T: Send + 'static> ExpiringTaskMap<T> {
     }
 }
 
-#[derive(Clone)]
 struct TaskMap<T> {
     map: Arc<DashMap<String, (DropGuard, JoinHandle<T>)>>,
     expiration: Duration,
+}
+
+/// need to manually implement clone because T is allowed to not be clone
+impl<T> Clone for TaskMap<T> {
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+            expiration: self.expiration,
+        }
+    }
 }
