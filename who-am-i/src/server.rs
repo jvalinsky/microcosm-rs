@@ -2,8 +2,11 @@ use atrium_api::types::string::Did;
 use axum::{
     Router,
     extract::{FromRef, Query, State},
-    http::header::{HeaderMap, REFERER},
-    response::{Html, IntoResponse, Json, Redirect},
+    http::{
+        StatusCode,
+        header::{HeaderMap, REFERER},
+    },
+    response::{Html, IntoResponse, Json, Redirect, Response},
     routing::get,
 };
 use axum_extra::extract::cookie::{Cookie, Key, SameSite, SignedCookieJar};
@@ -19,7 +22,7 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::{ExpiringTaskMap, OAuth, OauthCallbackParams, ResolveHandleError};
+use crate::{ExpiringTaskMap, OAuth, OAuthCallbackParams, OAuthCompleteError, ResolveHandleError};
 
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 const INDEX_HTML: &str = include_str!("../static/index.html");
@@ -190,6 +193,30 @@ async fn start_oauth(
     (jar, Redirect::to(&auth_url))
 }
 
+impl OAuthCompleteError {
+    fn to_error_response(&self, engine: AppEngine) -> Response {
+        let (_level, _desc) = match self {
+            OAuthCompleteError::Denied { .. } => {
+                let status = StatusCode::FORBIDDEN;
+                return (status, RenderHtml("auth-fail", engine, json!({}))).into_response();
+            }
+            OAuthCompleteError::Failed { .. } => (
+                "error",
+                "Something went wrong while requesting permission, sorry!",
+            ),
+            OAuthCompleteError::CallbackFailed(_) => (
+                "error",
+                "Something went wrong after permission was granted, sorry!",
+            ),
+            OAuthCompleteError::NoDid => (
+                "error",
+                "Something went wrong when trying to confirm your identity, sorry!",
+            ),
+        };
+        todo!();
+    }
+}
+
 async fn complete_oauth(
     State(AppState {
         engine,
@@ -198,11 +225,12 @@ async fn complete_oauth(
         shutdown,
         ..
     }): State<AppState>,
-    Query(params): Query<OauthCallbackParams>,
+    Query(params): Query<OAuthCallbackParams>,
     jar: SignedCookieJar,
-) -> (SignedCookieJar, impl IntoResponse) {
-    let Ok(did) = oauth.complete(params).await else {
-        panic!("failed to do client callback");
+) -> Result<(SignedCookieJar, impl IntoResponse), Response> {
+    let did = match oauth.complete(params).await {
+        Ok(did) => did,
+        Err(e) => return Err(e.to_error_response(engine)),
     };
 
     let cookie = Cookie::build((DID_COOKIE_KEY, did.to_string()))
@@ -222,7 +250,7 @@ async fn complete_oauth(
         shutdown.child_token(),
     );
 
-    (
+    Ok((
         jar,
         RenderHtml(
             "authorized",
@@ -232,5 +260,5 @@ async fn complete_oauth(
                 "fetch_key": fetch_key,
             }),
         ),
-    )
+    ))
 }

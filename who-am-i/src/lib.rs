@@ -3,5 +3,5 @@ mod oauth;
 mod server;
 
 pub use expiring_task_map::ExpiringTaskMap;
-pub use oauth::{OAuth, OauthCallbackParams, ResolveHandleError};
+pub use oauth::{OAuth, OAuthCallbackParams, OAuthCompleteError, ResolveHandleError};
 pub use server::serve;

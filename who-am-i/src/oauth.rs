@@ -27,7 +27,7 @@ pub struct CallbackErrorParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum OauthCallbackParams {
+pub enum OAuthCallbackParams {
     Granted(CallbackParams),
     Failed(CallbackErrorParams),
 }
@@ -58,15 +58,13 @@ pub enum AuthSetupError {
 pub struct AuthStartError(#[from] atrium_oauth::Error);
 
 #[derive(Debug, Error)]
-pub enum AuthCompleteError {
+pub enum OAuthCompleteError {
     #[error("the user denied request: {description:?} (from {issuer:?})")]
     Denied {
         description: Option<String>,
         issuer: Option<String>,
     },
-    #[error(
-        "the request was denied for another reason: {error}: {description:?} (from {issuer:?})"
-    )]
+    #[error("the request failed: {error}: {description:?} (from {issuer:?})")]
     Failed {
         error: String,
         description: Option<String>,
@@ -135,17 +133,17 @@ impl OAuth {
     }
 
     /// Finally, resolve the oauth flow to a verified DID
-    pub async fn complete(&self, params: OauthCallbackParams) -> Result<Did, AuthCompleteError> {
+    pub async fn complete(&self, params: OAuthCallbackParams) -> Result<Did, OAuthCompleteError> {
         let params = match params {
-            OauthCallbackParams::Granted(params) => params,
-            OauthCallbackParams::Failed(p) if p.error == "access_denied" => {
-                return Err(AuthCompleteError::Denied {
+            OAuthCallbackParams::Granted(params) => params,
+            OAuthCallbackParams::Failed(p) if p.error == "access_denied" => {
+                return Err(OAuthCompleteError::Denied {
                     description: p.error_description.clone(),
                     issuer: p.iss.clone(),
                 });
             }
-            OauthCallbackParams::Failed(p) => {
-                return Err(AuthCompleteError::Failed {
+            OAuthCallbackParams::Failed(p) => {
+                return Err(OAuthCompleteError::Failed {
                     error: p.error.clone(),
                     description: p.error_description.clone(),
                     issuer: p.iss.clone(),
@@ -156,9 +154,9 @@ impl OAuth {
             .client
             .callback(params)
             .await
-            .map_err(AuthCompleteError::CallbackFailed)?;
+            .map_err(OAuthCompleteError::CallbackFailed)?;
         let Some(did) = session.did().await else {
-            return Err(AuthCompleteError::NoDid);
+            return Err(OAuthCompleteError::NoDid);
         };
         Ok(did)
     }
