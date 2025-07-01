@@ -11,7 +11,7 @@ struct Args {
     /// must have at least 512 bits (64 bytes) of randomness
     ///
     /// eg: `cat /dev/urandom | head -c 64 | base64`
-    #[arg(long)]
+    #[arg(long, env)]
     app_secret: String,
     /// Enable dev mode
     ///
