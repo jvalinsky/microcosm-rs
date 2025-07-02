@@ -125,7 +125,7 @@ impl OAuth {
             scopes: READONLY_SCOPE.to_vec(),
             ..Default::default()
         };
-        Ok(self.client.authorize(handle, auth_opts).await?)
+        self.client.authorize(handle, auth_opts).await
     }
 
     /// Finally, resolve the oauth flow to a verified DID
