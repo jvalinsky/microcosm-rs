@@ -4,9 +4,9 @@ use axum::{
     extract::{FromRef, Query, State},
     http::{
         StatusCode,
-        header::{HeaderMap, REFERER},
+        header::{CONTENT_TYPE, HeaderMap, REFERER},
     },
-    response::{Html, IntoResponse, Json, Redirect, Response},
+    response::{IntoResponse, Json, Redirect, Response},
     routing::get,
 };
 use axum_extra::extract::cookie::{Cookie, Key, SameSite, SignedCookieJar};
@@ -25,11 +25,12 @@ use url::Url;
 use crate::{ExpiringTaskMap, OAuth, OAuthCallbackParams, OAuthCompleteError, ResolveHandleError};
 
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
-const INDEX_HTML: &str = include_str!("../static/index.html");
+const STYLE_CSS: &str = include_str!("../static/style.css");
 
 const DID_COOKIE_KEY: &str = "did";
 
 type AppEngine = Engine<Handlebars<'static>>;
+type Rendered = RenderHtml<&'static str, AppEngine, Value>;
 
 #[derive(Clone)]
 struct AppState {
@@ -76,8 +77,9 @@ pub async fn serve(
     };
 
     let app = Router::new()
-        .route("/", get(|| async { Html(INDEX_HTML) }))
-        .route("/favicon.ico", get(|| async { FAVICON })) // todo MIME
+        .route("/", get(hello))
+        .route("/favicon.ico", get(favicon)) // todo MIME
+        .route("/style.css", get(css))
         .route("/prompt", get(prompt))
         .route("/user-info", get(user_info))
         .route("/auth", get(start_oauth))
@@ -94,6 +96,22 @@ pub async fn serve(
         .unwrap();
 }
 
+async fn hello(State(AppState { engine, .. }): State<AppState>) -> Rendered {
+    RenderHtml("hello", engine, json!({}))
+}
+
+async fn css() -> impl IntoResponse {
+    let headers = [
+        (CONTENT_TYPE, "text/css"),
+        // (CACHE_CONTROL, "") // TODO
+    ];
+    (headers, STYLE_CSS)
+}
+
+async fn favicon() -> impl IntoResponse {
+    ([(CONTENT_TYPE, "image/x-icon")], FAVICON)
+}
+
 async fn prompt(
     State(AppState {
         allowed_hosts,
@@ -106,25 +124,32 @@ async fn prompt(
     jar: SignedCookieJar,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    let err = |reason, check_frame| {
+        let info = json!({
+            "reason": reason,
+            "check_frame": check_frame,
+        });
+        RenderHtml("prompt-error", engine.clone(), info).into_response()
+    };
+
     let Some(referrer) = headers.get(REFERER) else {
-        return Html::<&'static str>("missing referrer, sorry").into_response();
+        return err("Missing referer", true);
     };
     let Ok(referrer) = referrer.to_str() else {
-        return "referer contained opaque bytes".into_response();
+        return err("Unreadable referer", true);
     };
     let Ok(url) = Url::parse(referrer) else {
-        return "referrer was not a url".into_response();
+        return err("Bad referer", true);
     };
     let Some(parent_host) = url.host_str() else {
-        return "could nto get host from url".into_response();
+        return err("Referer missing host", true);
     };
     if !allowed_hosts.contains(parent_host) {
-        return format!("host {parent_host:?} not in allowed_hosts, disallowing for now")
-            .into_response();
+        return err("Login is not allowed on this page", false);
     }
     if let Some(did) = jar.get(DID_COOKIE_KEY) {
         let Ok(did) = Did::new(did.value_trimmed().to_string()) else {
-            return "did from cookie failed to parse".into_response();
+            return err("Bad cookie", false);
         };
 
         let fetch_key = resolve_handles.dispatch(
