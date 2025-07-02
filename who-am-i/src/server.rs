@@ -4,7 +4,7 @@ use axum::{
     extract::{FromRef, Query, State},
     http::{
         StatusCode,
-        header::{CONTENT_TYPE, HeaderMap, REFERER},
+        header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, HeaderMap, REFERER, X_FRAME_OPTIONS},
     },
     response::{IntoResponse, Json, Redirect, Response},
     routing::get,
@@ -29,8 +29,9 @@ const STYLE_CSS: &str = include_str!("../static/style.css");
 
 const DID_COOKIE_KEY: &str = "did";
 
+const COOKIE_EXPIRATION: Duration = Duration::from_secs(30 * 86_400);
+
 type AppEngine = Engine<Handlebars<'static>>;
-type Rendered = RenderHtml<&'static str, AppEngine, Value>;
 
 #[derive(Clone)]
 struct AppState {
@@ -96,8 +97,23 @@ pub async fn serve(
         .unwrap();
 }
 
-async fn hello(State(AppState { engine, .. }): State<AppState>) -> Rendered {
-    RenderHtml("hello", engine, json!({}))
+async fn hello(
+    State(AppState { engine, .. }): State<AppState>,
+    mut jar: SignedCookieJar,
+) -> Response {
+    // push expiry (or clean up) the current cookie
+    if let Some(did) = jar.get(DID_COOKIE_KEY) {
+        if let Ok(did) = Did::new(did.value_trimmed().to_string()) {
+            jar = jar.add(cookie(&did));
+        } else {
+            jar = jar.remove(DID_COOKIE_KEY);
+        }
+    }
+    let frame_headers = [
+        (X_FRAME_OPTIONS, "deny"),
+        (CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
+    ];
+    (frame_headers, jar, RenderHtml("hello", engine, json!({}))).into_response()
 }
 
 async fn css() -> impl IntoResponse {
@@ -110,6 +126,15 @@ async fn css() -> impl IntoResponse {
 
 async fn favicon() -> impl IntoResponse {
     ([(CONTENT_TYPE, "image/x-icon")], FAVICON)
+}
+
+fn cookie(did: &Did) -> Cookie<'static> {
+    Cookie::build((DID_COOKIE_KEY, did.to_string()))
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::None)
+        .max_age(COOKIE_EXPIRATION.try_into().unwrap())
+        .into()
 }
 
 async fn prompt(
@@ -149,10 +174,22 @@ async fn prompt(
     if parent_origin == "null" {
         return err("Referer origin is opaque", true);
     }
+
+    let frame_headers = [
+        (X_FRAME_OPTIONS, format!("allow-from {parent_origin}")),
+        (
+            CONTENT_SECURITY_POLICY,
+            format!("frame-ancestors {parent_host}"),
+        ),
+    ];
+
     if let Some(did) = jar.get(DID_COOKIE_KEY) {
         let Ok(did) = Did::new(did.value_trimmed().to_string()) else {
             return err("Bad cookie", false);
         };
+
+        // push cookie expiry
+        let jar = jar.add(cookie(&did));
 
         let fetch_key = resolve_handles.dispatch(
             {
@@ -163,27 +200,20 @@ async fn prompt(
             shutdown.child_token(),
         );
 
-        RenderHtml(
-            "prompt",
-            engine,
-            json!({
-                "did": did,
-                "fetch_key": fetch_key,
-                "parent_host": parent_host,
-                "parent_origin": parent_origin,
-            }),
-        )
-        .into_response()
+        let info = json!({
+            "did": did,
+            "fetch_key": fetch_key,
+            "parent_host": parent_host,
+            "parent_origin": parent_origin,
+        });
+
+        (frame_headers, jar, RenderHtml("prompt", engine, info)).into_response()
     } else {
-        RenderHtml(
-            "prompt",
-            engine,
-            json!({
-                "parent_host": parent_host,
-                "parent_origin": parent_origin,
-            }),
-        )
-        .into_response()
+        let info = json!({
+            "parent_host": parent_host,
+            "parent_origin": parent_origin,
+        });
+        (frame_headers, RenderHtml("prompt", engine, info)).into_response()
     }
 }
 
@@ -316,13 +346,7 @@ async fn complete_oauth(
         }
     };
 
-    let cookie = Cookie::build((DID_COOKIE_KEY, did.to_string()))
-        .http_only(true)
-        .secure(true)
-        .same_site(SameSite::None)
-        .max_age(std::time::Duration::from_secs(86_400).try_into().unwrap());
-
-    let jar = jar.add(cookie);
+    let jar = jar.add(cookie(&did));
 
     let fetch_key = resolve_handles.dispatch(
         {
