@@ -1,15 +1,21 @@
 {{#*inline "main"}}
 <p>
-  Share your identity with
-  <span class="parent-host">{{ parent_host }}</span>?
+  Auth failed: {{ reason }}
 </p>
 
 <div id="user-info">
-  <div id="action">
     auth failed.
-  </form>
 </div>
 
+<script>
+// TODO: tie this back to its source...........
+
+localStorage.setItem("who-am-i", JSON.stringify({
+  result: "fail",
+  reason: "alskfjlaskdjf",
+}));
+window.close();
+</script>
 {{/inline}}
 
-{{#> prompt-base}}{{/prompt-base}}
+{{#> return-base}}{{/return-base}}

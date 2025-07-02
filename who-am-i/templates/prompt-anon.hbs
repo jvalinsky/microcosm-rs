@@ -1,7 +1,10 @@
 {{#*inline "main"}}
 <p>
-  Share your identity with
-  <span class="parent-host">{{ parent_host }}</span>?
+  Connect your ATmosphere
+</p>
+
+<p class="detail">
+  <span class="parent-host">{{ parent_host }}</span> would like to confirm your handle
 </p>
 
 <div id="loader" class="hidden">
@@ -23,12 +26,17 @@ var infoEl = document.getElementById('user-info');
 const formEl = document.getElementById('action');
 const handleEl = document.getElementById('handle');
 
+function err(msg) {
+
+}
+
 formEl.onsubmit = e => {
   e.preventDefault();
   // TODO: include expected referer! (..this system is probably bad)
   // maybe a random localstorage key that we specifically listen for?
   var url = new URL('/auth', window.location);
   url.searchParams.set('handle', handleEl.value);
+  url.searchParams.set('flow', {{{json flow}}});
   var flow = window.open(url, '_blank');
   window.f = flow;
 
@@ -37,10 +45,19 @@ formEl.onsubmit = e => {
     if (!details) {
       console.error("hmm, heard from localstorage but did not get DID");
     }
-    var parsed = JSON.parse(details);
+    loaderEl.classList.remove('hidden');
+  
+    try {
+      var parsed = JSON.parse(details);
+    } catch (e) {
+      return err("something went wrong getting the details back");
+    }
+
+    if (parsed.result === "fail") {
+      return err(`something went wrong getting permission to share: ${parsed.reason}`);
+    }
 
     infoEl.classList.add('hidden');
-    loaderEl.classList.remove('hidden');
     lookUpAndShare(parsed.fetch_key);
   });
 }

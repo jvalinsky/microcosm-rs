@@ -49,6 +49,7 @@ impl<T: Send + 'static> ExpiringTaskMap<T> {
                 .run_until_cancelled(sleep(expiration))
                 .await
                 .is_some()
+            // is Some if the (sleep) task completed first
             {
                 map.remove(&k);
                 cancel.cancel();

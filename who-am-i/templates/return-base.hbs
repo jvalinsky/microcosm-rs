@@ -17,6 +17,10 @@ body {
   flex-direction: column;
   height: 100vh;
 }
+.wrap.unframed {
+  border-radius: 0;
+  border-width: 0.4rem;
+}
 header {
   background: #221828;
   display: flex;
@@ -56,9 +60,6 @@ main {
 p {
   margin: 1rem 0 0;
   text-align: center;
-}
-p.detail {
-  font-size: 0.8rem;
 }
 .parent-host {
   font-weight: bold;
@@ -143,7 +144,7 @@ input#handle {
 
 </style>
 
-<div class="wrap">
+<div class="wrap unframed">
   <header>
     <div class="empty">🔒</div>
     <code class="title" style="font-family: monospace;"

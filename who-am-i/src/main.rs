@@ -21,8 +21,8 @@ struct Args {
     /// Hosts who are allowed to one-click auth
     ///
     /// Pass this argument multiple times to allow multiple hosts
-    #[arg(long, short = 'o', action = ArgAction::Append)]
-    one_click: Vec<String>,
+    #[arg(long = "allow_host", short = 'a', action = ArgAction::Append)]
+    allowed_hosts: Vec<String>,
 }
 
 #[tokio::main]
@@ -34,14 +34,14 @@ async fn main() {
 
     let args = Args::parse();
 
-    if args.one_click.is_empty() {
+    if args.allowed_hosts.is_empty() {
         panic!("at least one --one-click host must be set");
     }
 
-    println!("starting with allowed hosts:");
-    for host in &args.one_click {
+    println!("starting with allowed_hosts hosts:");
+    for host in &args.allowed_hosts {
         println!(" - {host}");
     }
 
-    serve(shutdown, args.app_secret, args.one_click, args.dev).await;
+    serve(shutdown, args.app_secret, args.allowed_hosts, args.dev).await;
 }
