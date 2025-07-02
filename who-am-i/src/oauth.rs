@@ -54,10 +54,6 @@ pub enum AuthSetupError {
 }
 
 #[derive(Debug, Error)]
-#[error(transparent)]
-pub struct AuthStartError(#[from] atrium_oauth::Error);
-
-#[derive(Debug, Error)]
 pub enum OAuthCompleteError {
     #[error("the user denied request: {description:?} (from {issuer:?})")]
     Denied {
@@ -124,7 +120,7 @@ impl OAuth {
         })
     }
 
-    pub async fn begin(&self, handle: &str) -> Result<String, AuthStartError> {
+    pub async fn begin(&self, handle: &str) -> Result<String, atrium_oauth::Error> {
         let auth_opts = AuthorizeOptions {
             scopes: READONLY_SCOPE.to_vec(),
             ..Default::default()

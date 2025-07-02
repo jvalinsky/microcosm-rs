@@ -145,6 +145,10 @@ async fn prompt(
     if !allowed_hosts.contains(parent_host) {
         return err("Login is not allowed on this page", false);
     }
+    let parent_origin = url.origin().ascii_serialization();
+    if parent_origin == "null" {
+        return err("Referer origin is opaque", true);
+    }
     if let Some(did) = jar.get(DID_COOKIE_KEY) {
         let Ok(did) = Did::new(did.value_trimmed().to_string()) else {
             return err("Bad cookie", false);
@@ -166,15 +170,17 @@ async fn prompt(
                 "did": did,
                 "fetch_key": fetch_key,
                 "parent_host": parent_host,
+                "parent_origin": parent_origin,
             }),
         )
         .into_response()
     } else {
         RenderHtml(
-            "prompt-anon",
+            "prompt",
             engine,
             json!({
                 "parent_host": parent_host,
+                "parent_origin": parent_origin,
             }),
         )
         .into_response()
@@ -228,35 +234,43 @@ async fn user_info(
 #[derive(Debug, Deserialize)]
 struct BeginOauthParams {
     handle: String,
-    flow: String,
 }
 async fn start_oauth(
-    State(AppState { oauth, .. }): State<AppState>,
+    State(AppState { oauth, engine, .. }): State<AppState>,
     Query(params): Query<BeginOauthParams>,
     jar: SignedCookieJar,
-    headers: HeaderMap,
-) -> (SignedCookieJar, Redirect) {
+) -> Response {
     // if any existing session was active, clear it first
+    // ...this might help a confusion attack w multiple sign-in flows or smth
     let jar = jar.remove(DID_COOKIE_KEY);
 
-    if let Some(referrer) = headers.get(REFERER) {
-        if let Ok(referrer) = referrer.to_str() {
-            println!("referrer: {referrer}");
-        } else {
-            eprintln!("referer contained opaque bytes");
-        };
-    } else {
-        eprintln!("no referrer");
-    };
+    use atrium_identity::Error as IdError;
+    use atrium_oauth::Error as OAuthError;
 
-    let auth_url = oauth.begin(&params.handle).await.unwrap();
-    let flow = params.flow;
-    if !flow.chars().all(|c| char::is_ascii_alphanumeric(&c)) {
-        panic!("invalid flow (injection attempt?)"); // should probably just url-encode it instead..
+    match oauth.begin(&params.handle).await {
+        Ok(auth_url) => (jar, Redirect::to(&auth_url)).into_response(),
+        Err(OAuthError::Identity(IdError::NotFound)) => {
+            let info = json!({ "reason": "handle not found" });
+            (StatusCode::NOT_FOUND, RenderHtml("auth-fail", engine, info)).into_response()
+        }
+        Err(OAuthError::Identity(IdError::AtIdentifier(r))) => {
+            let info = json!({ "reason": r });
+            (StatusCode::NOT_FOUND, RenderHtml("auth-fail", engine, info)).into_response()
+        }
+        Err(OAuthError::Identity(IdError::HttpStatus(StatusCode::NOT_FOUND))) => {
+            let info = json!({ "reason": "handle not found" });
+            (StatusCode::NOT_FOUND, RenderHtml("auth-fail", engine, info)).into_response()
+        }
+        Err(e) => {
+            eprintln!("begin auth failed: {e:?}");
+            let info = json!({ "reason": "unknown" });
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                RenderHtml("auth-fail", engine, info),
+            )
+                .into_response()
+        }
     }
-    eprintln!("auth_url {auth_url}");
-
-    (jar, Redirect::to(&auth_url))
 }
 
 impl OAuthCompleteError {

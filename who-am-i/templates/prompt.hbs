@@ -1,0 +1,128 @@
+{{#*inline "main"}}
+<p>
+  Connect in the ATmosphere
+</p>
+
+<p id="error-message" class="hidden"></p>
+
+<p id="prompt" class="detail">
+  <span class="parent-host">{{ parent_host }}</span> would like to confirm your handle
+</p>
+
+<div id="loader" {{#unless did}}class="hidden"{{/unless}}>
+  <span class="spinner"></span>
+</div>
+
+<div id="user-info">
+  <form id="form-action" action="/auth" method="GET" target="_blank" class="action {{#if did}}hidden{{/if}}">
+    <label>
+      @<input id="handle" name="handle" placeholder="example.bsky.social" />
+    </label>
+    <button id="connect" type="submit">connect</button>
+  </form>
+
+  <div id="handle-action" class="action">
+    <span id="handle"></span>
+    <button id="allow">Allow</button>
+  </div>
+</div>
+
+
+
+<script>
+const errorEl = document.getElementById('error-message');
+const promptEl = document.getElementById('prompt');
+const loaderEl = document.getElementById('loader');
+const infoEl = document.getElementById('user-info');
+const handleEl = document.getElementById('handle');
+const formEl = document.getElementById('form-action'); // for anon
+const allowEl = document.getElementById('allow'); // for known-did
+const connectEl = document.getElementById('connect'); // for anon
+
+function err(e, msg) {
+  loaderEl.classList.add('hidden');
+  errorEl.classList.remove('hidden');
+  errorEl.textContent = msg || e;
+  throw new Error(e);
+}
+
+formEl && (formEl.onsubmit = e => {
+  e.preventDefault();
+  loaderEl.classList.remove('hidden');
+  // TODO: include expected referer! (..this system is probably bad)
+  // maybe a random localstorage key that we specifically listen for?
+  const url = new URL('/auth', window.location);
+  url.searchParams.set('handle', handleEl.value);
+  window.open(url, '_blank');
+});
+
+window.addEventListener('storage', async e => {
+  // here's a fun minor vuln: we can't tell which flow triggers the storage event.
+  // so if you have two flows going, it grants for both (or the first responder?) if you grant for either.
+  // (letting this slide while parent pages are allowlisted to microcosm only)
+
+  const fail = (e, msg) => {
+    loaderEl.classList.add('hidden');
+    formEl.classList.remove('hidden');
+    handleEl.focus();
+    handleEl.select();
+    err(e, msg);
+  }
+
+  const details = localStorage.getItem("who-am-i");
+  if (!details) {
+    console.error("hmm, heard from localstorage but did not get DID");
+    return;
+  }
+  localStorage.removeItem("who-am-i");
+
+  let parsed;
+  try {
+    parsed = JSON.parse(details);
+  } catch (e) {
+    err(e, "something went wrong getting the details back");
+  }
+
+  if (parsed.result === "fail") {
+    fail(`uh oh: ${parsed.reason}`);
+  }
+
+  infoEl.classList.add('hidden');
+
+  const handle = await lookUp(parsed.fetch_key);
+
+  shareAllow(handle);
+});
+
+const lookUp = async fetch_key => {
+  const user_info = new URL('/user-info', window.location);
+  user_info.searchParams.set('fetch-key', fetch_key);
+  let info;
+  try {
+    const resp = await fetch(user_info);
+    if (!resp.ok) throw resp;
+    info = await resp.json();
+  } catch (e) {
+    err(e, 'failed to resolve handle from DID')
+  }
+  return info.handle;
+}
+
+const shareAllow = handle => {
+  top.postMessage(
+    { action: "allow", handle },
+    {{{json parent_host}}},
+  );
+}
+
+const shareDeny = reason => {
+  top.postMessage(
+    { action: "deny", reason },
+    {{{json parent_origin}}},
+  );
+}
+</script>
+
+{{/inline}}
+
+{{#> base-framed}}{{/base-framed}}

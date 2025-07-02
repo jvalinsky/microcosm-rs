@@ -19,6 +19,7 @@
       (whoami => {
         const handleMessage = ev => {
           if (ev.source !== whoami.contentWindow) {
+            // TODO: ALSO CHECK ev.origin!!!!
             console.log('nah');
             return;
           }

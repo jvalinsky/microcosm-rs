@@ -60,9 +60,22 @@ main {
   max-width: 21rem;
 }
 
+#error-message {
+  font-size: 0.8rem;
+  color: #a31;
+}
+
+#error-message:not(.hidden) + #prompt {
+  display: none !important;
+}
+
+#error-message,
 p {
   margin: 1rem 0 0;
   text-align: center;
+}
+p.detail {
+  font-size: 0.8rem;
 }
 .parent-host {
   font-weight: bold;
@@ -93,6 +106,10 @@ p {
   0% { transform: rotate(0deg) }
   100% { transform: rotate(360deg) }
 }
+/* loader visibility is mutually exclusive with its immediate sibling */
+#loader:not(.hidden) + * {
+  display: none !important;
+}
 
 #user-info {
   flex-grow: 1;
@@ -100,7 +117,7 @@ p {
   flex-direction: column;
   justify-content: center;
 }
-#action {
+.action {
   background: #eee;
   display: flex;
   justify-content: space-between;
@@ -111,9 +128,14 @@ p {
   border: 1px solid #bbb;
   cursor: pointer;
 }
-#action:hover {
+.action:hover {
   background: #fff;
 }
+#form-action:not(.hidden) + .action {
+  display: none !important;
+}
+
+#connect,
 #allow {
   background: transparent;
   border: none;

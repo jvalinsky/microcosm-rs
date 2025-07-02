@@ -8,14 +8,13 @@
 </div>
 
 <script>
-// TODO: tie this back to its source...........
-
 localStorage.setItem("who-am-i", JSON.stringify({
   result: "fail",
-  reason: "alskfjlaskdjf",
+  reason: {{{json reason}}},
 }));
+
 window.close();
 </script>
 {{/inline}}
 
-{{#> return-base}}{{/return-base}}
+{{#> base-framed}}{{/base-framed}}
