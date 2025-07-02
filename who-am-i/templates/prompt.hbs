@@ -87,6 +87,10 @@ window.addEventListener('storage', async e => {
     fail(`uh oh: ${parsed.reason}`);
   }
 
+  if (parsed.result === "deny") {
+    fail(parsed.reason);
+  }
+
   infoEl.classList.add('hidden');
 
   const handle = await lookUp(parsed.fetch_key);
@@ -111,7 +115,7 @@ const lookUp = async fetch_key => {
 const shareAllow = handle => {
   top.postMessage(
     { action: "allow", handle },
-    {{{json parent_host}}},
+    {{{json parent_origin}}},
   );
 }
 

@@ -247,66 +247,24 @@ async fn start_oauth(
     use atrium_identity::Error as IdError;
     use atrium_oauth::Error as OAuthError;
 
+    let err = |code, reason| {
+        let info = json!({
+            "result": "fail",
+            "reason": reason,
+        });
+        (code, RenderHtml("auth-fail", engine.clone(), info)).into_response()
+    };
+
     match oauth.begin(&params.handle).await {
         Ok(auth_url) => (jar, Redirect::to(&auth_url)).into_response(),
-        Err(OAuthError::Identity(IdError::NotFound)) => {
-            let info = json!({ "reason": "handle not found" });
-            (StatusCode::NOT_FOUND, RenderHtml("auth-fail", engine, info)).into_response()
-        }
-        Err(OAuthError::Identity(IdError::AtIdentifier(r))) => {
-            let info = json!({ "reason": r });
-            (StatusCode::NOT_FOUND, RenderHtml("auth-fail", engine, info)).into_response()
-        }
-        Err(OAuthError::Identity(IdError::HttpStatus(StatusCode::NOT_FOUND))) => {
-            let info = json!({ "reason": "handle not found" });
-            (StatusCode::NOT_FOUND, RenderHtml("auth-fail", engine, info)).into_response()
-        }
+        Err(OAuthError::Identity(
+            IdError::NotFound | IdError::HttpStatus(StatusCode::NOT_FOUND),
+        )) => err(StatusCode::NOT_FOUND, "handle not found"),
+        Err(OAuthError::Identity(IdError::AtIdentifier(r))) => err(StatusCode::BAD_REQUEST, &r),
         Err(e) => {
             eprintln!("begin auth failed: {e:?}");
-            let info = json!({ "reason": "unknown" });
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                RenderHtml("auth-fail", engine, info),
-            )
-                .into_response()
+            err(StatusCode::INTERNAL_SERVER_ERROR, "unknown")
         }
-    }
-}
-
-impl OAuthCompleteError {
-    fn to_error_response(&self, engine: AppEngine) -> Response {
-        let (level, desc) = match self {
-            OAuthCompleteError::Denied { description, .. } => {
-                ("warn", format!("asdf: {description:?}"))
-            }
-            OAuthCompleteError::Failed { .. } => (
-                "error",
-                "Something went wrong while requesting permission, sorry!".to_string(),
-            ),
-            OAuthCompleteError::CallbackFailed(_) => (
-                "error",
-                "Something went wrong after permission was granted, sorry!".to_string(),
-            ),
-            OAuthCompleteError::NoDid => (
-                "error",
-                "Something went wrong when trying to confirm your identity, sorry!".to_string(),
-            ),
-        };
-        (
-            if level == "warn" {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            },
-            RenderHtml(
-                "auth-fail",
-                engine,
-                json!({
-                    "reason": desc,
-                }),
-            ),
-        )
-            .into_response()
     }
 }
 
@@ -320,10 +278,42 @@ async fn complete_oauth(
     }): State<AppState>,
     Query(params): Query<OAuthCallbackParams>,
     jar: SignedCookieJar,
-) -> Result<(SignedCookieJar, impl IntoResponse), Response> {
+) -> Response {
+    let err = |code, result, reason| {
+        let info = json!({
+            "result": result,
+            "reason": reason,
+        });
+        (code, RenderHtml("auth-fail", engine.clone(), info)).into_response()
+    };
+
     let did = match oauth.complete(params).await {
         Ok(did) => did,
-        Err(e) => return Err(e.to_error_response(engine)),
+        Err(e) => {
+            return match e {
+                OAuthCompleteError::Denied { description, .. } => {
+                    let desc = description.unwrap_or("permission to share was denied".to_string());
+                    err(StatusCode::FORBIDDEN, "deny", desc.as_str())
+                }
+                OAuthCompleteError::Failed { .. } => {
+                    eprintln!("auth completion failed: {e:?}");
+                    err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "fail",
+                        "failed to complete",
+                    )
+                }
+                OAuthCompleteError::CallbackFailed(e) => {
+                    eprintln!("auth callback failed: {e:?}");
+                    err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "fail",
+                        "failed to complete callback",
+                    )
+                }
+                OAuthCompleteError::NoDid => err(StatusCode::BAD_REQUEST, "fail", "no DID found"),
+            };
+        }
     };
 
     let cookie = Cookie::build((DID_COOKIE_KEY, did.to_string()))
@@ -342,16 +332,9 @@ async fn complete_oauth(
         },
         shutdown.child_token(),
     );
-
-    Ok((
-        jar,
-        RenderHtml(
-            "authorized",
-            engine,
-            json!({
-                "did": did,
-                "fetch_key": fetch_key,
-            }),
-        ),
-    ))
+    let info = json!({
+        "did": did,
+        "fetch_key": fetch_key,
+    });
+    (jar, RenderHtml("authorized", engine, info)).into_response()
 }
