@@ -7,7 +7,7 @@ use axum::{
         header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, HeaderMap, REFERER, X_FRAME_OPTIONS},
     },
     response::{IntoResponse, Json, Redirect, Response},
-    routing::get,
+    routing::{get, post},
 };
 use axum_extra::extract::cookie::{Cookie, Key, SameSite, SignedCookieJar};
 use axum_template::{RenderHtml, engine::Engine};
@@ -85,6 +85,7 @@ pub async fn serve(
         .route("/user-info", get(user_info))
         .route("/auth", get(start_oauth))
         .route("/authorized", get(complete_oauth))
+        .route("/disconnect", post(disconnect))
         .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:9997")
@@ -98,22 +99,43 @@ pub async fn serve(
 }
 
 async fn hello(
-    State(AppState { engine, .. }): State<AppState>,
+    State(AppState {
+        engine,
+        resolve_handles,
+        shutdown,
+        oauth,
+        ..
+    }): State<AppState>,
     mut jar: SignedCookieJar,
 ) -> Response {
-    // push expiry (or clean up) the current cookie
-    if let Some(did) = jar.get(DID_COOKIE_KEY) {
+    let info = if let Some(did) = jar.get(DID_COOKIE_KEY) {
         if let Ok(did) = Did::new(did.value_trimmed().to_string()) {
+            // push cookie expiry
             jar = jar.add(cookie(&did));
+            let fetch_key = resolve_handles.dispatch(
+                {
+                    let oauth = oauth.clone();
+                    let did = did.clone();
+                    async move { oauth.resolve_handle(did.clone()).await }
+                },
+                shutdown.child_token(),
+            );
+            json!({
+                "did": did,
+                "fetch_key": fetch_key,
+            })
         } else {
             jar = jar.remove(DID_COOKIE_KEY);
+            json!({})
         }
-    }
+    } else {
+        json!({})
+    };
     let frame_headers = [
         (X_FRAME_OPTIONS, "deny"),
         (CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
     ];
-    (frame_headers, jar, RenderHtml("hello", engine, json!({}))).into_response()
+    (frame_headers, jar, RenderHtml("hello", engine, info)).into_response()
 }
 
 async fn css() -> impl IntoResponse {
@@ -179,7 +201,7 @@ async fn prompt(
         (X_FRAME_OPTIONS, format!("allow-from {parent_origin}")),
         (
             CONTENT_SECURITY_POLICY,
-            format!("frame-ancestors {parent_host}"),
+            format!("frame-ancestors {parent_origin}"),
         ),
     ];
 
@@ -361,4 +383,9 @@ async fn complete_oauth(
         "fetch_key": fetch_key,
     });
     (jar, RenderHtml("authorized", engine, info)).into_response()
+}
+
+async fn disconnect(jar: SignedCookieJar) -> impl IntoResponse {
+    let jar = jar.remove(DID_COOKIE_KEY);
+    (jar, Json(json!({ "ok": true })))
 }

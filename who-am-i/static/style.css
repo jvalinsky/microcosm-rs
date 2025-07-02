@@ -136,7 +136,8 @@ p.detail {
 }
 
 #connect,
-#allow {
+#allow,
+#revoke {
   background: transparent;
   border: none;
   border-left: 1px solid #bbb;
@@ -144,6 +145,9 @@ p.detail {
   color: #375;
   font: inherit;
   cursor: pointer;
+}
+#revoke {
+  color: #a31;
 }
 #action:hover #allow {
   color: #285;

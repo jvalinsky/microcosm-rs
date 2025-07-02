@@ -1,9 +1,74 @@
 {{#*inline "description"}}A little identity-verifying auth service for microcosm demos{{/inline}}
 
 {{#*inline "main"}}
-  <div class="mini-content">
-    This is a little identity-verifying service for microcosm demos.
-  </div>
+<div class="mini-content">
+  This is a little identity-verifying service for microcosm demos.
+
+  {{#if did}}
+    <p id="error-message" class="hidden"></p>
+
+    <p id="prompt" class="detail">
+      Connected identity:
+    </p>
+
+    <div id="loader">
+      <span class="spinner"></span>
+    </div>
+
+    <div id="user-info">
+      <div id="handle-action" class="action">
+        <span id="handle-view" class="handle"></span>
+        <button id="revoke">disconnect</button>
+      </div>
+    </div>
+    <script>
+      const errorEl = document.getElementById('error-message');
+      const loaderEl = document.getElementById('loader');
+      const handleViewEl = document.getElementById('handle-view');
+      const revokeEl = document.getElementById('revoke'); // for known-did
+
+      function err(e, msg) {
+        loaderEl.classList.add('hidden');
+        errorEl.classList.remove('hidden');
+        errorEl.textContent = msg || e;
+        throw new Error(e);
+      }
+
+      // already-known user
+      ({{{json did}}}) && (async () => {
+
+        const handle = await lookUp({{{json fetch_key}}});
+        console.log('got handle', handle);
+
+        loaderEl.classList.add('hidden');
+        handleViewEl.textContent = `@${handle}`;
+        revokeEl.addEventListener('click', async () => {
+          try {
+            let res = await fetch('/disconnect', { method: 'POST', credentials: 'include' });
+            if (!res.ok) throw res;
+          } catch (e) {
+            err(e, 'failed to clear session, sorry');
+          }
+          window.location.reload();
+        });
+      })();
+
+      async function lookUp(fetch_key) {
+        const user_info = new URL('/user-info', window.location);
+        user_info.searchParams.set('fetch-key', fetch_key);
+        let info;
+        try {
+          const resp = await fetch(user_info);
+          if (!resp.ok) throw resp;
+          info = await resp.json();
+        } catch (e) {
+          err(e, 'failed to resolve handle from DID')
+        }
+        return info.handle;
+      }
+    </script>
+  {{/if}}
+</div>
 {{/inline}}
 
 {{#> base-full}}{{/base-full}}
