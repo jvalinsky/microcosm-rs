@@ -164,7 +164,7 @@ async fn prompt(
         );
 
         RenderHtml(
-            "prompt-known",
+            "prompt",
             engine,
             json!({
                 "did": did,

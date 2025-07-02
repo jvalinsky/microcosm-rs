@@ -16,13 +16,13 @@
 <div id="user-info">
   <form id="form-action" action="/auth" method="GET" target="_blank" class="action {{#if did}}hidden{{/if}}">
     <label>
-      @<input id="handle" name="handle" placeholder="example.bsky.social" />
+      @<input id="handle-input" class="handle" name="handle" placeholder="example.bsky.social" />
     </label>
     <button id="connect" type="submit">connect</button>
   </form>
 
   <div id="handle-action" class="action">
-    <span id="handle"></span>
+    <span id="handle-view" class="handle"></span>
     <button id="allow">Allow</button>
   </div>
 </div>
@@ -34,9 +34,10 @@ const errorEl = document.getElementById('error-message');
 const promptEl = document.getElementById('prompt');
 const loaderEl = document.getElementById('loader');
 const infoEl = document.getElementById('user-info');
-const handleEl = document.getElementById('handle');
+const handleInputEl = document.getElementById('handle-input');
+const handleViewEl = document.getElementById('handle-view');
 const formEl = document.getElementById('form-action'); // for anon
-const allowEl = document.getElementById('allow'); // for known-did
+const allowEl = document.getElementById('handle-action'); // for known-did
 const connectEl = document.getElementById('connect'); // for anon
 
 function err(e, msg) {
@@ -46,15 +47,27 @@ function err(e, msg) {
   throw new Error(e);
 }
 
-formEl && (formEl.onsubmit = e => {
+// already-known user
+({{{json did}}}) && (async () => {
+
+  const handle = await lookUp({{{json fetch_key}}});
+  console.log('got handle', handle);
+
+  loaderEl.classList.add('hidden');
+  handleViewEl.textContent = `@${handle}`;
+  allowEl.addEventListener('click', () => shareAllow(handle));
+})();
+
+// anon user
+formEl.onsubmit = e => {
   e.preventDefault();
   loaderEl.classList.remove('hidden');
   // TODO: include expected referer! (..this system is probably bad)
   // maybe a random localstorage key that we specifically listen for?
   const url = new URL('/auth', window.location);
-  url.searchParams.set('handle', handleEl.value);
+  url.searchParams.set('handle', handleInputEl.value);
   window.open(url, '_blank');
-});
+};
 
 window.addEventListener('storage', async e => {
   // here's a fun minor vuln: we can't tell which flow triggers the storage event.
@@ -64,8 +77,8 @@ window.addEventListener('storage', async e => {
   const fail = (e, msg) => {
     loaderEl.classList.add('hidden');
     formEl.classList.remove('hidden');
-    handleEl.focus();
-    handleEl.select();
+    handleInputEl.focus();
+    handleInputEl.select();
     err(e, msg);
   }
 
@@ -98,7 +111,7 @@ window.addEventListener('storage', async e => {
   shareAllow(handle);
 });
 
-const lookUp = async fetch_key => {
+async function lookUp(fetch_key) {
   const user_info = new URL('/user-info', window.location);
   user_info.searchParams.set('fetch-key', fetch_key);
   let info;

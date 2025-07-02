@@ -157,7 +157,7 @@ p.detail {
   margin: 0 0 1rem;
 }
 
-input#handle {
+input.handle {
   border: none;
   border-bottom: 1px dashed #aaa;
   background: transparent;
