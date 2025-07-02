@@ -44,3 +44,8 @@ since the requirements (read-only, just verifying identity) seem modest, i was h
 it's still nice to have an explicit opt-in on a per-demo basis for microcosm so it will be used for that. it's allow-listed for the microcosm domain however (so not deployed on any adversarial hosting pages), so it's simultaenously overkill and restrictive.
 
 i will get back to oauth eventually and hopefully roll out a microcosm service to make it easy for clients (and demos), but there are a few more things in the pipeline to get to first.
+
+
+### todo
+
+provide a pubkey-signed JWT of the identity (just the DID as `sub` probably). (**you probably SHOULD NOT USE THIS in any serious environment**)
