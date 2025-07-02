@@ -125,11 +125,9 @@ async fn prompt(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let err = |reason, check_frame| {
-        let info = json!({
-            "reason": reason,
-            "check_frame": check_frame,
-        });
-        RenderHtml("prompt-error", engine.clone(), info).into_response()
+        let info = json!({ "reason": reason, "check_frame": check_frame });
+        let html = RenderHtml("prompt-error", engine.clone(), info);
+        (StatusCode::BAD_REQUEST, html).into_response()
     };
 
     let Some(referrer) = headers.get(REFERER) else {
@@ -194,13 +192,36 @@ async fn user_info(
     }): State<AppState>,
     Query(params): Query<UserInfoParams>,
 ) -> impl IntoResponse {
+    let err = |status, reason| (status, Json(json!({ "reason": reason }))).into_response();
+
     let Some(task_handle) = resolve_handles.take(&params.fetch_key) else {
-        return "oops, task does not exist or is gone".into_response();
+        return err(StatusCode::NOT_FOUND, "fetch key does not exist or expired");
     };
-    if let Ok(handle) = task_handle.await.unwrap() {
-        Json(json!({ "handle": handle })).into_response()
-    } else {
-        "no handle?".into_response()
+
+    match task_handle.await {
+        Err(task_err) => {
+            eprintln!("task join error? {task_err:?}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "server errored")
+        }
+        Ok(Err(ResolveHandleError::ResolutionFailed(atrium_identity::Error::NotFound))) => {
+            err(StatusCode::NOT_FOUND, "handle not found")
+        }
+        Ok(Err(ResolveHandleError::ResolutionFailed(e))) => {
+            eprintln!("handle resolution failed: {e:?}");
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "handle resolution failed",
+            )
+        }
+        Ok(Err(ResolveHandleError::NoHandle)) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "resolved identity but did not find a handle",
+        ),
+        Ok(Err(ResolveHandleError::InvalidHandle(_h, reason))) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("handle appears invalid: {reason}"),
+        ),
+        Ok(Ok(handle)) => Json(json!({ "handle": handle })).into_response(),
     }
 }
 

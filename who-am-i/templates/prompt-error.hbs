@@ -1,0 +1,17 @@
+{{#*inline "main"}}
+  <div class="prompt-error">
+    <p class="went-wrong">Something went wrong :(</p>
+    <p class="reason">{{ reason }}</p>
+    <p id="maybe-not-in-iframe" class="hidden">
+      Possibly related: this prompt is meant to be shown in an iframe, but it seems like it's not.
+    </p>
+  </div>
+
+  <script>
+    if ({{{json check_frame}}} && window.self === window.top) {
+      document.getElementById('maybe-not-in-iframe').classList.remove('hidden');
+    }
+  </script>
+{{/inline}}
+
+{{#> base-framed}}{{/base-framed}}

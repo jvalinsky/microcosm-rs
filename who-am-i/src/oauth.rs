@@ -181,7 +181,7 @@ impl OAuth {
         };
         if bare_handle.is_empty() {
             return Err(ResolveHandleError::InvalidHandle(
-                bare_handle.to_string(),
+                at_uri_handle.to_string(),
                 "empty handle",
             ));
         }
