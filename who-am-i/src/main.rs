@@ -1,5 +1,5 @@
 use clap::{ArgAction, Parser};
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{PrometheusBuilder, BuildError as PromBuildError};
 use tokio_util::sync::CancellationToken;
 use who_am_i::serve;
 
@@ -26,7 +26,7 @@ struct Args {
     allowed_hosts: Vec<String>,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     let shutdown = CancellationToken::new();
 
@@ -51,7 +51,7 @@ async fn main() {
     serve(shutdown, args.app_secret, args.allowed_hosts, args.dev).await;
 }
 
-fn install_metrics_server() -> Result<(), metrics_exporter_prometheus::BuildError> {
+fn install_metrics_server() -> Result<(), PromBuildError> {
     println!("installing metrics server...");
     let host = [0, 0, 0, 0];
     let port = 8765;
