@@ -1,4 +1,5 @@
 use clap::{ArgAction, Parser};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio_util::sync::CancellationToken;
 use who_am_i::serve;
 
@@ -35,7 +36,7 @@ async fn main() {
     let args = Args::parse();
 
     if args.allowed_hosts.is_empty() {
-        panic!("at least one --one-click host must be set");
+        panic!("at least one --allowed-host host must be set");
     }
 
     println!("starting with allowed_hosts hosts:");
@@ -43,5 +44,24 @@ async fn main() {
         println!(" - {host}");
     }
 
+    if let Err(e) = install_metrics_server() {
+        eprintln!("failed to install metrics server: {e:?}");
+    };
+
     serve(shutdown, args.app_secret, args.allowed_hosts, args.dev).await;
+}
+
+fn install_metrics_server() -> Result<(), metrics_exporter_prometheus::BuildError> {
+    println!("installing metrics server...");
+    let host = [0, 0, 0, 0];
+    let port = 8765;
+    PrometheusBuilder::new()
+        .set_enable_unit_suffix(false)
+        .with_http_listener((host, port))
+        .install()?;
+    println!(
+        "metrics server installed! listening on http://{}.{}.{}.{}:{port}",
+        host[0], host[1], host[2], host[3]
+    );
+    Ok(())
 }

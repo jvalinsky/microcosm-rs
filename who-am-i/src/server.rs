@@ -172,6 +172,7 @@ async fn prompt(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let err = |reason, check_frame| {
+        metrics::counter!("whoami_auth_prompt", "ok" => "false", "reason" => reason).increment(1);
         let info = json!({ "reason": reason, "check_frame": check_frame });
         let html = RenderHtml("prompt-error", engine.clone(), info);
         (StatusCode::BAD_REQUEST, html).into_response()
@@ -222,15 +223,16 @@ async fn prompt(
             shutdown.child_token(),
         );
 
+        metrics::counter!("whoami_auth_prompt", "ok" => "true", "known" => "true").increment(1);
         let info = json!({
             "did": did,
             "fetch_key": fetch_key,
             "parent_host": parent_host,
             "parent_origin": parent_origin,
         });
-
         (frame_headers, jar, RenderHtml("prompt", engine, info)).into_response()
     } else {
+        metrics::counter!("whoami_auth_prompt", "ok" => "true", "known" => "false").increment(1);
         let info = json!({
             "parent_host": parent_host,
             "parent_origin": parent_origin,
@@ -250,7 +252,11 @@ async fn user_info(
     }): State<AppState>,
     Query(params): Query<UserInfoParams>,
 ) -> impl IntoResponse {
-    let err = |status, reason| (status, Json(json!({ "reason": reason }))).into_response();
+    let err = |status, reason: &str| {
+        metrics::counter!("whoami_user_info", "found" => "false", "reason" => reason.to_string())
+            .increment(1);
+        (status, Json(json!({ "reason": reason }))).into_response()
+    };
 
     let Some(task_handle) = resolve_handles.take(&params.fetch_key) else {
         return err(StatusCode::NOT_FOUND, "fetch key does not exist or expired");
@@ -279,7 +285,10 @@ async fn user_info(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("handle appears invalid: {reason}"),
         ),
-        Ok(Ok(handle)) => Json(json!({ "handle": handle })).into_response(),
+        Ok(Ok(handle)) => {
+            metrics::counter!("whoami_user_info", "found" => "true").increment(1);
+            Json(json!({ "handle": handle })).into_response()
+        }
     }
 }
 
@@ -299,7 +308,9 @@ async fn start_oauth(
     use atrium_identity::Error as IdError;
     use atrium_oauth::Error as OAuthError;
 
-    let err = |code, reason| {
+    let err = |code, reason: &str| {
+        metrics::counter!("whoami_auth_start", "ok" => "false", "reason" => reason.to_string())
+            .increment(1);
         let info = json!({
             "result": "fail",
             "reason": reason,
@@ -308,7 +319,6 @@ async fn start_oauth(
     };
 
     match oauth.begin(&params.handle).await {
-        Ok(auth_url) => (jar, Redirect::to(&auth_url)).into_response(),
         Err(OAuthError::Identity(
             IdError::NotFound | IdError::HttpStatus(StatusCode::NOT_FOUND),
         )) => err(StatusCode::NOT_FOUND, "handle not found"),
@@ -316,6 +326,10 @@ async fn start_oauth(
         Err(e) => {
             eprintln!("begin auth failed: {e:?}");
             err(StatusCode::INTERNAL_SERVER_ERROR, "unknown")
+        }
+        Ok(auth_url) => {
+            metrics::counter!("whoami_auth_start", "ok" => "true").increment(1);
+            (jar, Redirect::to(&auth_url)).into_response()
         }
     }
 }
@@ -331,7 +345,9 @@ async fn complete_oauth(
     Query(params): Query<OAuthCallbackParams>,
     jar: SignedCookieJar,
 ) -> Response {
-    let err = |code, result, reason| {
+    let err = |code, result, reason: &str| {
+        metrics::counter!("whoami_auth_complete", "ok" => "false", "reason" => reason.to_string())
+            .increment(1);
         let info = json!({
             "result": result,
             "reason": reason,
@@ -378,6 +394,8 @@ async fn complete_oauth(
         },
         shutdown.child_token(),
     );
+
+    metrics::counter!("whoami_auth_complete", "ok" => "true").increment(1);
     let info = json!({
         "did": did,
         "fetch_key": fetch_key,
@@ -386,6 +404,7 @@ async fn complete_oauth(
 }
 
 async fn disconnect(jar: SignedCookieJar) -> impl IntoResponse {
+    metrics::counter!("whoami_disconnect").increment(1);
     let jar = jar.remove(DID_COOKIE_KEY);
     (jar, Json(json!({ "ok": true })))
 }

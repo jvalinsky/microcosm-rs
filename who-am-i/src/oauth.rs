@@ -198,12 +198,15 @@ impl DnsTxtResolver for HickoryDnsTxtResolver {
         &self,
         query: &str,
     ) -> core::result::Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(self
-            .0
-            .txt_lookup(query)
-            .await?
-            .iter()
-            .map(|txt| txt.to_string())
-            .collect())
+        match self.0.txt_lookup(query).await {
+            Ok(r) => {
+                metrics::counter!("whoami_resolve_dns_txt", "success" => "true").increment(1);
+                Ok(r.iter().map(|r| r.to_string()).collect())
+            }
+            Err(e) => {
+                metrics::counter!("whoami_resolve_dns_txt", "success" => "false").increment(1);
+                Err(e.into())
+            }
+        }
     }
 }
