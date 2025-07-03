@@ -444,7 +444,7 @@ async fn get_collections(
         };
 
         if !(1..=200).contains(&limit) {
-            let msg = format!("limit not in 1..=200: {}", limit);
+            let msg = format!("limit not in 1..=200: {limit}");
             return Err(HttpError::for_bad_request(None, msg));
         }
 
@@ -577,7 +577,7 @@ async fn get_prefix(
         };
 
         if !(1..=200).contains(&limit) {
-            let msg = format!("limit not in 1..=200: {}", limit);
+            let msg = format!("limit not in 1..=200: {limit}");
             return Err(HttpError::for_bad_request(None, msg));
         }
 
@@ -649,7 +649,7 @@ async fn get_timeseries(
 
         let step = if let Some(secs) = q.step {
             if secs < 3600 {
-                let msg = format!("step is too small: {}", secs);
+                let msg = format!("step is too small: {secs}");
                 Err(HttpError::for_bad_request(None, msg))?;
             }
             (secs / 3600) * 3600 // trucate to hour
@@ -658,7 +658,7 @@ async fn get_timeseries(
         };
 
         let nsid = Nsid::new(q.collection).map_err(|e| {
-            HttpError::for_bad_request(None, format!("collection was not a valid NSID: {:?}", e))
+            HttpError::for_bad_request(None, format!("collection was not a valid NSID: {e:?}"))
         })?;
 
         let (range_cursors, series) = storage
@@ -762,6 +762,6 @@ pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
             ..Default::default()
         })
         .start()
-        .map_err(|error| format!("failed to start server: {}", error))?
+        .map_err(|error| format!("failed to start server: {error}"))?
         .await
 }

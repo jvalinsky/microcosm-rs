@@ -223,7 +223,7 @@ impl Batcher {
 
         let beginning = match self.current_batch.initial_cursor.map(|c| c.elapsed()) {
             None => "unknown".to_string(),
-            Some(Ok(t)) => format!("{:?}", t),
+            Some(Ok(t)) => format!("{t:?}"),
             Some(Err(e)) => format!("+{:?}", e.duration()),
         };
         log::trace!(

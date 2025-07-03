@@ -427,7 +427,7 @@ mod test {
         ] {
             let serialized = s.to_string().to_db_bytes()?;
             let prefixed = String::sub_prefix(pre)?;
-            assert_eq!(serialized.starts_with(&prefixed), is_pre, "{}", desc);
+            assert_eq!(serialized.starts_with(&prefixed), is_pre, "{desc}");
         }
         Ok(())
     }
@@ -445,7 +445,7 @@ mod test {
         ] {
             let serialized = Nsid::new(s.to_string()).unwrap().to_db_bytes()?;
             let prefixed = Nsid::sub_prefix(pre)?;
-            assert_eq!(serialized.starts_with(&prefixed), is_pre, "{}", desc);
+            assert_eq!(serialized.starts_with(&prefixed), is_pre, "{desc}");
         }
         Ok(())
     }

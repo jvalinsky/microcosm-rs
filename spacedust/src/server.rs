@@ -268,7 +268,7 @@ impl SharedExtractor for MultiSubscribeQuery {
     ) -> Result<MultiSubscribeQuery, HttpError> {
         let raw_query = ctx.request.uri().query().unwrap_or("");
         let q = serde_qs::from_str(raw_query).map_err(|e| {
-            HttpError::for_bad_request(None, format!("unable to parse query string: {}", e))
+            HttpError::for_bad_request(None, format!("unable to parse query string: {e}"))
         })?;
         Ok(q)
     }

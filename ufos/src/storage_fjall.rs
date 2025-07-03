@@ -1615,7 +1615,7 @@ impl StoreBackground for FjallBackground {
                         }
                     }
                     let dt = t0.elapsed();
-                    log::trace!("finished trimming {n} nsids in {:?}: {total_danglers} dangling and {total_deleted} total removed.", dt);
+                    log::trace!("finished trimming {n} nsids in {dt:?}: {total_danglers} dangling and {total_deleted} total removed.");
                     histogram!("storage_trim_dirty_nsids").record(completed.len() as f64);
                     histogram!("storage_trim_duration").record(dt.as_micros() as f64);
                     counter!("storage_trim_removed", "dangling" => "true").increment(total_danglers as u64);
