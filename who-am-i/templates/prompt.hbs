@@ -55,7 +55,7 @@ function err(e, msg) {
 
   loaderEl.classList.add('hidden');
   handleViewEl.textContent = `@${handle}`;
-  allowEl.addEventListener('click', () => shareAllow(handle));
+  allowEl.addEventListener('click', () => shareAllow(handle, {{{json token}}}));
 })();
 
 // anon user
@@ -108,7 +108,7 @@ window.addEventListener('storage', async e => {
 
   const handle = await lookUp(parsed.fetch_key);
 
-  shareAllow(handle);
+  shareAllow(handle, token);
 });
 
 async function lookUp(fetch_key) {
@@ -125,9 +125,9 @@ async function lookUp(fetch_key) {
   return info.handle;
 }
 
-const shareAllow = handle => {
+const shareAllow = (handle, token) => {
   top.postMessage(
-    { action: "allow", handle },
+    { action: "allow", handle, token },
     {{{json parent_origin}}},
   );
 }

@@ -16,6 +16,7 @@ ctrlc = "3.4.7"
 dashmap = "6.1.0"
 handlebars = { version = "6.3.2", features = ["dir_source"] }
 hickory-resolver = "0.25.2"
+jsonwebtoken = "9.3.1"
 metrics = "0.24.2"
 rand = "0.9.1"
 reqwest = { version = "0.12.22", features = ["native-tls-vendored"] }

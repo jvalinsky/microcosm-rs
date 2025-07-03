@@ -22,7 +22,9 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::{ExpiringTaskMap, OAuth, OAuthCallbackParams, OAuthCompleteError, ResolveHandleError};
+use crate::{
+    ExpiringTaskMap, OAuth, OAuthCallbackParams, OAuthCompleteError, ResolveHandleError, Tokens,
+};
 
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 const STYLE_CSS: &str = include_str!("../static/style.css");
@@ -41,6 +43,7 @@ struct AppState {
     pub oauth: Arc<OAuth>,
     pub resolve_handles: ExpiringTaskMap<Result<String, ResolveHandleError>>,
     pub shutdown: CancellationToken,
+    pub tokens: Arc<Tokens>,
 }
 
 impl FromRef<AppState> for Key {
@@ -52,6 +55,7 @@ impl FromRef<AppState> for Key {
 pub async fn serve(
     shutdown: CancellationToken,
     app_secret: String,
+    tokens: Tokens,
     allowed_hosts: Vec<String>,
     dev: bool,
 ) {
@@ -75,6 +79,7 @@ pub async fn serve(
         oauth: Arc::new(oauth),
         resolve_handles: ExpiringTaskMap::new(task_pickup_expiration),
         shutdown: shutdown.clone(),
+        tokens: Arc::new(tokens),
     };
 
     let app = Router::new()
@@ -166,6 +171,7 @@ async fn prompt(
         oauth,
         resolve_handles,
         shutdown,
+        tokens,
         ..
     }): State<AppState>,
     jar: SignedCookieJar,
@@ -214,6 +220,14 @@ async fn prompt(
         // push cookie expiry
         let jar = jar.add(cookie(&did));
 
+        let token = match tokens.mint(&*did) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("failed to create JWT: {e:?}");
+                return err("failed to create JWT", false);
+            }
+        };
+
         let fetch_key = resolve_handles.dispatch(
             {
                 let oauth = oauth.clone();
@@ -226,6 +240,7 @@ async fn prompt(
         metrics::counter!("whoami_auth_prompt", "ok" => "true", "known" => "true").increment(1);
         let info = json!({
             "did": did,
+            "token": token,
             "fetch_key": fetch_key,
             "parent_host": parent_host,
             "parent_origin": parent_origin,
@@ -340,6 +355,7 @@ async fn complete_oauth(
         resolve_handles,
         oauth,
         shutdown,
+        tokens,
         ..
     }): State<AppState>,
     Query(params): Query<OAuthCallbackParams>,
@@ -386,6 +402,18 @@ async fn complete_oauth(
 
     let jar = jar.add(cookie(&did));
 
+    let token = match tokens.mint(&*did) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("failed to create JWT: {e:?}");
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "fail",
+                "failed to create JWT",
+            );
+        }
+    };
+
     let fetch_key = resolve_handles.dispatch(
         {
             let oauth = oauth.clone();
@@ -398,6 +426,7 @@ async fn complete_oauth(
     metrics::counter!("whoami_auth_complete", "ok" => "true").increment(1);
     let info = json!({
         "did": did,
+        "token": token,
         "fetch_key": fetch_key,
     });
     (jar, RenderHtml("authorized", engine, info)).into_response()

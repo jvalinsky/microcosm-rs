@@ -1,7 +1,8 @@
 use clap::{ArgAction, Parser};
-use metrics_exporter_prometheus::{PrometheusBuilder, BuildError as PromBuildError};
+use metrics_exporter_prometheus::{BuildError as PromBuildError, PrometheusBuilder};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
-use who_am_i::serve;
+use who_am_i::{Tokens, serve};
 
 /// Aggregate links in the at-mosphere
 #[derive(Parser, Debug, Clone)]
@@ -14,6 +15,15 @@ struct Args {
     /// eg: `cat /dev/urandom | head -c 64 | base64`
     #[arg(long, env)]
     app_secret: String,
+    /// path to jwt key (PEM format)
+    ///
+    /// generate with:
+    /// ```bash
+    /// openssl ecparam -genkey -noout -name prime256v1 \
+    ///   | openssl pkcs8 -topk8 -nocrypt -out <PATH-TO-JWT-KEY>.pem
+    /// ```
+    #[arg(long)]
+    jwt_key: PathBuf,
     /// Enable dev mode
     ///
     /// enables automatic template reloading
@@ -44,11 +54,20 @@ async fn main() {
         println!(" - {host}");
     }
 
+    let tokens = Tokens::from_file(args.jwt_key).unwrap();
+
     if let Err(e) = install_metrics_server() {
         eprintln!("failed to install metrics server: {e:?}");
     };
 
-    serve(shutdown, args.app_secret, args.allowed_hosts, args.dev).await;
+    serve(
+        shutdown,
+        args.app_secret,
+        tokens,
+        args.allowed_hosts,
+        args.dev,
+    )
+    .await;
 }
 
 fn install_metrics_server() -> Result<(), PromBuildError> {
