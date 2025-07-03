@@ -17,7 +17,6 @@ dashmap = "6.1.0"
 handlebars = { version = "6.3.2", features = ["dir_source"] }
 hickory-resolver = "0.25.2"
 metrics = "0.24.2"
-metrics-exporter-prometheus = { version = "0.17.2", features = ["http-listener"] }
 rand = "0.9.1"
 reqwest = { version = "0.12.22", features = ["native-tls-vendored"] }
 serde = { version = "1.0.219", features = ["derive"] }
@@ -26,3 +25,8 @@ thiserror = "2.0.12"
 tokio = { version = "1.45.1", features = ["full", "macros"] }
 tokio-util = "0.7.15"
 url = "2.5.4"
+
+[dependencies.metrics-exporter-prometheus]
+version = "0.17.2"
+default-features = false
+features = ["http-listener", "async-runtime"]
