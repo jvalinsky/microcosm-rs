@@ -730,9 +730,9 @@ dependencies = [
 
 [[package]]
 name = "cardinality-estimator-safe"
-version = "4.0.1"
+version = "4.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b41ec0cd313b46ba3b508377544b25aa1d56d05ce9e657e77dfb001d5e726e53"
+checksum = "dc9887b4092040ea9a416fc3de9769ee7783e3cd5c168c941e6a8de69723b971"
 dependencies = [
  "digest",
  "enum_dispatch",
