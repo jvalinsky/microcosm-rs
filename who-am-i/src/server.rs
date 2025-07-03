@@ -91,6 +91,7 @@ pub async fn serve(
         .route("/auth", get(start_oauth))
         .route("/authorized", get(complete_oauth))
         .route("/disconnect", post(disconnect))
+        .route("/.well-known/jwks.json", get(jwks))
         .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:9997")
@@ -436,4 +437,12 @@ async fn disconnect(jar: SignedCookieJar) -> impl IntoResponse {
     metrics::counter!("whoami_disconnect").increment(1);
     let jar = jar.remove(DID_COOKIE_KEY);
     (jar, Json(json!({ "ok": true })))
+}
+
+async fn jwks(State(AppState { tokens, .. }): State<AppState>) -> impl IntoResponse {
+    let headers = [
+        (CONTENT_TYPE, "application/json"),
+        // (CACHE_CONTROL, "") // TODO
+    ];
+    (headers, tokens.jwks())
 }

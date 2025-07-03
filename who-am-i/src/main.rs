@@ -15,15 +15,27 @@ struct Args {
     /// eg: `cat /dev/urandom | head -c 64 | base64`
     #[arg(long, env)]
     app_secret: String,
-    /// path to jwt key (PEM format)
+    /// path to jwt private key (PEM pk8 format)
     ///
     /// generate with:
-    /// ```bash
-    /// openssl ecparam -genkey -noout -name prime256v1 \
-    ///   | openssl pkcs8 -topk8 -nocrypt -out <PATH-TO-JWT-KEY>.pem
-    /// ```
+    ///
+    ///     openssl ecparam -genkey -noout -name prime256v1 \
+    ///         | openssl pkcs8 -topk8 -nocrypt -out <PATH-TO-PRIV-KEY>.pem
     #[arg(long)]
-    jwt_key: PathBuf,
+    jwt_private_key: PathBuf,
+    /// path to pubkeys file (jwks format)
+    ///
+    /// get pem of pubkey from private key with:
+    ///
+    ///     openssl ec -in <PATH-TO-PRIV-KEY>.pem -pubout
+    ///
+    /// then convert to a jwk, probably with something less sketchy than an [online tool](https://jwkset.com/generate)
+    ///
+    /// wrap the jwk in an array, then in an object under "keys":
+    ///
+    ///     { "keys": [<JWK obj>] }
+    #[arg(long)]
+    jwks: PathBuf,
     /// Enable dev mode
     ///
     /// enables automatic template reloading
@@ -54,7 +66,7 @@ async fn main() {
         println!(" - {host}");
     }
 
-    let tokens = Tokens::from_file(args.jwt_key).unwrap();
+    let tokens = Tokens::from_files(args.jwt_private_key, args.jwks).unwrap();
 
     if let Err(e) = install_metrics_server() {
         eprintln!("failed to install metrics server: {e:?}");
