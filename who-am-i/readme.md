@@ -49,3 +49,18 @@ i will get back to oauth eventually and hopefully roll out a microcosm service t
 ### todo
 
 provide a pubkey-signed JWT of the identity (just the DID as `sub` probably). (**you probably SHOULD NOT USE THIS in any serious environment**)
+
+
+## building
+
+for raspi 1 model b:
+
+atrium-oauth uses reqwest with default tls config that requires openssl which `cross` doesn't have a good time getting the os deps for.
+
+fortunately, simply *enabling* a differnent tls feature for reqwest actually stops the default problematic one from causing problems, so we have a `reqwest` direct dependency with a feature enabled, even though it's never imported into actual code,
+
+it builds with
+
+```bash
+cross build --release --target arm-unknown-linux-gnueabihf
+```
