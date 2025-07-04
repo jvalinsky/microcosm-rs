@@ -2,7 +2,9 @@
 
 {{#*inline "main"}}
 <div class="mini-content">
-  This is a little identity-verifying service for microcosm demos.
+  <div class="explain">
+    <p>This is a little identity-verifying service for microcosm demos.</p>
+  </div>
 
   {{#if did}}
     <p id="error-message" class="hidden"></p>
@@ -68,6 +70,10 @@
         return info.handle;
       }
     </script>
+  {{else}}
+    <p id="prompt" class="detail no">
+      No identity connected.
+    </p>
   {{/if}}
 </div>
 {{/inline}}

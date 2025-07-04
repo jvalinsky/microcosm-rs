@@ -60,6 +60,15 @@ main {
   max-width: 21rem;
 }
 
+.explain {
+  border-bottom: 1px dashed #888;
+  margin-bottom: 1rem;
+  padding-bottom: 2rem;
+}
+.explain p {
+  text-align: left;
+}
+
 #error-message {
   font-size: 0.8rem;
   color: #a31;
@@ -76,6 +85,9 @@ p {
 }
 p.detail {
   font-size: 0.8rem;
+}
+p.detail.no {
+  font-style: italic;
 }
 .parent-host {
   font-weight: bold;
