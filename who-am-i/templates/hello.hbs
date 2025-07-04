@@ -38,7 +38,6 @@
       ({{{json did}}}) && (async () => {
 
         const handle = await lookUp({{{json fetch_key}}});
-        console.log('got handle', handle);
 
         loaderEl.classList.add('hidden');
         handleViewEl.textContent = `@${handle}`;
@@ -54,11 +53,13 @@
       })();
 
       async function lookUp(fetch_key) {
-        const user_info = new URL('/user-info', window.location);
-        user_info.searchParams.set('fetch-key', fetch_key);
         let info;
         try {
-          const resp = await fetch(user_info);
+          const resp = await fetch('/user-info', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ fetch_key }),
+          });
           if (!resp.ok) throw resp;
           info = await resp.json();
         } catch (e) {

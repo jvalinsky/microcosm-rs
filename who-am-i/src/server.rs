@@ -1,10 +1,10 @@
 use atrium_api::types::string::Did;
 use axum::{
     Router,
-    extract::{FromRef, Query, State},
+    extract::{FromRef, Json as ExtractJson, Query, State},
     http::{
         StatusCode,
-        header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, HeaderMap, REFERER, X_FRAME_OPTIONS},
+        header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, HeaderMap, REFERER},
     },
     response::{IntoResponse, Json, Redirect, Response},
     routing::{get, post},
@@ -87,7 +87,7 @@ pub async fn serve(
         .route("/favicon.ico", get(favicon)) // todo MIME
         .route("/style.css", get(css))
         .route("/prompt", get(prompt))
-        .route("/user-info", get(user_info))
+        .route("/user-info", post(user_info))
         .route("/auth", get(start_oauth))
         .route("/authorized", get(complete_oauth))
         .route("/disconnect", post(disconnect))
@@ -137,10 +137,7 @@ async fn hello(
     } else {
         json!({})
     };
-    let frame_headers = [
-        (X_FRAME_OPTIONS, "deny"),
-        (CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
-    ];
+    let frame_headers = [(CONTENT_SECURITY_POLICY, "frame-ancestors 'none'")];
     (frame_headers, jar, RenderHtml("hello", engine, info)).into_response()
 }
 
@@ -205,13 +202,8 @@ async fn prompt(
         return err("Referer origin is opaque", true);
     }
 
-    let frame_headers = [
-        (X_FRAME_OPTIONS, format!("allow-from {parent_origin}")),
-        (
-            CONTENT_SECURITY_POLICY,
-            format!("frame-ancestors {parent_origin}"),
-        ),
-    ];
+    let csp = format!("frame-ancestors {parent_origin}");
+    let frame_headers = [(CONTENT_SECURITY_POLICY, &csp)];
 
     if let Some(did) = jar.get(DID_COOKIE_KEY) {
         let Ok(did) = Did::new(did.value_trimmed().to_string()) else {
@@ -258,7 +250,6 @@ async fn prompt(
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 struct UserInfoParams {
     fetch_key: String,
 }
@@ -266,7 +257,7 @@ async fn user_info(
     State(AppState {
         resolve_handles, ..
     }): State<AppState>,
-    Query(params): Query<UserInfoParams>,
+    ExtractJson(params): ExtractJson<UserInfoParams>,
 ) -> impl IntoResponse {
     let err = |status, reason: &str| {
         metrics::counter!("whoami_user_info", "found" => "false", "reason" => reason.to_string())

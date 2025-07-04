@@ -49,8 +49,8 @@ impl<T: Send + 'static> ExpiringTaskMap<T> {
                 .run_until_cancelled(sleep(expiration))
                 .await
                 .is_some()
+            // the (sleep) task completed first
             {
-                // is Some if the (sleep) task completed first
                 map.remove(&k);
                 cancel.cancel();
                 metrics::counter!("whoami_task_map_completions", "result" => "expired")
@@ -62,9 +62,14 @@ impl<T: Send + 'static> ExpiringTaskMap<T> {
     }
 
     pub fn take(&self, key: &str) -> Option<JoinHandle<T>> {
-        metrics::counter!("whoami_task_map_completions", "result" => "retrieved").increment(1);
-        // when the _guard drops, the token gets cancelled for us
-        self.0.map.remove(key).map(|(_, (_guard, handle))| handle)
+        if let Some((_key, (_guard, handle))) = self.0.map.remove(key) {
+            // when the _guard drops, it cancels the token for us
+            metrics::counter!("whoami_task_map_completions", "result" => "retrieved").increment(1);
+            Some(handle)
+        } else {
+            metrics::counter!("whoami_task_map_gones").increment(1);
+            None
+        }
     }
 }
 
