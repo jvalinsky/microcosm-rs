@@ -139,7 +139,7 @@ impl OAuth {
                     token_endpoint_auth_method: AuthMethod::PrivateKeyJwt,
                     grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
                     scopes: READONLY_SCOPE.to_vec(),
-                    jwks_uri: Some(format!("{base}/.well-known/at-jwks.json")),
+                    jwks_uri: Some(format!("{base}/.well-known/jwks.json")),
                     token_endpoint_auth_signing_alg: Some(String::from("ES256")),
                 },
                 keys: Some(vec![key]),
