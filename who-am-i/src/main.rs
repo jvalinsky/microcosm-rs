@@ -31,21 +31,6 @@ struct Args {
     ///         | openssl pkcs8 -topk8 -nocrypt -out <PATH-TO-PRIV-KEY>.pem
     #[arg(long)]
     jwt_private_key: PathBuf,
-    /// path to pubkeys file (jwks format)
-    ///
-    /// get pem of pubkey from private key with:
-    ///
-    ///     openssl ec -in <PATH-TO-PRIV-KEY>.pem -pubout
-    ///
-    /// then convert to a jwk, probably with something less sketchy than an [online tool](https://jwkset.com/generate)
-    ///
-    /// wrap the jwk in an array, then in an object under "keys":
-    ///
-    ///     { "keys": [<JWK obj>] }
-    ///
-    /// TODO: remove this, serve automatically
-    #[arg(long)]
-    jwks: PathBuf,
     /// this server's client-reachable base url, for oauth redirect + jwt check
     ///
     /// required unless running in localhost mode with --dev
@@ -100,7 +85,7 @@ async fn main() {
         println!(" - {host}");
     }
 
-    let tokens = Tokens::from_files(args.jwt_private_key, args.jwks).unwrap();
+    let tokens = Tokens::from_files(args.jwt_private_key).unwrap();
 
     if let Err(e) = install_metrics_server() {
         eprintln!("failed to install metrics server: {e:?}");

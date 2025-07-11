@@ -99,7 +99,6 @@ pub async fn serve(
         .route("/auth", get(start_oauth))
         .route("/authorized", get(complete_oauth))
         .route("/disconnect", post(disconnect))
-        .route("/.well-known/at-jwks.json", get(at_jwks)) // todo combine jwks eps (key id is enough?)
         .route("/.well-known/jwks.json", get(jwks))
         .with_state(state);
 
@@ -315,10 +314,6 @@ async fn client_metadata(
     Json(oauth.client_metadata())
 }
 
-async fn at_jwks(State(AppState { oauth, .. }): State<AppState>) -> Json<JwkSet> {
-    Json(oauth.jwks())
-}
-
 #[derive(Debug, Deserialize)]
 struct BeginOauthParams {
     handle: String,
@@ -450,10 +445,8 @@ async fn disconnect(jar: SignedCookieJar) -> impl IntoResponse {
     (jar, Json(json!({ "ok": true })))
 }
 
-async fn jwks(State(AppState { tokens, .. }): State<AppState>) -> impl IntoResponse {
-    let headers = [
-        (CONTENT_TYPE, "application/json"),
-        // (CACHE_CONTROL, "") // TODO
-    ];
-    (headers, tokens.jwks())
+async fn jwks(State(AppState { oauth, tokens, .. }): State<AppState>) -> Json<JwkSet> {
+    let mut jwks = oauth.jwks();
+    jwks.keys.push(tokens.jwk());
+    Json(jwks)
 }
