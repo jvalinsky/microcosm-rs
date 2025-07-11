@@ -1,4 +1,5 @@
 use atrium_api::types::string::Did;
+use atrium_oauth::OAuthClientMetadata;
 use axum::{
     Router,
     extract::{FromRef, Json as ExtractJson, Query, State},
@@ -12,6 +13,8 @@ use axum::{
 use axum_extra::extract::cookie::{Cookie, Key, SameSite, SignedCookieJar};
 use axum_template::{RenderHtml, engine::Engine};
 use handlebars::{Handlebars, handlebars_helper};
+use jose_jwk::JwkSet;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -52,10 +55,14 @@ impl FromRef<AppState> for Key {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     shutdown: CancellationToken,
     app_secret: String,
+    oauth_private_key: Option<PathBuf>,
     tokens: Tokens,
+    base: String,
+    bind: String,
     allowed_hosts: Vec<String>,
     dev: bool,
 ) {
@@ -70,7 +77,7 @@ pub async fn serve(
     // clients have to pick up their identity-resolving tasks within this period
     let task_pickup_expiration = Duration::from_secs(15);
 
-    let oauth = OAuth::new().unwrap();
+    let oauth = OAuth::new(oauth_private_key, base).unwrap();
 
     let state = AppState {
         engine: Engine::new(hbs),
@@ -88,13 +95,16 @@ pub async fn serve(
         .route("/style.css", get(css))
         .route("/prompt", get(prompt))
         .route("/user-info", post(user_info))
+        .route("/client-metadata.json", get(client_metadata))
         .route("/auth", get(start_oauth))
         .route("/authorized", get(complete_oauth))
         .route("/disconnect", post(disconnect))
+        .route("/.well-known/at-jwks.json", get(at_jwks)) // todo combine jwks eps (key id is enough?)
         .route("/.well-known/jwks.json", get(jwks))
         .with_state(state);
 
-    let listener = TcpListener::bind("0.0.0.0:9997")
+    eprintln!("starting server at http://{bind}");
+    let listener = TcpListener::bind(bind)
         .await
         .expect("listener binding to work");
 
@@ -297,6 +307,16 @@ async fn user_info(
             Json(json!({ "handle": handle })).into_response()
         }
     }
+}
+
+async fn client_metadata(
+    State(AppState { oauth, .. }): State<AppState>,
+) -> Json<OAuthClientMetadata> {
+    Json(oauth.client_metadata())
+}
+
+async fn at_jwks(State(AppState { oauth, .. }): State<AppState>) -> Json<JwkSet> {
+    Json(oauth.jwks())
 }
 
 #[derive(Debug, Deserialize)]

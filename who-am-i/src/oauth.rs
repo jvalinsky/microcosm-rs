@@ -1,3 +1,10 @@
+use jose_jwk::Class;
+use jose_jwk::Jwk;
+use jose_jwk::Key;
+use jose_jwk::Parameters;
+use std::fs;
+use std::path::PathBuf;
+// use p256::SecretKey;
 use atrium_api::{agent::SessionManager, types::string::Did};
 use atrium_common::resolver::Resolver;
 use atrium_identity::{
@@ -5,11 +12,15 @@ use atrium_identity::{
     handle::{AtprotoHandleResolver, AtprotoHandleResolverConfig, DnsTxtResolver},
 };
 use atrium_oauth::{
-    AtprotoLocalhostClientMetadata, AuthorizeOptions, CallbackParams, DefaultHttpClient,
-    KnownScope, OAuthClient, OAuthClientConfig, OAuthResolverConfig, Scope,
+    AtprotoClientMetadata, AtprotoLocalhostClientMetadata, AuthMethod, AuthorizeOptions,
+    CallbackParams, DefaultHttpClient, GrantType, KnownScope, OAuthClient, OAuthClientConfig,
+    OAuthClientMetadata, OAuthResolverConfig, Scope,
     store::{session::MemorySessionStore, state::MemoryStateStore},
 };
+use elliptic_curve::SecretKey;
 use hickory_resolver::{ResolveError, TokioResolver};
+use jose_jwk::JwkSet;
+use pkcs8::DecodePrivateKey;
 use serde::Deserialize;
 use std::sync::Arc;
 use thiserror::Error;
@@ -83,7 +94,7 @@ pub enum ResolveHandleError {
 }
 
 impl OAuth {
-    pub fn new() -> Result<Self, AuthSetupError> {
+    pub fn new(oauth_private_key: Option<PathBuf>, base: String) -> Result<Self, AuthSetupError> {
         let http_client = Arc::new(DefaultHttpClient::default());
         let did_resolver = || {
             CommonDidResolver::new(CommonDidResolverConfig {
@@ -93,31 +104,76 @@ impl OAuth {
         };
         let dns_txt_resolver =
             HickoryDnsTxtResolver::new().map_err(AuthSetupError::HickoryResolverError)?;
-        let client_config = OAuthClientConfig {
-            client_metadata: AtprotoLocalhostClientMetadata {
-                redirect_uris: Some(vec![String::from("http://127.0.0.1:9997/authorized")]),
-                scopes: Some(READONLY_SCOPE.to_vec()),
-            },
-            keys: None,
-            resolver: OAuthResolverConfig {
-                did_resolver: did_resolver(),
-                handle_resolver: AtprotoHandleResolver::new(AtprotoHandleResolverConfig {
-                    dns_txt_resolver,
-                    http_client: Arc::clone(&http_client),
-                }),
-                authorization_server_metadata: Default::default(),
-                protected_resource_metadata: Default::default(),
-            },
-            state_store: MemoryStateStore::default(),
-            session_store: MemorySessionStore::default(),
+
+        let resolver = OAuthResolverConfig {
+            did_resolver: did_resolver(),
+            handle_resolver: AtprotoHandleResolver::new(AtprotoHandleResolverConfig {
+                dns_txt_resolver,
+                http_client: Arc::clone(&http_client),
+            }),
+            authorization_server_metadata: Default::default(),
+            protected_resource_metadata: Default::default(),
         };
 
-        let client = OAuthClient::new(client_config).map_err(AuthSetupError::AtriumClientError)?;
+        let state_store = MemoryStateStore::default();
+        let session_store = MemorySessionStore::default();
+
+        let client = if let Some(path) = oauth_private_key {
+            let key_contents: Vec<u8> = fs::read(path).unwrap();
+            let key_string = String::from_utf8(key_contents).unwrap();
+            let key = SecretKey::<p256::NistP256>::from_pkcs8_pem(&key_string)
+                .map(|secret_key| Jwk {
+                    key: Key::from(&secret_key.into()),
+                    prm: Parameters {
+                        kid: Some("at-oauth-00".to_string()),
+                        cls: Some(Class::Signing),
+                        ..Default::default()
+                    },
+                })
+                .expect("to get private key");
+            OAuthClient::new(OAuthClientConfig {
+                client_metadata: AtprotoClientMetadata {
+                    client_id: format!("{base}/client-metadata.json"),
+                    client_uri: Some(base.clone()),
+                    redirect_uris: vec![format!("{base}/authorized")],
+                    token_endpoint_auth_method: AuthMethod::PrivateKeyJwt,
+                    grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+                    scopes: READONLY_SCOPE.to_vec(),
+                    jwks_uri: Some(format!("{base}/.well-known/at-jwks.json")),
+                    token_endpoint_auth_signing_alg: Some(String::from("ES256")),
+                },
+                keys: Some(vec![key]),
+                resolver,
+                state_store,
+                session_store,
+            })
+            .map_err(AuthSetupError::AtriumClientError)?
+        } else {
+            OAuthClient::new(OAuthClientConfig {
+                client_metadata: AtprotoLocalhostClientMetadata {
+                    redirect_uris: Some(vec![String::from("http://127.0.0.1:9997/authorized")]),
+                    scopes: Some(READONLY_SCOPE.to_vec()),
+                },
+                keys: None,
+                resolver,
+                state_store,
+                session_store,
+            })
+            .map_err(AuthSetupError::AtriumClientError)?
+        };
 
         Ok(Self {
             client: Arc::new(client),
             did_resolver: Arc::new(did_resolver()),
         })
+    }
+
+    pub fn client_metadata(&self) -> OAuthClientMetadata {
+        self.client.client_metadata.clone()
+    }
+
+    pub fn jwks(&self) -> JwkSet {
+        self.client.jwks()
     }
 
     pub async fn begin(&self, handle: &str) -> Result<String, atrium_oauth::Error> {
