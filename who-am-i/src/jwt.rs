@@ -74,11 +74,11 @@ impl Tokens {
         let dt_exp = dt_now + Duration::from_secs(30 * 86_400);
         let exp = dt_exp.as_secs();
 
-        Ok(encode(
-            &Header::new(Algorithm::ES256),
-            &Claims { sub, exp },
-            &self.encoding_key,
-        )?)
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some("who-am-i-00".to_string());
+        // todo: consider setting jku?
+
+        Ok(encode(&header, &Claims { sub, exp }, &self.encoding_key)?)
     }
 
     pub fn jwk(&self) -> Jwk {
