@@ -165,6 +165,13 @@ p.detail.no {
   color: #285;
 }
 
+#need-storage {
+  font-size: 0.8rem;
+}
+.problem {
+  color: #a31;
+}
+
 #or {
   font-size: 0.8rem;
   text-align: center;
@@ -181,4 +188,8 @@ input.handle {
 
 .hidden {
   display: none !important;
+}
+
+.hello-connect-plz {
+  margin: 1.667rem 0 0.667rem;
 }

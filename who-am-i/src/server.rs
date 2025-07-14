@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Json, Redirect, Response},
     routing::{get, post},
 };
-use axum_extra::extract::cookie::{Cookie, Key, SameSite, SignedCookieJar};
+use axum_extra::extract::cookie::{Cookie, Expiration, Key, SameSite, SignedCookieJar};
 use axum_template::{RenderHtml, engine::Engine};
 use handlebars::{Handlebars, handlebars_helper};
 use jose_jwk::JwkSet;
@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -32,6 +32,7 @@ use crate::{
 const FAVICON: &[u8] = include_bytes!("../static/favicon.ico");
 const STYLE_CSS: &str = include_str!("../static/style.css");
 
+const HELLO_COOKIE_KEY: &str = "hello-who-am-i";
 const DID_COOKIE_KEY: &str = "did";
 
 const COOKIE_EXPIRATION: Duration = Duration::from_secs(30 * 86_400);
@@ -113,6 +114,11 @@ pub async fn serve(
         .unwrap();
 }
 
+#[derive(Debug, Deserialize)]
+struct HelloQuery {
+    auth_reload: Option<String>,
+    auth_failed: Option<String>,
+}
 async fn hello(
     State(AppState {
         engine,
@@ -121,8 +127,14 @@ async fn hello(
         oauth,
         ..
     }): State<AppState>,
+    Query(params): Query<HelloQuery>,
     mut jar: SignedCookieJar,
 ) -> Response {
+    let is_auth_reload = params.auth_reload.is_some();
+    let auth_failed = params.auth_failed.is_some();
+    let no_cookie = jar.get(HELLO_COOKIE_KEY).is_none();
+    jar = jar.add(hello_cookie());
+
     let info = if let Some(did) = jar.get(DID_COOKIE_KEY) {
         if let Ok(did) = Did::new(did.value_trimmed().to_string()) {
             // push cookie expiry
@@ -138,13 +150,24 @@ async fn hello(
             json!({
                 "did": did,
                 "fetch_key": fetch_key,
+                "is_auth_reload": is_auth_reload,
+                "auth_failed": auth_failed,
+                "no_cookie": no_cookie,
             })
         } else {
             jar = jar.remove(DID_COOKIE_KEY);
-            json!({})
+            json!({
+                "is_auth_reload": is_auth_reload,
+                "auth_failed": auth_failed,
+                "no_cookie": no_cookie,
+            })
         }
     } else {
-        json!({})
+        json!({
+            "is_auth_reload": is_auth_reload,
+            "auth_failed": auth_failed,
+            "no_cookie": no_cookie,
+        })
     };
     let frame_headers = [(CONTENT_SECURITY_POLICY, "frame-ancestors 'none'")];
     (frame_headers, jar, RenderHtml("hello", engine, info)).into_response()
@@ -162,12 +185,29 @@ async fn favicon() -> impl IntoResponse {
     ([(CONTENT_TYPE, "image/x-icon")], FAVICON)
 }
 
+fn hello_cookie() -> Cookie<'static> {
+    Cookie::build((HELLO_COOKIE_KEY, "hiiii"))
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::None)
+        .expires(Expiration::DateTime(
+            (SystemTime::now() + COOKIE_EXPIRATION).into(),
+        )) // wtf safari needs this to not be a session cookie??
+        .max_age(COOKIE_EXPIRATION.try_into().unwrap())
+        .path("/")
+        .into()
+}
+
 fn cookie(did: &Did) -> Cookie<'static> {
     Cookie::build((DID_COOKIE_KEY, did.to_string()))
         .http_only(true)
         .secure(true)
         .same_site(SameSite::None)
+        .expires(Expiration::DateTime(
+            (SystemTime::now() + COOKIE_EXPIRATION).into(),
+        )) // wtf safari needs this to not be a session cookie??
         .max_age(COOKIE_EXPIRATION.try_into().unwrap())
+        .path("/")
         .into()
 }
 

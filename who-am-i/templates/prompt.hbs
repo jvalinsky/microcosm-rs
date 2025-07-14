@@ -27,6 +27,11 @@
   </div>
 </div>
 
+<div id="need-storage" class="hidden">
+  <p class="problem">Sorry, your browser is blocking access.</p>
+  <p>Try <a href="/" target="_blank">connecting directly</a> first (but no promises).</p>
+</div>
+
 
 
 <script>
@@ -39,6 +44,7 @@ const handleViewEl = document.getElementById('handle-view');
 const formEl = document.getElementById('form-action'); // for anon
 const allowEl = document.getElementById('handle-action'); // for known-did
 const connectEl = document.getElementById('connect'); // for anon
+const needStorageEl = document.getElementById('need-storage'); // for safari/frame isolation
 
 function err(e, msg) {
   loaderEl.classList.add('hidden');
@@ -66,6 +72,18 @@ formEl.onsubmit = e => {
   window.open(url, '_blank');
 };
 
+// check if we may be partitioned, preventing access after auth completion
+// this should only happen if on a browser that implements storage access api
+if ('hasStorageAccess' in document) {
+  document.hasStorageAccess().then((hasAccess) => {
+    if (!hasAccess) {
+      promptEl.classList.add('hidden');
+      infoEl.classList.add('hidden');
+      needStorageEl.classList.remove('hidden');
+    }
+  });
+}
+
 window.addEventListener('storage', async e => {
   // here's a fun minor vuln: we can't tell which flow triggers the storage event.
   // so if you have two flows going, it grants for both (or the first responder?) if you grant for either.
@@ -79,7 +97,6 @@ window.addEventListener('storage', async e => {
     console.error("hmm, heard from localstorage but did not get DID", details, e);
     err('sorry, something went wrong getting your details');
   }
-  localStorage.removeItem(e.key);
 
   let parsed;
   try {
