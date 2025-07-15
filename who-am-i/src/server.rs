@@ -5,7 +5,7 @@ use axum::{
     extract::{FromRef, Json as ExtractJson, Query, State},
     http::{
         StatusCode,
-        header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, HeaderMap, REFERER},
+        header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, HeaderMap, ORIGIN, REFERER},
     },
     response::{IntoResponse, Json, Redirect, Response},
     routing::{get, post},
@@ -211,6 +211,11 @@ fn cookie(did: &Did) -> Cookie<'static> {
         .into()
 }
 
+#[derive(Debug, Deserialize)]
+struct PromptQuery {
+    // this must *ONLY* be used for the postmessage target origin
+    app: Option<String>,
+}
 async fn prompt(
     State(AppState {
         allowed_hosts,
@@ -221,42 +226,64 @@ async fn prompt(
         tokens,
         ..
     }): State<AppState>,
+    Query(params): Query<PromptQuery>,
     jar: SignedCookieJar,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let err = |reason, check_frame| {
+    let err = |reason, check_frame, detail| {
         metrics::counter!("whoami_auth_prompt", "ok" => "false", "reason" => reason).increment(1);
-        let info = json!({ "reason": reason, "check_frame": check_frame });
+        let info = json!({
+            "reason": reason,
+            "check_frame": check_frame,
+            "detail": detail,
+        });
         let html = RenderHtml("prompt-error", engine.clone(), info);
         (StatusCode::BAD_REQUEST, html).into_response()
     };
 
-    let Some(referrer) = headers.get(REFERER) else {
-        return err("Missing referer", true);
+    let Some(parent) = headers.get(ORIGIN).or_else(|| {
+        eprintln!("referrer fallback");
+        // TODO: referer should only be used for localhost??
+        headers.get(REFERER)
+    }) else {
+        return err("Missing origin and no referrer for fallback", true, None);
     };
-    let Ok(referrer) = referrer.to_str() else {
-        return err("Unreadable referer", true);
+    let Ok(parent) = parent.to_str() else {
+        return err("Unreadable origin or referrer", true, None);
     };
-    let Ok(url) = Url::parse(referrer) else {
-        return err("Bad referer", true);
+    eprintln!(
+        "rolling with parent: {parent:?} (from origin? {})",
+        headers.get(ORIGIN).is_some()
+    );
+    let Ok(url) = Url::parse(parent) else {
+        return err("Bad origin or referrer", true, None);
     };
     let Some(parent_host) = url.host_str() else {
-        return err("Referer missing host", true);
+        return err("Origin or referrer missing host", true, None);
     };
     if !allowed_hosts.contains(parent_host) {
-        return err("Login is not allowed on this page", false);
+        return err(
+            "Login is not allowed on this page",
+            false,
+            Some(parent_host),
+        );
     }
     let parent_origin = url.origin().ascii_serialization();
     if parent_origin == "null" {
-        return err("Referer origin is opaque", true);
+        return err("Origin or referrer header value is opaque", true, None);
     }
 
-    let csp = format!("frame-ancestors {parent_origin}");
+    let all_allowed = allowed_hosts
+        .iter()
+        .map(|h| format!("https://{h}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let csp = format!("frame-ancestors 'self' {parent_origin} {all_allowed}");
     let frame_headers = [(CONTENT_SECURITY_POLICY, &csp)];
 
     if let Some(did) = jar.get(DID_COOKIE_KEY) {
         let Ok(did) = Did::new(did.value_trimmed().to_string()) else {
-            return err("Bad cookie", false);
+            return err("Bad cookie", false, None);
         };
 
         // push cookie expiry
@@ -266,7 +293,7 @@ async fn prompt(
             Ok(t) => t,
             Err(e) => {
                 eprintln!("failed to create JWT: {e:?}");
-                return err("failed to create JWT", false);
+                return err("failed to create JWT", false, None);
             }
         };
 
@@ -286,6 +313,7 @@ async fn prompt(
             "fetch_key": fetch_key,
             "parent_host": parent_host,
             "parent_origin": parent_origin,
+            "parent_target": params.app.map(|h| format!("https://{h}")),
         });
         (frame_headers, jar, RenderHtml("prompt", engine, info)).into_response()
     } else {

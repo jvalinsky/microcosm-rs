@@ -89,7 +89,10 @@ if ('hasStorageAccess' in document) {
           cookies: true,
           localStorage: true,
         }).then(
-          () => desperation.textContent = "(maybe helped?)",
+          () => {
+            desperation.textContent = "(maybe helped?)";
+            setTimeout(() => location.reload(), 350);
+          },
           () => desperation.textContent = "(doubtful)",
         );
       })
@@ -157,18 +160,24 @@ async function lookUp(fetch_key) {
   return info.handle;
 }
 
+const parentTarget = {{{json parent_target}}} ?? {{{json parent_origin}}};
+
 const shareAllow = (handle, token) => {
-  top.postMessage(
-    { action: "allow", handle, token },
-    {{{json parent_origin}}},
-  );
+  try {
+    top.postMessage(
+      { action: "allow", handle, token },
+      parentTarget,
+    );
+  } catch (e) {
+    err(e, 'Identity verified but failed to connect with app');
+  };
   promptEl.textContent = '✔️ shared';
 }
 
 const shareDeny = reason => {
   top.postMessage(
     { action: "deny", reason },
-    {{{json parent_origin}}},
+    parentTarget,
   );
 }
 </script>
