@@ -29,7 +29,10 @@
 
 <div id="need-storage" class="hidden">
   <p class="problem">Sorry, your browser is blocking access.</p>
-  <p>Try <a href="/" target="_blank">connecting directly</a> first (but no promises).</p>
+  <p>
+    Try <a href="/" target="_blank">connecting directly</a> first (but no promises).
+    Clicking <button id="desperation">this button</button> might also help.
+  </p>
 </div>
 
 
@@ -45,6 +48,7 @@ const formEl = document.getElementById('form-action'); // for anon
 const allowEl = document.getElementById('handle-action'); // for known-did
 const connectEl = document.getElementById('connect'); // for anon
 const needStorageEl = document.getElementById('need-storage'); // for safari/frame isolation
+const desperationEl = document.getElementById('desperation');
 
 function err(e, msg) {
   loaderEl.classList.add('hidden');
@@ -80,6 +84,15 @@ if ('hasStorageAccess' in document) {
       promptEl.classList.add('hidden');
       infoEl.classList.add('hidden');
       needStorageEl.classList.remove('hidden');
+      desperation.addEventListener('click', () => {
+        document.requestStorageAccess({
+          cookies: true,
+          localStorage: true,
+        }).then(
+          () => desperation.textContent = "(maybe helped?)",
+          () => desperation.textContent = "(doubtful)",
+        );
+      })
     }
   });
 }
