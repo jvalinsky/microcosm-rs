@@ -6,7 +6,6 @@ use slingshot::{consume, error::MainTaskError, firehose_cache, serve};
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
-
 /// Slingshot record edge cache
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -65,7 +64,6 @@ async fn main() -> Result<(), String> {
         Ok(())
     });
 
-
     tokio::select! {
         _ = shutdown.cancelled() => log::warn!("shutdown requested"),
         Some(r) = tasks.join_next() => {
@@ -111,4 +109,3 @@ fn install_metrics_server() -> Result<(), metrics_exporter_prometheus::BuildErro
     );
     Ok(())
 }
-

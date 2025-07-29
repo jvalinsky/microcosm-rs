@@ -1,9 +1,10 @@
-use std::path::Path;
 use crate::CachedRecord;
-use foyer::{HybridCache, DirectFsDeviceOptions, Engine, HybridCacheBuilder};
+use foyer::{DirectFsDeviceOptions, Engine, HybridCache, HybridCacheBuilder};
+use std::path::Path;
 
-
-pub async fn firehose_cache(dir: impl AsRef<Path>) -> Result<HybridCache<String, CachedRecord>, String> {
+pub async fn firehose_cache(
+    dir: impl AsRef<Path>,
+) -> Result<HybridCache<String, CachedRecord>, String> {
     let cache = HybridCacheBuilder::new()
         .with_name("firehose")
         .memory(64 * 2_usize.pow(20))

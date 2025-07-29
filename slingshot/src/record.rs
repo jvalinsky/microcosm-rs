@@ -1,6 +1,6 @@
-use serde_json::value::RawValue;
-use serde::{Serialize, Deserialize};
 use jetstream::exports::Cid;
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RawRecord {
@@ -23,7 +23,8 @@ impl From<&RawRecord> for (Cid, Box<RawValue>) {
     fn from(RawRecord { cid, record }: &RawRecord) -> Self {
         (
             cid.clone(),
-            RawValue::from_string(record.to_string()).expect("stored string from RawValue to be valid"),
+            RawValue::from_string(record.to_string())
+                .expect("stored string from RawValue to be valid"),
         )
     }
 }

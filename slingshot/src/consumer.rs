@@ -1,6 +1,6 @@
 use crate::CachedRecord;
-use foyer::HybridCache;
 use crate::error::ConsumerError;
+use foyer::HybridCache;
 use jetstream::{
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
     events::{CommitOp, Cursor, EventKind},

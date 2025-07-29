@@ -1,15 +1,10 @@
+use crate::{CachedRecord, error::ServerError};
 use foyer::HybridCache;
-use crate::{error::ServerError, CachedRecord};
 use tokio_util::sync::CancellationToken;
 
-use poem::{listener::TcpListener, Route, Server};
+use poem::{Route, Server, listener::TcpListener};
 use poem_openapi::{
-    payload::Json,
-    param::Query,
-    OpenApi, OpenApiService,
-    ApiResponse,
-    Object,
-    types::Example,
+    ApiResponse, Object, OpenApi, OpenApiService, param::Query, payload::Json, types::Example,
 };
 
 fn example_did() -> String {
@@ -39,7 +34,6 @@ impl Example for XrpcErrorResponseObject {
     }
 }
 
-
 fn bad_request_handler(err: poem::Error) -> GetRecordResponse {
     GetRecordResponse::BadRequest(Json(XrpcErrorResponseObject {
         error: "InvalidRequest".to_string(),
@@ -63,7 +57,12 @@ struct FoundRecordResponseObject {
 impl Example for FoundRecordResponseObject {
     fn example() -> Self {
         Self {
-            uri: format!("at://{}/{}/{}", example_did(), example_collection(), example_rkey()),
+            uri: format!(
+                "at://{}/{}/{}",
+                example_did(),
+                example_collection(),
+                example_rkey()
+            ),
             cid: Some("bafyreialv3mzvvxaoyrfrwoer3xmabbmdchvrbyhayd7bga47qjbycy74e".to_string()),
             value: serde_json::json!({
                 "$type": "app.bsky.feed.like",
@@ -130,15 +129,11 @@ impl Xrpc {
         cid: Query<Option<String>>,
     ) -> GetRecordResponse {
         // TODO: yeah yeah
-        let at_uri = format!(
-            "at://{}/{}/{}",
-            &*repo, &*collection, &*rkey
-        );
+        let at_uri = format!("at://{}/{}/{}", &*repo, &*collection, &*rkey);
 
-        let entry = self.cache
-            .fetch(at_uri.clone(), || async move {
-                todo!()
-            })
+        let entry = self
+            .cache
+            .fetch(at_uri.clone(), || async move { todo!() })
             .await
             .unwrap();
 
@@ -151,23 +146,23 @@ impl Xrpc {
                 if cid.clone().map(|c| c != found_cid).unwrap_or(false) {
                     return GetRecordResponse::BadRequest(Json(XrpcErrorResponseObject {
                         error: "RecordNotFound".to_string(),
-                        message: "A record was found but its CID did not match that requested".to_string(),
+                        message: "A record was found but its CID did not match that requested"
+                            .to_string(),
                     }));
                 }
                 // TODO: thank u stellz: https://gist.github.com/stella3d/51e679e55b264adff89d00a1e58d0272
-                let value = serde_json::from_str(raw_value.get()).expect("RawValue to be valid json");
+                let value =
+                    serde_json::from_str(raw_value.get()).expect("RawValue to be valid json");
                 GetRecordResponse::Ok(Json(FoundRecordResponseObject {
                     uri: at_uri,
                     cid: Some(found_cid),
                     value,
                 }))
-            },
-            CachedRecord::Deleted => {
-                GetRecordResponse::BadRequest(Json(XrpcErrorResponseObject {
-                    error: "RecordNotFound".to_string(),
-                    message: "This record was deleted".to_string(),
-                }))
             }
+            CachedRecord::Deleted => GetRecordResponse::BadRequest(Json(XrpcErrorResponseObject {
+                error: "RecordNotFound".to_string(),
+                message: "This record was deleted".to_string(),
+            })),
         }
     }
 }
@@ -176,10 +171,9 @@ pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
     _shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
-    let api_service =
-        OpenApiService::new(Xrpc { cache }, "Slingshot", env!("CARGO_PKG_VERSION"))
-            .server("http://localhost:3000")
-            .url_prefix("/xrpc");
+    let api_service = OpenApiService::new(Xrpc { cache }, "Slingshot", env!("CARGO_PKG_VERSION"))
+        .server("http://localhost:3000")
+        .url_prefix("/xrpc");
 
     let app = Route::new()
         .nest("/", api_service.scalar())
