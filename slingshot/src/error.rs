@@ -14,18 +14,8 @@ pub enum ConsumerError {
 
 #[derive(Debug, Error)]
 pub enum ServerError {
-    #[error("failed to configure server logger: {0}")]
-    ConfigLogError(std::io::Error),
-    #[error("failed to render json for openapi: {0}")]
-    OpenApiJsonFail(serde_json::Error),
-    #[error(transparent)]
-    FailedToBuildServer(#[from] dropshot::BuildError),
     #[error("server exited: {0}")]
     ServerExited(String),
-    #[error("server closed badly: {0}")]
-    BadClose(String),
-    #[error("blahhhahhahha")]
-    OhNo(String),
 }
 
 #[derive(Debug, Error)]
