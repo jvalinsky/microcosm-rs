@@ -4640,15 +4640,18 @@ dependencies = [
 name = "slingshot"
 version = "0.1.0"
 dependencies = [
- "axum",
  "clap",
  "ctrlc",
+ "dropshot",
  "env_logger",
  "foyer",
+ "http",
  "jetstream",
  "log",
  "metrics",
  "metrics-exporter-prometheus 0.17.2",
+ "schemars",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.12",

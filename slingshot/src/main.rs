@@ -1,7 +1,7 @@
 // use foyer::HybridCache;
 // use foyer::{Engine, DirectFsDeviceOptions, HybridCacheBuilder};
 use metrics_exporter_prometheus::PrometheusBuilder;
-use slingshot::{consume, error::MainTaskError, firehose_cache};
+use slingshot::{consume, error::MainTaskError, firehose_cache, serve};
 
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
@@ -44,6 +44,13 @@ async fn main() -> Result<(), String> {
     log::info!("firehose cache ready.");
 
     let mut tasks: tokio::task::JoinSet<Result<(), MainTaskError>> = tokio::task::JoinSet::new();
+
+    let server_shutdown = shutdown.clone();
+    let server_cache_handle = cache.clone();
+    tasks.spawn(async move {
+        serve(server_cache_handle, server_shutdown).await?;
+        Ok(())
+    });
 
     let consumer_shutdown = shutdown.clone();
     tasks.spawn(async move {

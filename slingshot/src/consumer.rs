@@ -64,11 +64,15 @@ pub async fn consume(
             cache.insert(at_uri, CachedRecord::Deleted);
         } else {
             let Some(record) = commit.record.take() else {
-                log::warn!("consumer: commit update/delete missing record, ignoring");
+                log::warn!("consumer: commit insert or update missing record, ignoring");
+                continue;
+            };
+            let Some(cid) = commit.cid.take() else {
+                log::warn!("consumer: commit insert or update missing CID, ignoring");
                 continue;
             };
 
-            cache.insert(at_uri, CachedRecord::Found(record.into()));
+            cache.insert(at_uri, CachedRecord::Found((cid, record).into()));
         }
     }
 
