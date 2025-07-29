@@ -8,4 +8,5 @@ members = [
     "ufos/fuzz",
     "spacedust",
     "who-am-i",
+    "slingshot",
 ]

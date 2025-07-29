@@ -1,0 +1,19 @@
+[package]
+name = "slingshot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.41", features = ["derive"] }
+ctrlc = "3.4.7"
+env_logger = "0.11.8"
+foyer = { version = "0.18.0", features = ["serde"] }
+jetstream = { path = "../jetstream", features = ["metrics"] }
+log = "0.4.27"
+metrics = "0.24.2"
+metrics-exporter-prometheus = { version = "0.17.1", features = ["http-listener"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.141", features = ["raw_value"] }
+thiserror = "2.0.12"
+tokio = { version = "1.47.0", features = ["full"] }
+tokio-util = "0.7.15"
