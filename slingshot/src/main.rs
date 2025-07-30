@@ -1,7 +1,8 @@
 // use foyer::HybridCache;
 // use foyer::{Engine, DirectFsDeviceOptions, HybridCacheBuilder};
 use metrics_exporter_prometheus::PrometheusBuilder;
-use slingshot::{consume, error::MainTaskError, firehose_cache, serve};
+use slingshot::{Identity, Repo, consume, error::MainTaskError, firehose_cache, serve};
+use std::path::PathBuf;
 
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
@@ -19,6 +20,9 @@ struct Args {
     /// reduces CPU at the expense of more ingress bandwidth
     #[arg(long, action)]
     jetstream_no_zstd: bool,
+    /// where to keep disk caches
+    #[arg(long)]
+    cache_dir: PathBuf,
 }
 
 #[tokio::main]
@@ -38,16 +42,43 @@ async fn main() -> Result<(), String> {
         log::info!("metrics listening at http://0.0.0.0:8765");
     }
 
+    std::fs::create_dir_all(&args.cache_dir).map_err(|e| {
+        format!(
+            "failed to ensure cache parent dir: {e:?} (dir: {:?})",
+            args.cache_dir
+        )
+    })?;
+    let cache_dir = args.cache_dir.canonicalize().map_err(|e| {
+        format!(
+            "failed to canonicalize cache_dir: {e:?} (dir: {:?})",
+            args.cache_dir
+        )
+    })?;
+    log::info!("cache dir ready at at {cache_dir:?}.");
+
     log::info!("setting up firehose cache...");
-    let cache = firehose_cache("./foyer").await?;
+    let cache = firehose_cache(cache_dir.join("./firehose")).await?;
     log::info!("firehose cache ready.");
 
     let mut tasks: tokio::task::JoinSet<Result<(), MainTaskError>> = tokio::task::JoinSet::new();
 
+    log::info!("starting identity service...");
+    let identity = Identity::new(cache_dir.join("./identity"))
+        .await
+        .map_err(|e| format!("identity setup failed: {e:?}"))?;
+    log::info!("identity service ready.");
+    let identity_refresher = identity.clone();
+    tasks.spawn(async move {
+        identity_refresher.run_refresher().await?;
+        Ok(())
+    });
+
+    let repo = Repo::new(identity);
+
     let server_shutdown = shutdown.clone();
     let server_cache_handle = cache.clone();
     tasks.spawn(async move {
-        serve(server_cache_handle, server_shutdown).await?;
+        serve(server_cache_handle, repo, server_shutdown).await?;
         Ok(())
     });
 

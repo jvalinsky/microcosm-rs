@@ -1,5 +1,6 @@
-use crate::{CachedRecord, error::ServerError};
+use crate::{CachedRecord, Repo, error::ServerError};
 use foyer::HybridCache;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use poem::{Route, Server, listener::TcpListener};
@@ -94,6 +95,7 @@ enum GetRecordResponse {
 
 struct Xrpc {
     cache: HybridCache<String, CachedRecord>,
+    repo: Arc<Repo>,
 }
 
 #[OpenApi]
@@ -112,13 +114,13 @@ impl Xrpc {
         ///
         /// NOTE: handles should be accepted here but this is still TODO in slingshot
         #[oai(example = "example_did")]
-        repo: Query<String>,
+        Query(repo): Query<String>,
         /// The NSID of the record collection
         #[oai(example = "example_collection")]
-        collection: Query<String>,
+        Query(collection): Query<String>,
         /// The Record key
         #[oai(example = "example_rkey")]
-        rkey: Query<String>,
+        Query(rkey): Query<String>,
         /// Optional: the CID of the version of the record.
         ///
         /// If not specified, then return the most recent version.
@@ -126,16 +128,25 @@ impl Xrpc {
         /// If specified and a newer version of the record exists, returns 404 not
         /// found. That is: slingshot only retains the most recent version of a
         /// record.
-        cid: Query<Option<String>>,
+        Query(cid): Query<Option<String>>,
     ) -> GetRecordResponse {
         // TODO: yeah yeah
-        let at_uri = format!("at://{}/{}/{}", &*repo, &*collection, &*rkey);
+        let at_uri = format!("at://{repo}/{collection}/{rkey}");
 
         let entry = self
             .cache
-            .fetch(at_uri.clone(), || async move { todo!() })
+            .fetch(at_uri.clone(), {
+                let cid = cid.clone();
+                let repo_api = self.repo.clone();
+                || async move {
+                    repo_api
+                        .get_record(repo, collection, rkey, cid)
+                        .await
+                        .map_err(|e| foyer::Error::Other(Box::new(e)))
+                }
+            })
             .await
-            .unwrap();
+            .unwrap(); // todo
 
         // TODO: actual 404
 
@@ -165,15 +176,31 @@ impl Xrpc {
             })),
         }
     }
+
+    // TODO
+    // #[oai(path = "/com.atproto.identity.resolveHandle", method = "get")]
+    // #[oai(path = "/com.atproto.identity.resolveDid", method = "get")]
+    // but these are both not specified to do bidirectional validation, which is what we want to offer
+    // com.atproto.identity.resolveIdentity seems right, but requires returning the full did-doc
+    // would be nice if there were two queries:
+    //  did -> verified handle + pds url
+    //  handle -> verified did + pds url
+    //
+    // we could do horrible things and implement resolveIdentity with only a stripped-down fake did doc
+    // but this will *definitely* cause problems because eg. we're not currently storing pubkeys and
+    // those are a little bit important
 }
 
 pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
+    repo: Repo,
     _shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
-    let api_service = OpenApiService::new(Xrpc { cache }, "Slingshot", env!("CARGO_PKG_VERSION"))
-        .server("http://localhost:3000")
-        .url_prefix("/xrpc");
+    let repo = Arc::new(repo);
+    let api_service =
+        OpenApiService::new(Xrpc { cache, repo }, "Slingshot", env!("CARGO_PKG_VERSION"))
+            .server("http://localhost:3000")
+            .url_prefix("/xrpc");
 
     let app = Route::new()
         .nest("/", api_service.scalar())

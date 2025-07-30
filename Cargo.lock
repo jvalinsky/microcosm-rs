@@ -263,31 +263,12 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atrium-api"
-version = "0.25.3"
-source = "git+https://github.com/uniphil/atrium?branch=fix%2Fnsid-allow-nonleading-name-digits#c4364f318d337bbc3e3e3aaf97c9f971e95f5f7e"
-dependencies = [
- "atrium-common 0.1.2 (git+https://github.com/uniphil/atrium?branch=fix%2Fnsid-allow-nonleading-name-digits)",
- "atrium-xrpc 0.12.3 (git+https://github.com/uniphil/atrium?branch=fix%2Fnsid-allow-nonleading-name-digits)",
- "chrono",
- "http",
- "ipld-core",
- "langtag",
- "regex",
- "serde",
- "serde_bytes",
- "serde_json",
- "thiserror 1.0.69",
- "trait-variant",
-]
-
-[[package]]
-name = "atrium-api"
 version = "0.25.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46355d3245edc7b3160b2a45fe55d09a6963ebd3eee0252feb6b72fb0eb71463"
 dependencies = [
- "atrium-common 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-xrpc 0.12.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "atrium-common",
+ "atrium-xrpc",
  "chrono",
  "http",
  "ipld-core",
@@ -317,28 +298,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "atrium-common"
-version = "0.1.2"
-source = "git+https://github.com/uniphil/atrium?branch=fix%2Fnsid-allow-nonleading-name-digits#c4364f318d337bbc3e3e3aaf97c9f971e95f5f7e"
-dependencies = [
- "dashmap",
- "lru",
- "moka",
- "thiserror 1.0.69",
- "tokio",
- "trait-variant",
- "web-time",
-]
-
-[[package]]
 name = "atrium-identity"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9e2d42bb4dbea038f4f5f45e3af2a89d61a9894a75f06aa550b74a60d2be380"
 dependencies = [
- "atrium-api 0.25.4",
- "atrium-common 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "atrium-xrpc 0.12.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "atrium-api",
+ "atrium-common",
+ "atrium-xrpc",
  "serde",
  "serde_html_form",
  "serde_json",
@@ -352,10 +319,10 @@ version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca22dc4eaf77fd9bf050b21192ac58cd654a437d28e000ec114ebd93a51d36f5"
 dependencies = [
- "atrium-api 0.25.4",
- "atrium-common 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "atrium-api",
+ "atrium-common",
  "atrium-identity",
- "atrium-xrpc 0.12.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "atrium-xrpc",
  "base64 0.22.1",
  "chrono",
  "dashmap",
@@ -380,19 +347,6 @@ name = "atrium-xrpc"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0216ad50ce34e9ff982e171c3659e65dedaa2ed5ac2994524debdc9a9647ffa8"
-dependencies = [
- "http",
- "serde",
- "serde_html_form",
- "serde_json",
- "thiserror 1.0.69",
- "trait-variant",
-]
-
-[[package]]
-name = "atrium-xrpc"
-version = "0.12.3"
-source = "git+https://github.com/uniphil/atrium?branch=fix%2Fnsid-allow-nonleading-name-digits#c4364f318d337bbc3e3e3aaf97c9f971e95f5f7e"
 dependencies = [
  "http",
  "serde",
@@ -2634,7 +2588,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "atrium-api 0.25.3",
+ "atrium-api",
  "chrono",
  "clap",
  "futures-util",
@@ -4797,21 +4751,29 @@ dependencies = [
 name = "slingshot"
 version = "0.1.0"
 dependencies = [
+ "atrium-api",
+ "atrium-common",
+ "atrium-identity",
+ "atrium-oauth",
  "clap",
  "ctrlc",
  "env_logger",
  "foyer",
+ "hickory-resolver",
  "jetstream",
  "log",
  "metrics",
  "metrics-exporter-prometheus 0.17.2",
  "poem",
  "poem-openapi",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.12",
+ "time",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -5880,8 +5842,8 @@ dependencies = [
 name = "who-am-i"
 version = "0.1.0"
 dependencies = [
- "atrium-api 0.25.4",
- "atrium-common 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "atrium-api",
+ "atrium-common",
  "atrium-identity",
  "atrium-oauth",
  "axum",

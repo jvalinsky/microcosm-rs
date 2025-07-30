@@ -10,7 +10,7 @@ readme = "README.md"
 
 [dependencies]
 async-trait = "0.1.83"
-atrium-api = { git = "https://github.com/uniphil/atrium", branch = "fix/nsid-allow-nonleading-name-digits", default-features = false, features = [
+atrium-api = { version = "0.25.4", default-features = false, features = [
     "namespace-appbsky",
 ] }
 tokio = { version = "1.44.2", features = ["full", "sync", "time"] }
