@@ -31,6 +31,14 @@ struct Args {
     /// - TODO: a rate-limiter will be installed
     #[arg(long)]
     host: Option<String>,
+    /// a location to cache acme https certs
+    ///
+    /// only used if --host is specified. omitting requires re-requesting certs
+    /// on every restart, and letsencrypt has rate limits that are easy to hit.
+    ///
+    /// recommended in production, but mind the file permissions.
+    #[arg(long)]
+    certs: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -91,6 +99,7 @@ async fn main() -> Result<(), String> {
             identity,
             repo,
             args.host,
+            args.certs,
             server_shutdown,
         )
         .await?;

@@ -2,6 +2,7 @@ use crate::{CachedRecord, Identity, Repo, error::ServerError};
 use atrium_api::types::string::{Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -293,6 +294,7 @@ pub async fn serve(
     identity: Identity,
     repo: Repo,
     host: Option<String>,
+    certs: Option<PathBuf>,
     _shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
     let repo = Arc::new(repo);
@@ -320,11 +322,13 @@ pub async fn serve(
 
         app = app.at("/.well-known/did.json", get_did_doc(&host));
 
-        let auto_cert = AutoCert::builder()
+        let mut auto_cert = AutoCert::builder()
             .directory_url(LETS_ENCRYPT_PRODUCTION)
-            .domain(&host)
-            .build()
-            .map_err(ServerError::AcmeBuildError)?;
+            .domain(&host);
+        if let Some(certs) = certs {
+            auto_cert = auto_cert.cache_path(certs)
+        }
+        let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
 
         run(TcpListener::bind("0.0.0.0:443").acme(auto_cert), app).await
     } else {
