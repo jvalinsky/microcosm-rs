@@ -58,9 +58,8 @@ struct RecordResponseObject {
 
 #[derive(Debug, Deserialize)]
 pub struct ErrorResponseObject {
-    error: String,
-    #[allow(dead_code)]
-    message: String,
+    pub error: String,
+    pub message: String,
 }
 
 #[derive(Clone)]

@@ -1,4 +1,7 @@
-use crate::{CachedRecord, Identity, Repo, error::ServerError};
+use crate::{
+    CachedRecord, ErrorResponseObject, Identity, Repo,
+    error::{RecordError, ServerError},
+};
 use atrium_api::types::string::{Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
 use serde::Serialize;
@@ -201,7 +204,7 @@ impl Xrpc {
 
         let at_uri = format!("at://{}/{}/{}", &*did, &*collection, &*rkey);
 
-        let entry = self
+        let fr = self
             .cache
             .fetch(at_uri.clone(), {
                 let cid = cid.clone();
@@ -213,10 +216,43 @@ impl Xrpc {
                         .map_err(|e| foyer::Error::Other(Box::new(e)))
                 }
             })
-            .await
-            .unwrap(); // todo
+            .await;
 
-        // TODO: actual 404
+        let entry = match fr {
+            Ok(e) => e,
+            Err(foyer::Error::Other(e)) => {
+                let record_error = match e.downcast::<RecordError>() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        log::error!("error (foyer other) getting cache entry, {e:?}");
+                        return GetRecordResponse::ServerError(xrpc_error(
+                            "ServerError",
+                            "sorry, something went wrong",
+                        ));
+                    }
+                };
+                let RecordError::UpstreamBadRequest(ErrorResponseObject { error, message }) =
+                    *record_error
+                else {
+                    log::error!("RecordError getting cache entry, {record_error:?}");
+                    return GetRecordResponse::ServerError(xrpc_error(
+                        "ServerError",
+                        "sorry, something went wrong",
+                    ));
+                };
+                return GetRecordResponse::BadRequest(xrpc_error(
+                    error,
+                    format!("Upstream bad request: {message}"),
+                ));
+            }
+            Err(e) => {
+                log::error!("error (foyer) getting cache entry, {e:?}");
+                return GetRecordResponse::ServerError(xrpc_error(
+                    "ServerError",
+                    "sorry, something went wrong",
+                ));
+            }
+        };
 
         match *entry {
             CachedRecord::Found(ref raw) => {
