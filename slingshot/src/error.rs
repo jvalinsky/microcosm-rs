@@ -1,3 +1,4 @@
+use crate::ErrorResponseObject;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -75,4 +76,8 @@ pub enum RecordError {
     MissingUpstreamCid,
     #[error("upstream CID was not valid: {0}")]
     BadUpstreamCid(String),
+    #[error("upstream atproto-looking bad request")]
+    UpstreamBadRequest(ErrorResponseObject),
+    #[error("upstream non-atproto bad request")]
+    UpstreamBadBadNotGoodRequest(reqwest::Error),
 }
