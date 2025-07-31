@@ -14,8 +14,10 @@ pub enum ConsumerError {
 
 #[derive(Debug, Error)]
 pub enum ServerError {
+    #[error("server build error: {0}")]
+    AcmeBuildError(std::io::Error),
     #[error("server exited: {0}")]
-    ServerExited(String),
+    ServerExited(std::io::Error),
 }
 
 #[derive(Debug, Error)]
