@@ -349,7 +349,11 @@ pub async fn serve(
         "Slingshot",
         env!("CARGO_PKG_VERSION"),
     )
-    .server("http://localhost:3000")
+    .server(if let Some(ref h) = host {
+        format!("https://{h}")
+    } else {
+        "http://localhost:3000".to_string()
+    })
     .url_prefix("/xrpc");
 
     let mut app = Route::new()
