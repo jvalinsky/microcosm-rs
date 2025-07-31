@@ -27,7 +27,7 @@ struct Args {
     ///
     /// if present:
     /// - a did:web document will be served at /.well-known/did.json
-    /// - TODO: HTTPS certs will be automatically configured with Acme/letsencrypt
+    /// - an HTTPS certs will be automatically configured with Acme/letsencrypt
     /// - TODO: a rate-limiter will be installed
     #[arg(long)]
     host: Option<String>,
