@@ -74,6 +74,9 @@ struct FoundRecordResponseObject {
     ///
     /// Slingshot will always return the CID, despite it not being a required
     /// response property in the official lexicon.
+    ///
+    /// TODO: probably actually let it be optional, idk are some pds's weirdly
+    /// not returning it?
     cid: Option<String>,
     /// the record itself as JSON
     value: serde_json::Value,
@@ -111,10 +114,11 @@ enum GetRecordResponse {
     /// The only error name in the repo.getRecord lexicon is `RecordNotFound`,
     /// but the [canonical api docs](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
     /// also list `InvalidRequest`, `ExpiredToken`, and `InvalidToken`. Of
-    /// these, slingshot will only return `RecordNotFound` or `InvalidRequest`.
+    /// these, slingshot will only generate `RecordNotFound` or `InvalidRequest`,
+    /// but may return any proxied error code from the upstream repo.
     #[oai(status = 400)]
     BadRequest(XrpcError),
-    /// Just using 500 for potentially upstream errors for now
+    /// Server errors
     #[oai(status = 500)]
     ServerError(XrpcError),
 }
@@ -131,9 +135,8 @@ impl Xrpc {
     ///
     /// Get a single record from a repository. Does not require auth.
     ///
-    /// See https://docs.bsky.app/docs/api/com-atproto-repo-get-record for the
-    /// canonical XRPC documentation that this endpoint aims to be compatible
-    /// with.
+    /// See also the [canonical `com.atproto` XRPC documentation](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
+    /// that this endpoint aims to be compatible with.
     #[oai(path = "/com.atproto.repo.getRecord", method = "get")]
     async fn get_record(
         &self,
