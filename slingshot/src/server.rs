@@ -248,6 +248,10 @@ pub async fn serve(
         .nest("/xrpc/", api_service);
 
     if let Some(host) = host {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .expect("alskfjalksdjf");
+
         let app = app.at("/.well-known/did.json", get_did_doc(&host));
 
         let auto_cert = AutoCert::builder()
