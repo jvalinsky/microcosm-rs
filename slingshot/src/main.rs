@@ -35,7 +35,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    env_logger::init();
+    tracing_subscriber::fmt::init();
 
     let shutdown = CancellationToken::new();
 

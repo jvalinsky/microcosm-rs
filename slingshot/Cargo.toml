@@ -10,7 +10,6 @@ atrium-identity = "0.1.5"
 atrium-oauth = "0.1.3"
 clap = { version = "4.5.41", features = ["derive"] }
 ctrlc = "3.4.7"
-env_logger = "0.11.8"
 foyer = { version = "0.18.0", features = ["serde"] }
 hickory-resolver = "0.25.2"
 jetstream = { path = "../jetstream", features = ["metrics"] }
@@ -27,4 +26,5 @@ thiserror = "2.0.12"
 time = { version = "0.3.41", features = ["serde"] }
 tokio = { version = "1.47.0", features = ["full"] }
 tokio-util = "0.7.15"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 url = "2.5.4"

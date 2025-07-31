@@ -5,12 +5,14 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use poem::{
-    Endpoint, Route, Server,
+    Endpoint, EndpointExt, Route, Server,
     endpoint::make_sync,
+    http::Method,
     listener::{
         Listener, TcpListener,
         acme::{AutoCert, LETS_ENCRYPT_PRODUCTION},
     },
+    middleware::{Cors, Tracing},
 };
 use poem_openapi::{
     ApiResponse, Object, OpenApi, OpenApiService, param::Query, payload::Json, types::Example,
@@ -242,7 +244,7 @@ pub async fn serve(
             .server("http://localhost:3000")
             .url_prefix("/xrpc");
 
-    let app = Route::new()
+    let mut app = Route::new()
         .nest("/", api_service.scalar())
         .nest("/openapi.json", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
@@ -252,7 +254,8 @@ pub async fn serve(
             .install_default()
             .expect("alskfjalksdjf");
 
-        let app = app.at("/.well-known/did.json", get_did_doc(&host));
+        app = app
+            .at("/.well-known/did.json", get_did_doc(&host));
 
         let auto_cert = AutoCert::builder()
             .directory_url(LETS_ENCRYPT_PRODUCTION)
@@ -260,16 +263,24 @@ pub async fn serve(
             .build()
             .map_err(ServerError::AcmeBuildError)?;
 
-        Server::new(TcpListener::bind("0.0.0.0:443").acme(auto_cert))
-            .name("slingshot")
-            .run(app)
-            .await
-            .map_err(ServerError::ServerExited)
+        run(TcpListener::bind("0.0.0.0:443").acme(auto_cert), app).await
     } else {
-        Server::new(TcpListener::bind("127.0.0.1:3000"))
-            .name("slingshot")
-            .run(app)
-            .await
-            .map_err(ServerError::ServerExited)
+        run(TcpListener::bind("127.0.0.1:3000"), app).await
     }
+}
+
+async fn run<L>(listener: L, app: Route) -> Result<(), ServerError>
+where
+    L: Listener + 'static
+{
+    let app = app
+        .with(Cors::new()
+            .allow_method(Method::GET)
+            .allow_credentials(false))
+        .with(Tracing);
+    Server::new(listener)
+        .name("slingshot")
+        .run(app)
+        .await
+        .map_err(ServerError::ServerExited)
 }

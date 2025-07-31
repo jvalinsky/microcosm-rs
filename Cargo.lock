@@ -4921,7 +4921,6 @@ dependencies = [
  "atrium-oauth",
  "clap",
  "ctrlc",
- "env_logger",
  "foyer",
  "hickory-resolver",
  "jetstream",
@@ -4938,6 +4937,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "tracing-subscriber",
  "url",
 ]
 
