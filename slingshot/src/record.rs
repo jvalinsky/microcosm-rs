@@ -1,7 +1,7 @@
 //! cached record storage
 
 use crate::{Identity, error::RecordError};
-use atrium_api::types::string::{Cid, Did, Handle};
+use atrium_api::types::string::{Cid, Did, Nsid, RecordKey};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -78,21 +78,11 @@ impl Repo {
 
     pub async fn get_record(
         &self,
-        did_or_handle: String,
-        collection: String,
-        rkey: String,
-        cid: Option<String>,
+        did: &Did,
+        collection: &Nsid,
+        rkey: &RecordKey,
+        cid: &Option<Cid>,
     ) -> Result<CachedRecord, RecordError> {
-        let did = match Did::new(did_or_handle.clone()) {
-            Ok(did) => did,
-            Err(_) => {
-                let handle = Handle::new(did_or_handle).map_err(|_| RecordError::BadRepo)?;
-                let Some(did) = self.identity.handle_to_did(handle).await? else {
-                    return Err(RecordError::NotFound("could not resolve and verify handle"));
-                };
-                did
-            }
-        };
         let Some(pds) = self.identity.did_to_pds(did.clone()).await? else {
             return Err(RecordError::NotFound("could not get pds for DID"));
         };
@@ -101,11 +91,11 @@ impl Repo {
 
         let mut params = vec![
             ("repo", did.to_string()),
-            ("collection", collection),
-            ("rkey", rkey),
+            ("collection", collection.to_string()),
+            ("rkey", rkey.to_string()),
         ];
         if let Some(cid) = cid {
-            params.push(("cid", cid));
+            params.push(("cid", cid.as_ref().to_string()));
         }
         let mut url = Url::parse_with_params(&pds, &params)?;
         url.set_path("/xrpc/com.atproto.repo.getRecord");

@@ -1,6 +1,8 @@
-use crate::{CachedRecord, Repo, error::ServerError};
+use crate::{CachedRecord, Identity, Repo, error::ServerError};
+use atrium_api::types::string::{Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
 use serde::Serialize;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -43,6 +45,13 @@ impl Example for XrpcErrorResponseObject {
             message: "This record was deleted".to_string(),
         }
     }
+}
+type XrpcError = Json<XrpcErrorResponseObject>;
+fn xrpc_error(error: impl AsRef<str>, message: impl AsRef<str>) -> XrpcError {
+    Json(XrpcErrorResponseObject {
+        error: error.as_ref().to_string(),
+        message: message.as_ref().to_string(),
+    })
 }
 
 fn bad_request_handler(err: poem::Error) -> GetRecordResponse {
@@ -100,11 +109,15 @@ enum GetRecordResponse {
     /// also list `InvalidRequest`, `ExpiredToken`, and `InvalidToken`. Of
     /// these, slingshot will only return `RecordNotFound` or `InvalidRequest`.
     #[oai(status = 400)]
-    BadRequest(Json<XrpcErrorResponseObject>),
+    BadRequest(XrpcError),
+    /// Just using 500 for potentially upstream errors for now
+    #[oai(status = 500)]
+    ServerError(XrpcError),
 }
 
 struct Xrpc {
     cache: HybridCache<String, CachedRecord>,
+    identity: Identity,
     repo: Arc<Repo>,
 }
 
@@ -140,8 +153,54 @@ impl Xrpc {
         /// record.
         Query(cid): Query<Option<String>>,
     ) -> GetRecordResponse {
-        // TODO: yeah yeah
-        let at_uri = format!("at://{repo}/{collection}/{rkey}");
+        let did = match Did::new(repo.clone()) {
+            Ok(did) => did,
+            Err(_) => {
+                let Ok(handle) = Handle::new(repo) else {
+                    return GetRecordResponse::BadRequest(xrpc_error(
+                        "InvalidRequest",
+                        "repo was not a valid DID or handle",
+                    ));
+                };
+                if let Ok(res) = self.identity.handle_to_did(handle).await {
+                    if let Some(did) = res {
+                        did
+                    } else {
+                        return GetRecordResponse::BadRequest(xrpc_error(
+                            "InvalidRequest",
+                            "Could not resolve handle repo to a DID",
+                        ));
+                    }
+                } else {
+                    return GetRecordResponse::ServerError(xrpc_error(
+                        "ResolutionFailed",
+                        "errored while trying to resolve handle to DID",
+                    ));
+                }
+            }
+        };
+
+        let Ok(collection) = Nsid::new(collection) else {
+            return GetRecordResponse::BadRequest(xrpc_error(
+                "InvalidRequest",
+                "invalid NSID for collection",
+            ));
+        };
+
+        let Ok(rkey) = RecordKey::new(rkey) else {
+            return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "invalid rkey"));
+        };
+
+        let cid: Option<Cid> = if let Some(cid) = cid {
+            let Ok(cid) = Cid::from_str(&cid) else {
+                return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "invalid CID"));
+            };
+            Some(cid)
+        } else {
+            None
+        };
+
+        let at_uri = format!("at://{}/{}/{}", &*did, &*collection, &*rkey);
 
         let entry = self
             .cache
@@ -150,7 +209,7 @@ impl Xrpc {
                 let repo_api = self.repo.clone();
                 || async move {
                     repo_api
-                        .get_record(repo, collection, rkey, cid)
+                        .get_record(&did, &collection, &rkey, &cid)
                         .await
                         .map_err(|e| foyer::Error::Other(Box::new(e)))
                 }
@@ -163,7 +222,6 @@ impl Xrpc {
         match *entry {
             CachedRecord::Found(ref raw) => {
                 let (found_cid, raw_value) = raw.into();
-                let found_cid = found_cid.as_ref().to_string();
                 if cid.clone().map(|c| c != found_cid).unwrap_or(false) {
                     return GetRecordResponse::BadRequest(Json(XrpcErrorResponseObject {
                         error: "RecordNotFound".to_string(),
@@ -176,7 +234,7 @@ impl Xrpc {
                     serde_json::from_str(raw_value.get()).expect("RawValue to be valid json");
                 GetRecordResponse::Ok(Json(FoundRecordResponseObject {
                     uri: at_uri,
-                    cid: Some(found_cid),
+                    cid: Some(found_cid.as_ref().to_string()),
                     value,
                 }))
             }
@@ -234,15 +292,23 @@ fn get_did_doc(host: &str) -> impl Endpoint + use<> {
 
 pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
+    identity: Identity,
     repo: Repo,
     host: Option<String>,
     _shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
     let repo = Arc::new(repo);
-    let api_service =
-        OpenApiService::new(Xrpc { cache, repo }, "Slingshot", env!("CARGO_PKG_VERSION"))
-            .server("http://localhost:3000")
-            .url_prefix("/xrpc");
+    let api_service = OpenApiService::new(
+        Xrpc {
+            cache,
+            identity,
+            repo,
+        },
+        "Slingshot",
+        env!("CARGO_PKG_VERSION"),
+    )
+    .server("http://localhost:3000")
+    .url_prefix("/xrpc");
 
     let mut app = Route::new()
         .nest("/", api_service.scalar())
@@ -254,8 +320,7 @@ pub async fn serve(
             .install_default()
             .expect("alskfjalksdjf");
 
-        app = app
-            .at("/.well-known/did.json", get_did_doc(&host));
+        app = app.at("/.well-known/did.json", get_did_doc(&host));
 
         let auto_cert = AutoCert::builder()
             .directory_url(LETS_ENCRYPT_PRODUCTION)
@@ -271,12 +336,15 @@ pub async fn serve(
 
 async fn run<L>(listener: L, app: Route) -> Result<(), ServerError>
 where
-    L: Listener + 'static
+    L: Listener + 'static,
 {
     let app = app
-        .with(Cors::new()
-            .allow_method(Method::GET)
-            .allow_credentials(false))
+        .with(
+            Cors::new()
+                .allow_origin("*")
+                .allow_methods([Method::GET])
+                .allow_credentials(false),
+        )
         .with(Tracing);
     Server::new(listener)
         .name("slingshot")

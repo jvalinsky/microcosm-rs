@@ -81,12 +81,19 @@ async fn main() -> Result<(), String> {
         Ok(())
     });
 
-    let repo = Repo::new(identity);
+    let repo = Repo::new(identity.clone());
 
     let server_shutdown = shutdown.clone();
     let server_cache_handle = cache.clone();
     tasks.spawn(async move {
-        serve(server_cache_handle, repo, args.host, server_shutdown).await?;
+        serve(
+            server_cache_handle,
+            identity,
+            repo,
+            args.host,
+            server_shutdown,
+        )
+        .await?;
         Ok(())
     });
 
