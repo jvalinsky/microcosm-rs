@@ -23,6 +23,14 @@ struct Args {
     /// where to keep disk caches
     #[arg(long)]
     cache_dir: PathBuf,
+    /// the domain pointing to this server
+    ///
+    /// if present:
+    /// - a did:web document will be served at /.well-known/did.json
+    /// - TODO: HTTPS certs will be automatically configured with Acme/letsencrypt
+    /// - TODO: a rate-limiter will be installed
+    #[arg(long)]
+    host: Option<String>,
 }
 
 #[tokio::main]
@@ -78,7 +86,7 @@ async fn main() -> Result<(), String> {
     let server_shutdown = shutdown.clone();
     let server_cache_handle = cache.clone();
     tasks.spawn(async move {
-        serve(server_cache_handle, repo, server_shutdown).await?;
+        serve(server_cache_handle, repo, args.host, server_shutdown).await?;
         Ok(())
     });
 

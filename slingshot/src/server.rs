@@ -1,9 +1,10 @@
 use crate::{CachedRecord, Repo, error::ServerError};
 use foyer::HybridCache;
+use serde::Serialize;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use poem::{Route, Server, listener::TcpListener};
+use poem::{Endpoint, Route, Server, endpoint::make_sync, listener::TcpListener};
 use poem_openapi::{
     ApiResponse, Object, OpenApi, OpenApiService, param::Query, payload::Json, types::Example,
 };
@@ -191,9 +192,41 @@ impl Xrpc {
     // those are a little bit important
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppViewService {
+    id: String,
+    r#type: String,
+    service_endpoint: String,
+}
+#[derive(Debug, Clone, Serialize)]
+struct AppViewDoc {
+    id: String,
+    service: [AppViewService; 1],
+}
+/// Serve a did document for did:web for this to be an xrpc appview
+///
+/// No slingshot endpoints currently require auth, so it's not necessary to do
+/// service proxying, however clients may wish to:
+///
+/// - PDS proxying offers a level of client IP anonymity from slingshot
+/// - slingshot *may* implement more generous per-user rate-limits for proxied requests in the future
+fn get_did_doc(host: String) -> impl Endpoint {
+    let doc = poem::web::Json(AppViewDoc {
+        id: format!("did:web:{host}"),
+        service: [AppViewService {
+            id: "#slingshot".to_string(),
+            r#type: "SlingshotRecordProxy".to_string(),
+            service_endpoint: format!("https://{host}"),
+        }],
+    });
+    make_sync(move |_| doc.clone())
+}
+
 pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
     repo: Repo,
+    host: Option<String>,
     _shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
     let repo = Arc::new(repo);
@@ -202,10 +235,14 @@ pub async fn serve(
             .server("http://localhost:3000")
             .url_prefix("/xrpc");
 
-    let app = Route::new()
+    let mut app = Route::new()
         .nest("/", api_service.scalar())
         .nest("/openapi.json", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
+
+    if let Some(host) = host {
+        app = app.at("/.well-known/did.json", get_did_doc(host));
+    };
 
     Server::new(TcpListener::bind("127.0.0.1:3000"))
         .run(app)
