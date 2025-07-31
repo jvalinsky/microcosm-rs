@@ -240,6 +240,9 @@ impl Xrpc {
                         "sorry, something went wrong",
                     ));
                 };
+
+                // all of the noise around here is so that we can ultimately reach this:
+                // upstream BadRequest extracted from the foyer result which we can proxy back
                 return GetRecordResponse::BadRequest(xrpc_error(
                     error,
                     format!("Upstream bad request: {message}"),
