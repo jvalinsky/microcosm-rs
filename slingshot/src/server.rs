@@ -133,9 +133,7 @@ impl Xrpc {
     #[oai(path = "/com.atproto.repo.getRecord", method = "get")]
     async fn get_record(
         &self,
-        /// The DID of the repo
-        ///
-        /// NOTE: handles should be accepted here but this is still TODO in slingshot
+        /// The DID or handle of the repo
         #[oai(example = "example_did")]
         Query(repo): Query<String>,
         /// The NSID of the record collection
@@ -150,7 +148,7 @@ impl Xrpc {
         ///
         /// If specified and a newer version of the record exists, returns 404 not
         /// found. That is: slingshot only retains the most recent version of a
-        /// record.
+        /// record. (TODO: verify bsky behaviour for mismatched/old CID)
         Query(cid): Query<Option<String>>,
     ) -> GetRecordResponse {
         let did = match Did::new(repo.clone()) {
