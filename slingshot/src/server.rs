@@ -339,7 +339,7 @@ where
     let app = app
         .with(
             Cors::new()
-                .allow_origin("*")
+                .allow_origin_regex("*")
                 .allow_methods([Method::GET])
                 .allow_credentials(false),
         )
