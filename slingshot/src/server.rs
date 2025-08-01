@@ -4,6 +4,7 @@ use crate::{
 };
 use atrium_api::types::string::{Cid, Did, Handle, Nsid, RecordKey};
 use foyer::HybridCache;
+use links::at_uri::parse_at_uri as normalize_at_uri;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -32,6 +33,14 @@ fn example_collection() -> String {
 }
 fn example_rkey() -> String {
     "3lv4ouczo2b2a".to_string()
+}
+fn example_uri() -> String {
+    format!(
+        "at://{}/{}/{}",
+        example_did(),
+        example_collection(),
+        example_rkey()
+    )
 }
 
 #[derive(Object)]
@@ -84,12 +93,7 @@ struct FoundRecordResponseObject {
 impl Example for FoundRecordResponseObject {
     fn example() -> Self {
         Self {
-            uri: format!(
-                "at://{}/{}/{}",
-                example_did(),
-                example_collection(),
-                example_rkey()
-            ),
+            uri: example_uri(),
             cid: Some("bafyreialv3mzvvxaoyrfrwoer3xmabbmdchvrbyhayd7bga47qjbycy74e".to_string()),
             value: serde_json::json!({
                 "$type": "app.bsky.feed.like",
@@ -157,6 +161,74 @@ impl Xrpc {
         /// found. That is: slingshot only retains the most recent version of a
         /// record. (TODO: verify bsky behaviour for mismatched/old CID)
         Query(cid): Query<Option<String>>,
+    ) -> GetRecordResponse {
+        self.get_record_impl(repo, collection, rkey, cid).await
+    }
+
+    /// com.bad-example.repo.getUriRecord
+    ///
+    /// Ergonomic complement to [`com.atproto.repo.getRecord`](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
+    /// which accepts an at-uri instead of individual rep/collection/rkey params
+    #[oai(path = "/com.bad-example.repo.getUriRecord", method = "get")]
+    async fn get_uri_record(
+        &self,
+        /// The at-uri of the record
+        ///
+        /// The identifier can be a DID or an atproto handle, and the collection
+        /// and rkey segments must be present.
+        #[oai(example = "example_uri")]
+        Query(at_uri): Query<String>,
+        /// Optional: the CID of the version of the record.
+        ///
+        /// If not specified, then return the most recent version.
+        ///
+        /// If specified and a newer version of the record exists, returns 404 not
+        /// found. That is: slingshot only retains the most recent version of a
+        /// record.
+        Query(cid): Query<Option<String>>,
+    ) -> GetRecordResponse {
+        let bad_at_uri = || {
+            GetRecordResponse::BadRequest(xrpc_error(
+                "InvalidRequest",
+                "at-uri does not appear to be valid",
+            ))
+        };
+
+        let Some(normalized) = normalize_at_uri(&at_uri) else {
+            return bad_at_uri();
+        };
+
+        // TODO: move this to links
+        let Some(rest) = normalized.strip_prefix("at://") else {
+            return bad_at_uri();
+        };
+        let Some((repo, rest)) = rest.split_once('/') else {
+            return bad_at_uri();
+        };
+        let Some((collection, rest)) = rest.split_once('/') else {
+            return bad_at_uri();
+        };
+        let rkey = if let Some((rkey, _rest)) = rest.split_once('?') {
+            rkey
+        } else {
+            rest
+        };
+
+        self.get_record_impl(
+            repo.to_string(),
+            collection.to_string(),
+            rkey.to_string(),
+            cid,
+        )
+        .await
+    }
+
+    async fn get_record_impl(
+        &self,
+        repo: String,
+        collection: String,
+        rkey: String,
+        cid: Option<String>,
     ) -> GetRecordResponse {
         let did = match Did::new(repo.clone()) {
             Ok(did) => did,

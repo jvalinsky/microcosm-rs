@@ -4924,6 +4924,7 @@ dependencies = [
  "foyer",
  "hickory-resolver",
  "jetstream",
+ "links",
  "log",
  "metrics",
  "metrics-exporter-prometheus 0.17.2",
