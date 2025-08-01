@@ -25,6 +25,9 @@ use poem_openapi::{
     ApiResponse, Object, OpenApi, OpenApiService, param::Query, payload::Json, types::Example,
 };
 
+fn example_handle() -> String {
+    "bad-example.com".to_string()
+}
 fn example_did() -> String {
     "did:plc:hdhoaan3xa3jiuq4fg4mefid".to_string()
 }
@@ -41,6 +44,12 @@ fn example_uri() -> String {
         example_collection(),
         example_rkey()
     )
+}
+fn example_pds() -> String {
+    "https://porcini.us-east.host.bsky.network".to_string()
+}
+fn example_signing_key() -> String {
+    "zQ3shpq1g134o7HGDb86CtQFxnHqzx5pZWknrVX2Waum3fF6j".to_string()
 }
 
 #[derive(Object)]
@@ -67,8 +76,15 @@ fn xrpc_error(error: impl AsRef<str>, message: impl AsRef<str>) -> XrpcError {
     })
 }
 
-fn bad_request_handler(err: poem::Error) -> GetRecordResponse {
+fn bad_request_handler_get_record(err: poem::Error) -> GetRecordResponse {
     GetRecordResponse::BadRequest(Json(XrpcErrorResponseObject {
+        error: "InvalidRequest".to_string(),
+        message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
+    }))
+}
+
+fn bad_request_handler_resolve_mini(err: poem::Error) -> ResolveMiniIDResponse {
+    ResolveMiniIDResponse::BadRequest(Json(XrpcErrorResponseObject {
         error: "InvalidRequest".to_string(),
         message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
     }))
@@ -108,7 +124,7 @@ impl Example for FoundRecordResponseObject {
 }
 
 #[derive(ApiResponse)]
-#[oai(bad_request_handler = "bad_request_handler")]
+#[oai(bad_request_handler = "bad_request_handler_get_record")]
 enum GetRecordResponse {
     /// Record found
     #[oai(status = 200)]
@@ -125,6 +141,44 @@ enum GetRecordResponse {
     /// Server errors
     #[oai(status = 500)]
     ServerError(XrpcError),
+}
+
+#[derive(Object)]
+#[oai(example = true)]
+struct MiniDocResponseObject {
+    /// DID, bi-directionally verified if a handle was provided in the query.
+    did: String,
+    /// The validated handle of the account or `handle.invalid` if the handle
+    /// did not bi-directionally match the DID document.
+    handle: String,
+    /// The identity's PDS URL
+    pds: String,
+    /// The atproto signing key publicKeyMultibase
+    ///
+    /// Legacy key encoding not supported. the key is returned directly; `id`,
+    /// `type`, and `controller` are omitted.
+    signing_key: String,
+}
+impl Example for MiniDocResponseObject {
+    fn example() -> Self {
+        Self {
+            did: example_did(),
+            handle: example_handle(),
+            pds: example_pds(),
+            signing_key: example_signing_key(),
+        }
+    }
+}
+
+#[derive(ApiResponse)]
+#[oai(bad_request_handler = "bad_request_handler_resolve_mini")]
+enum ResolveMiniIDResponse {
+    /// Identity resolved
+    #[oai(status = 200)]
+    Ok(Json<MiniDocResponseObject>),
+    /// Bad request or identity not resolved
+    #[oai(status = 400)]
+    BadRequest(XrpcError),
 }
 
 struct Xrpc {
@@ -221,6 +275,87 @@ impl Xrpc {
             cid,
         )
         .await
+    }
+
+    /// com.bad-example.identity.resolveMiniDoc
+    ///
+    /// Like [com.atproto.identity.resolveIdentity](https://docs.bsky.app/docs/api/com-atproto-identity-resolve-identity)
+    /// but instead of the full `didDoc` it returns an atproto-relevant subset.
+    #[oai(path = "/com.bad-example.identity.resolveMiniDoc", method = "get")]
+    async fn resolve_mini_id(
+        &self,
+        /// Handle or DID to resolve
+        #[oai(example = "example_handle")]
+        Query(identifier): Query<String>,
+    ) -> ResolveMiniIDResponse {
+        let invalid = |reason: &'static str| {
+            ResolveMiniIDResponse::BadRequest(xrpc_error("InvalidRequest", reason))
+        };
+
+        let mut unverified_handle = None;
+        let did = match Did::new(identifier.clone()) {
+            Ok(did) => did,
+            Err(_) => {
+                let Ok(alleged_handle) = Handle::new(identifier) else {
+                    return invalid("identifier was not a valid DID or handle");
+                };
+                if let Ok(res) = self.identity.handle_to_did(alleged_handle.clone()).await {
+                    if let Some(did) = res {
+                        // we did it joe
+                        unverified_handle = Some(alleged_handle);
+                        did
+                    } else {
+                        return invalid("Could not resolve handle identifier to a DID");
+                    }
+                } else {
+                    // TODO: ServerError not BadRequest
+                    return invalid("errored while trying to resolve handle to DID");
+                }
+            }
+        };
+        let Ok(partial_doc) = self.identity.did_to_partial_mini_doc(&did).await else {
+            return invalid("failed to get DID doc");
+        };
+        let Some(partial_doc) = partial_doc else {
+            return invalid("failed to find DID doc");
+        };
+
+        // ok so here's where we're at:
+        // ✅ we have a DID
+        // ✅ we have a partial doc
+        // 🔶 if we have a handle, it's from the `identifier` (user-input)
+        //      -> then we just need to compare to the partial doc to confirm
+        //      -> else we need to resolve the DID doc's  to a handle and check
+        let handle = if let Some(h) = unverified_handle {
+            if h == partial_doc.unverified_handle {
+                h.to_string()
+            } else {
+                "handle.invalid".to_string()
+            }
+        } else {
+            let Ok(handle_did) = self
+                .identity
+                .handle_to_did(partial_doc.unverified_handle.clone())
+                .await
+            else {
+                return invalid("failed to get did doc's handle");
+            };
+            let Some(handle_did) = handle_did else {
+                return invalid("failed to resolve did doc's handle");
+            };
+            if handle_did == did {
+                partial_doc.unverified_handle.to_string()
+            } else {
+                "handle.invalid".to_string()
+            }
+        };
+
+        ResolveMiniIDResponse::Ok(Json(MiniDocResponseObject {
+            did: did.to_string(),
+            handle,
+            pds: partial_doc.pds,
+            signing_key: partial_doc.signing_key,
+        }))
     }
 
     async fn get_record_impl(

@@ -54,16 +54,16 @@ enum IdentityData {
 ///
 /// partial because the handle is not verified
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PartialMiniDoc {
+pub struct PartialMiniDoc {
     /// an atproto handle (**unverified**)
     ///
     /// the first valid atproto handle from the did doc's aka
-    unverified_handle: Handle,
+    pub unverified_handle: Handle,
     /// the did's atproto pds url (TODO: type this?)
     ///
     /// note: atrium *does* actually parse it into a URI, it just doesn't return
     /// that for some reason
-    pds: String,
+    pub pds: String,
     /// for now we're just pulling this straight from the did doc
     ///
     /// would be nice to type and validate it
@@ -71,7 +71,7 @@ struct PartialMiniDoc {
     /// this is the publicKeyMultibase from the did doc.
     /// legacy key encoding not supported.
     /// `id`, `type`, and `controller` must be checked, but aren't stored.
-    signing_key: String,
+    pub signing_key: String,
 }
 
 impl TryFrom<DidDocument> for PartialMiniDoc {
@@ -212,7 +212,7 @@ impl Identity {
         Ok(Some(did))
     }
 
-    /// Resolve (and verify!) a DID to a pds url
+    /// Resolve a DID to a pds url
     ///
     /// This *also* incidentally resolves and verifies the handle, which might
     /// make it slower than expected
@@ -271,7 +271,7 @@ impl Identity {
     }
 
     /// Fetch (and cache) a partial mini doc from a did
-    async fn did_to_partial_mini_doc(
+    pub async fn did_to_partial_mini_doc(
         &self,
         did: &Did,
     ) -> Result<Option<PartialMiniDoc>, IdentityError> {
