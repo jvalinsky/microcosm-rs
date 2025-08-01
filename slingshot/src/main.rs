@@ -89,8 +89,9 @@ async fn main() -> Result<(), String> {
         .map_err(|e| format!("identity setup failed: {e:?}"))?;
     log::info!("identity service ready.");
     let identity_refresher = identity.clone();
+    let identity_shutdown = shutdown.clone();
     tasks.spawn(async move {
-        identity_refresher.run_refresher().await?;
+        identity_refresher.run_refresher(identity_shutdown).await?;
         Ok(())
     });
 
@@ -113,13 +114,14 @@ async fn main() -> Result<(), String> {
     });
 
     let consumer_shutdown = shutdown.clone();
+    let consumer_cache = cache.clone();
     tasks.spawn(async move {
         consume(
             args.jetstream,
             None,
             args.jetstream_no_zstd,
             consumer_shutdown,
-            cache,
+            consumer_cache,
         )
         .await?;
         Ok(())
@@ -133,13 +135,20 @@ async fn main() -> Result<(), String> {
         }
     }
 
+    tasks.spawn(async move {
+        cache
+            .close()
+            .await
+            .map_err(MainTaskError::FirehoseCacheCloseError)
+    });
+
     tokio::select! {
         _ = async {
             while let Some(completed) = tasks.join_next().await {
                 log::info!("shutdown: task completed: {completed:?}");
             }
         } => {},
-        _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+        _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
             log::info!("shutdown: not all tasks completed on time. aborting...");
             tasks.shutdown().await;
         },

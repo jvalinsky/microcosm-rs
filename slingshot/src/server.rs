@@ -410,7 +410,7 @@ pub async fn serve(
     host: Option<String>,
     acme_contact: Option<String>,
     certs: Option<PathBuf>,
-    _shutdown: CancellationToken,
+    shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
     let repo = Arc::new(repo);
     let api_service = OpenApiService::new(
@@ -452,13 +452,18 @@ pub async fn serve(
         }
         let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
 
-        run(TcpListener::bind("0.0.0.0:443").acme(auto_cert), app).await
+        run(
+            TcpListener::bind("0.0.0.0:443").acme(auto_cert),
+            app,
+            shutdown,
+        )
+        .await
     } else {
-        run(TcpListener::bind("127.0.0.1:3000"), app).await
+        run(TcpListener::bind("127.0.0.1:3000"), app, shutdown).await
     }
 }
 
-async fn run<L>(listener: L, app: Route) -> Result<(), ServerError>
+async fn run<L>(listener: L, app: Route, shutdown: CancellationToken) -> Result<(), ServerError>
 where
     L: Listener + 'static,
 {
@@ -472,7 +477,8 @@ where
         .with(Tracing);
     Server::new(listener)
         .name("slingshot")
-        .run(app)
+        .run_with_graceful_shutdown(app, shutdown.cancelled(), None)
         .await
         .map_err(ServerError::ServerExited)
+        .inspect(|()| log::info!("server ended. goodbye."))
 }

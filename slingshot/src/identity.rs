@@ -13,6 +13,7 @@ use std::sync::Arc;
 /// 3. DID -> handle resolution: for bidirectional handle validation and in case we want to offer this
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::IdentityError;
 use atrium_api::{
@@ -175,8 +176,12 @@ impl Identity {
             .with_name("identity")
             .memory(16 * 2_usize.pow(20))
             .with_weighter(|k, v| std::mem::size_of_val(k) + std::mem::size_of_val(v))
-            .storage(Engine::large())
-            .with_device_options(DirectFsDeviceOptions::new(cache_dir))
+            .storage(Engine::small())
+            .with_device_options(
+                DirectFsDeviceOptions::new(cache_dir)
+                    .with_capacity(2_usize.pow(30)) // TODO: configurable (1GB to have something)
+                    .with_file_size(2_usize.pow(20)), // note: this does limit the max cached item size, warning jumbo records
+            )
             .build()
             .await?;
 
@@ -403,12 +408,21 @@ impl Identity {
     }
 
     /// run the refresh queue consumer
-    pub async fn run_refresher(&self) -> Result<(), IdentityError> {
+    pub async fn run_refresher(&self, shutdown: CancellationToken) -> Result<(), IdentityError> {
         let _guard = self
             .refresher
             .try_lock()
             .expect("there to only be one refresher running");
         loop {
+            if shutdown.is_cancelled() {
+                log::info!("identity refresher: exiting for shutdown: closing cache...");
+                if let Err(e) = self.cache.close().await {
+                    log::error!("cache close errored: {e}");
+                } else {
+                    log::info!("identity cache closed.")
+                }
+                return Ok(());
+            }
             let Some(task_key) = self.peek_refresh().await else {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 continue;

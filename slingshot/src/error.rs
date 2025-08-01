@@ -54,6 +54,8 @@ pub enum MainTaskError {
     ServerTaskError(#[from] ServerError),
     #[error(transparent)]
     IdentityTaskError(#[from] IdentityError),
+    #[error("firehose cache failed to close: {0}")]
+    FirehoseCacheCloseError(foyer::Error),
 }
 
 #[derive(Debug, Error)]
