@@ -31,6 +31,11 @@ struct Args {
     /// - TODO: a rate-limiter will be installed
     #[arg(long)]
     host: Option<String>,
+    /// email address for letsencrypt contact
+    ///
+    /// recommended in production, i guess?
+    #[arg(long)]
+    acme_contact: Option<String>,
     /// a location to cache acme https certs
     ///
     /// only used if --host is specified. omitting requires re-requesting certs
@@ -99,6 +104,7 @@ async fn main() -> Result<(), String> {
             identity,
             repo,
             args.host,
+            args.acme_contact,
             args.certs,
             server_shutdown,
         )

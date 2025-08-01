@@ -336,6 +336,7 @@ pub async fn serve(
     identity: Identity,
     repo: Repo,
     host: Option<String>,
+    acme_contact: Option<String>,
     certs: Option<PathBuf>,
     _shutdown: CancellationToken,
 ) -> Result<(), ServerError> {
@@ -371,8 +372,11 @@ pub async fn serve(
         let mut auto_cert = AutoCert::builder()
             .directory_url(LETS_ENCRYPT_PRODUCTION)
             .domain(&host);
+        if let Some(contact) = acme_contact {
+            auto_cert = auto_cert.contact(contact);
+        }
         if let Some(certs) = certs {
-            auto_cert = auto_cert.cache_path(certs)
+            auto_cert = auto_cert.cache_path(certs);
         }
         let auto_cert = auto_cert.build().map_err(ServerError::AcmeBuildError)?;
 
