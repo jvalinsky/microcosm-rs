@@ -168,7 +168,7 @@ impl Xrpc {
     /// com.bad-example.repo.getUriRecord
     ///
     /// Ergonomic complement to [`com.atproto.repo.getRecord`](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
-    /// which accepts an at-uri instead of individual rep/collection/rkey params
+    /// which accepts an at-uri instead of individual repo/collection/rkey params
     #[oai(path = "/com.bad-example.repo.getUriRecord", method = "get")]
     async fn get_uri_record(
         &self,
