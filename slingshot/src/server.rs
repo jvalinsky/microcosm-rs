@@ -566,6 +566,7 @@ pub async fn serve(
 
     let mut app = Route::new()
         .nest("/", api_service.scalar())
+        .nest("/se", api_service.stoplight_elements())
         .nest("/openapi.json", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
 
