@@ -91,6 +91,13 @@ fn bad_request_handler_resolve_mini(err: poem::Error) -> ResolveMiniIDResponse {
     }))
 }
 
+fn bad_request_handler_resolve_handle(err: poem::Error) -> JustDidResponse {
+    JustDidResponse::BadRequest(Json(XrpcErrorResponseObject {
+        error: "InvalidRequest".to_string(),
+        message: format!("Bad request, here's some info that maybe should not be exposed: {err}"),
+    }))
+}
+
 #[derive(Object)]
 #[oai(example = true)]
 struct FoundRecordResponseObject {
@@ -180,6 +187,34 @@ enum ResolveMiniIDResponse {
     /// Bad request or identity not resolved
     #[oai(status = 400)]
     BadRequest(XrpcError),
+}
+
+#[derive(Object)]
+#[oai(example = true)]
+struct FoundDidResponseObject {
+    /// the DID, bi-directionally verified if using Slingshot
+    did: String,
+}
+impl Example for FoundDidResponseObject {
+    fn example() -> Self {
+        Self { did: example_did() }
+    }
+}
+
+#[derive(ApiResponse)]
+#[oai(bad_request_handler = "bad_request_handler_resolve_handle")]
+enum JustDidResponse {
+    /// Resolution succeeded
+    #[oai(status = 200)]
+    Ok(Json<FoundDidResponseObject>),
+    /// Bad request, failed to resolve, or failed to verify
+    ///
+    /// `error` will be one of `InvalidRequest`, `HandleNotFound`.
+    #[oai(status = 400)]
+    BadRequest(XrpcError),
+    /// Something went wrong trying to complete the request
+    #[oai(status = 500)]
+    ServerError(XrpcError),
 }
 
 struct Xrpc {
@@ -312,6 +347,68 @@ impl Xrpc {
             cid,
         )
         .await
+    }
+
+    /// com.atproto.identity.resolveHandle
+    ///
+    /// Resolves an atproto [`handle`](https://atproto.com/guides/glossary#handle)
+    /// (hostname) to a [`DID`](https://atproto.com/guides/glossary#did-decentralized-id).
+    ///
+    /// Compatibility note: **Slingshot will _always_ bi-directionally verify
+    /// against the DID document**, which is optional by the authoritative
+    /// lexicon. You can trust the `DID` returned from this endpoint without
+    /// further checks, but this may not hold if you switch from Slingshot to a
+    /// different service offering this query.
+    ///
+    /// See also the [canonical `com.atproto` XRPC documentation](https://docs.bsky.app/docs/api/com-atproto-identity-resolve-handle)
+    /// that this endpoint aims to be compatible with.
+    #[oai(
+        path = "/com.atproto.identity.resolveHandle",
+        method = "get",
+        tag = "ApiTags::ComAtproto"
+    )]
+    async fn resolve_handle(
+        &self,
+        /// The handle to resolve.
+        #[oai(example = "example_handle")]
+        Query(handle): Query<String>,
+    ) -> JustDidResponse {
+        let Ok(handle) = Handle::new(handle) else {
+            return JustDidResponse::BadRequest(xrpc_error("InvalidRequest", "not a valid handle"));
+        };
+
+        let Ok(alleged_did) = self.identity.handle_to_did(handle.clone()).await else {
+            return JustDidResponse::ServerError(xrpc_error("Failed", "Could not resolve handle"));
+        };
+
+        let Some(alleged_did) = alleged_did else {
+            return JustDidResponse::BadRequest(xrpc_error(
+                "HandleNotFound",
+                "Could not resolve handle to a DID",
+            ));
+        };
+
+        let Ok(partial_doc) = self.identity.did_to_partial_mini_doc(&alleged_did).await else {
+            return JustDidResponse::ServerError(xrpc_error("Failed", "Could not fetch DID doc"));
+        };
+
+        let Some(partial_doc) = partial_doc else {
+            return JustDidResponse::BadRequest(xrpc_error(
+                "HandleNotFound",
+                "Resolved handle but could not find DID doc for the DID",
+            ));
+        };
+
+        if partial_doc.unverified_handle != handle {
+            return JustDidResponse::BadRequest(xrpc_error(
+                "HandleNotFound",
+                "Resolved handle failed bi-directional validation",
+            ));
+        }
+
+        JustDidResponse::Ok(Json(FoundDidResponseObject {
+            did: alleged_did.to_string(),
+        }))
     }
 
     /// com.bad-example.identity.resolveMiniDoc
