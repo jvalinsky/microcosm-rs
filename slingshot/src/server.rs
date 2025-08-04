@@ -22,7 +22,8 @@ use poem::{
     middleware::{Cors, Tracing},
 };
 use poem_openapi::{
-    ApiResponse, Object, OpenApi, OpenApiService, param::Query, payload::Json, types::Example,
+    ApiResponse, ContactObject, ExternalDocumentObject, Object, OpenApi, OpenApiService, Tags,
+    param::Query, payload::Json, types::Example,
 };
 
 fn example_handle() -> String {
@@ -187,6 +188,34 @@ struct Xrpc {
     repo: Arc<Repo>,
 }
 
+#[derive(Tags)]
+enum ApiTags {
+    /// Core ATProtocol-compatible APIs.
+    ///
+    /// Upstream documentation is available at
+    /// https://docs.bsky.app/docs/category/http-reference
+    ///
+    /// These queries are usually executed directly against the PDS containing
+    /// the data being requested. Slingshot offers a caching view of the same
+    /// contents with better expected performance and reliability.
+    #[oai(rename = "com.atproto.* queries")]
+    ComAtproto,
+    /// Additional and improved APIs.
+    ///
+    /// These APIs offer small tweaks to the core ATProtocol APIs, with more
+    /// more convenient [request parameters](#tag/slingshot-specific-queries/GET/xrpc/com.bad-example.repo.getUriRecord)
+    /// or [response formats](#tag/slingshot-specific-queries/GET/xrpc/com.bad-example.identity.resolveMiniDoc).
+    ///
+    /// At the moment, these are namespaced under the `com.bad-example.*` NSID
+    /// prefix, but as they stabilize they will likely be moved to either
+    /// `blue.microcosm.*` or a slingshot-instance-specific lexicon under its
+    /// `did:web` (ie., `blue.microcosm.slingshot.*`). Maybe one day they can
+    /// be promoted to the [Lexicon Community](https://discourse.lexicon.community/)
+    /// namespace.
+    #[oai(rename = "slingshot-specific queries")]
+    Custom,
+}
+
 #[OpenApi]
 impl Xrpc {
     /// com.atproto.repo.getRecord
@@ -195,7 +224,11 @@ impl Xrpc {
     ///
     /// See also the [canonical `com.atproto` XRPC documentation](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
     /// that this endpoint aims to be compatible with.
-    #[oai(path = "/com.atproto.repo.getRecord", method = "get")]
+    #[oai(
+        path = "/com.atproto.repo.getRecord",
+        method = "get",
+        tag = "ApiTags::ComAtproto"
+    )]
     async fn get_record(
         &self,
         /// The DID or handle of the repo
@@ -222,8 +255,12 @@ impl Xrpc {
     /// com.bad-example.repo.getUriRecord
     ///
     /// Ergonomic complement to [`com.atproto.repo.getRecord`](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
-    /// which accepts an at-uri instead of individual repo/collection/rkey params
-    #[oai(path = "/com.bad-example.repo.getUriRecord", method = "get")]
+    /// which accepts an `at-uri` instead of individual repo/collection/rkey params
+    #[oai(
+        path = "/com.bad-example.repo.getUriRecord",
+        method = "get",
+        tag = "ApiTags::Custom"
+    )]
     async fn get_uri_record(
         &self,
         /// The at-uri of the record
@@ -281,7 +318,11 @@ impl Xrpc {
     ///
     /// Like [com.atproto.identity.resolveIdentity](https://docs.bsky.app/docs/api/com-atproto-identity-resolve-identity)
     /// but instead of the full `didDoc` it returns an atproto-relevant subset.
-    #[oai(path = "/com.bad-example.identity.resolveMiniDoc", method = "get")]
+    #[oai(
+        path = "/com.bad-example.identity.resolveMiniDoc",
+        method = "get",
+        tag = "ApiTags::Custom"
+    )]
     async fn resolve_mini_id(
         &self,
         /// Handle or DID to resolve
@@ -562,11 +603,19 @@ pub async fn serve(
     } else {
         "http://localhost:3000".to_string()
     })
-    .url_prefix("/xrpc");
+    .url_prefix("/xrpc")
+    .contact(
+        ContactObject::new()
+            .name("@microcosm.blue")
+            .url("https://bsky.app/profile/microcosm.blue"),
+    )
+    .description(include_str!("../api-description.md"))
+    .external_document(ExternalDocumentObject::new(
+        "https://microcosm.blue/slingshot",
+    ));
 
     let mut app = Route::new()
         .nest("/", api_service.scalar())
-        .nest("/se", api_service.stoplight_elements())
         .nest("/openapi.json", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
 
