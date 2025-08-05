@@ -41,12 +41,12 @@ The "AT" in ATProtocol [stands for _Authenticated Transfer_](https://atproto.com
 
 Two core standard query APIs are supported to balance convenience and trust. They both fetch [records](https://atproto.com/guides/glossary#record):
 
-### [`com.atproto.repo.getRecord`](#tag/comatproto-queries/GET/xrpc/com.atproto.repo.getRecord)
+### [`com.atproto.repo.getRecord`](#tag/comatproto-queries/get/xrpc/com.atproto.repo.getRecord)
 
 - convenient `JSON` response format
 - cannot be proven authentic
 
-### [`com.atproto.sync.getRecord`](#tag/comatproto-queries/GET/xrpc/com.atproto.sync.getRecord)
+### [`com.atproto.sync.getRecord`](#tag/comatproto-queries/get/xrpc/com.atproto.sync.getRecord)
 
 - [`DAG-CBOR`](https://atproto.com/specs/data-model)-encoded response requires extra libraries to decode, but
 - includes a cryptographic proof of authenticity!
@@ -58,7 +58,7 @@ _(work on this endpoint is in progress)_
 
 - Slingshot also offers variants of the `getRecord` endpoints that accept a full `at-uri` as a parameter, to save clients from needing to parse and validate all parts of a record location.
 
-- Bi-directionally verifying identity endpoints, so you can directly exchange atproto [`handle`](https://atproto.com/guides/glossary#handle)s for [`DID`](https://atproto.com/guides/glossary#did-decentralized-id)s without extra steps, plus a convenient [Mini-Doc](#tag/slingshot-specific-queries/GET/xrpc/com.bad-example.identity.resolveMiniDoc) verified identity summary.
+- Bi-directionally verifying identity endpoints, so you can directly exchange atproto [`handle`](https://atproto.com/guides/glossary#handle)s for [`DID`](https://atproto.com/guides/glossary#did-decentralized-id)s without extra steps, plus a convenient [Mini-Doc](#tag/slingshot-specific-queries/get/xrpc/com.bad-example.identity.resolveMiniDoc) verified identity summary.
 
 
 ## Part of microcosm
