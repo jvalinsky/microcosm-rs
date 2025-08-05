@@ -30,7 +30,7 @@ struct Args {
     /// - an HTTPS certs will be automatically configured with Acme/letsencrypt
     /// - TODO: a rate-limiter will be installed
     #[arg(long)]
-    host: Option<String>,
+    domain: Option<String>,
     /// email address for letsencrypt contact
     ///
     /// recommended in production, i guess?
@@ -104,7 +104,7 @@ async fn main() -> Result<(), String> {
             server_cache_handle,
             identity,
             repo,
-            args.host,
+            args.domain,
             args.acme_contact,
             args.certs,
             server_shutdown,

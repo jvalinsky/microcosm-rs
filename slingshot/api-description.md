@@ -16,7 +16,8 @@ Large projects like [Bluesky](https://bsky.app/) control their performance and r
 
 ### Current status
 
-Slingshot is currently in a **v0, pre-release state**. There is one production instance and you can use it! Expect short downtimes for restarts as development progresses and lower cache hit-rates as the internal storage caches are adjusted and reset.
+> [!important]
+> Slingshot is currently in a **v0, pre-release state**. There is one production instance and you can use it! Expect short downtimes for restarts as development progresses and lower cache hit-rates as the internal storage caches are adjusted and reset.
 
 The core APIs will not change, since they are standard third-party `com.atproto` query APIs from ATProtocol.
 
@@ -54,6 +55,24 @@ Two core standard query APIs are supported to balance convenience and trust. The
 _(work on this endpoint is in progress)_
 
 
+## Service proxying
+
+Clients can proxy atproto queries through their own PDS with [Service Proxying](https://atproto.com/specs/xrpc#service-proxying), and this is supported by Slingshot. The Slingshot instance must be started the `--domain` argument specified.
+
+Service-proxied requests can specify a Slingshot instance via the `atproto-proxy` header:
+
+```http
+GET /xrpc/com.bad-example.identity.resolveMiniDoc?identifier=bad-example.com
+Host: <your pds>
+atproto-proxy: did:web:<slingshot domain>#slingshot
+```
+
+Where `<your pds>` is the user's own PDS host, and `<slingshot domain>` is the domain that the slingshot instance is deployed at (eg. `slingshot.microcosm.blue`). See the [Service Proxying](https://atproto.com/specs/xrpc#service-proxying) docs for more.
+
+> [!tip]
+> Service proxying is supported but completely optional. All APIs are directly accessible over the public internet, and GeoDNS helps route users to the closest instance to them for the lowest possible latency. (_note: deploying multiple slingshot instances with GeoDNS is still TODO_)
+
+
 ## Ergonomic APIs
 
 - Slingshot also offers variants of the `getRecord` endpoints that accept a full `at-uri` as a parameter, to save clients from needing to parse and validate all parts of a record location.
@@ -70,4 +89,5 @@ Slingshot excels when combined with _shallow indexing_ services, which offer fas
 - [🌌 Constellation](https://constellation.microcosm.blue/), a global backlink index (all social interactions in atproto are links!)
 - [🎇 Spacedust](https://spacedust.microcosm.blue/), a firehose of all social interactions
 
-All microcosm projects are [open source](https://tangled.sh/@bad-example.com/microcosm-links). **You can help sustain Slingshot** and all of microcosm by becoming a [Github sponsor](https://github.com/sponsors/uniphil/) or a [Ko-fi supporter](https://ko-fi.com/bad_example)!
+> [!success]
+> All microcosm projects are [open source](https://tangled.sh/@bad-example.com/microcosm-links). **You can help sustain Slingshot** and all of microcosm by becoming a [Github sponsor](https://github.com/sponsors/uniphil/) or a [Ko-fi supporter](https://ko-fi.com/bad_example)!

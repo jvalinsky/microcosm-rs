@@ -227,8 +227,9 @@ struct Xrpc {
 enum ApiTags {
     /// Core ATProtocol-compatible APIs.
     ///
-    /// Upstream documentation is available at
-    /// https://docs.bsky.app/docs/category/http-reference
+    /// > [!tip]
+    /// > Upstream documentation is available at
+    /// > https://docs.bsky.app/docs/category/http-reference
     ///
     /// These queries are usually executed directly against the PDS containing
     /// the data being requested. Slingshot offers a caching view of the same
@@ -241,12 +242,11 @@ enum ApiTags {
     /// more convenient [request parameters](#tag/slingshot-specific-queries/GET/xrpc/com.bad-example.repo.getUriRecord)
     /// or [response formats](#tag/slingshot-specific-queries/GET/xrpc/com.bad-example.identity.resolveMiniDoc).
     ///
-    /// At the moment, these are namespaced under the `com.bad-example.*` NSID
-    /// prefix, but as they stabilize they will likely be moved to either
-    /// `blue.microcosm.*` or a slingshot-instance-specific lexicon under its
-    /// `did:web` (ie., `blue.microcosm.slingshot.*`). Maybe one day they can
-    /// be promoted to the [Lexicon Community](https://discourse.lexicon.community/)
-    /// namespace.
+    /// > [!important]
+    /// > At the moment, these are namespaced under the `com.bad-example.*` NSID
+    /// > prefix, but as they stabilize they may be migrated to an org namespace
+    /// > like `blue.microcosm.*`. Support for asliasing to `com.bad-example.*`
+    /// > will be maintained as long as it's in use.
     #[oai(rename = "slingshot-specific queries")]
     Custom,
 }
@@ -257,8 +257,9 @@ impl Xrpc {
     ///
     /// Get a single record from a repository. Does not require auth.
     ///
-    /// See also the [canonical `com.atproto` XRPC documentation](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
-    /// that this endpoint aims to be compatible with.
+    /// > [!tip]
+    /// > See also the [canonical `com.atproto` XRPC documentation](https://docs.bsky.app/docs/api/com-atproto-repo-get-record)
+    /// > that this endpoint aims to be compatible with.
     #[oai(
         path = "/com.atproto.repo.getRecord",
         method = "get",
@@ -279,9 +280,9 @@ impl Xrpc {
         ///
         /// If not specified, then return the most recent version.
         ///
-        /// If specified and a newer version of the record exists, returns 404 not
-        /// found. That is: slingshot only retains the most recent version of a
-        /// record. (TODO: verify bsky behaviour for mismatched/old CID)
+        /// If a stale `CID` is specified and a newer version of the record
+        /// exists, Slingshot returns a `NotFound` error. That is: Slingshot
+        /// only retains the most recent version of a record.
         Query(cid): Query<Option<String>>,
     ) -> GetRecordResponse {
         self.get_record_impl(repo, collection, rkey, cid).await
@@ -308,9 +309,10 @@ impl Xrpc {
         ///
         /// If not specified, then return the most recent version.
         ///
-        /// If specified and a newer version of the record exists, returns 404 not
-        /// found. That is: slingshot only retains the most recent version of a
-        /// record.
+        /// > [!tip]
+        /// > If specified and a newer version of the record exists, returns 404 not
+        /// > found. That is: slingshot only retains the most recent version of a
+        /// > record.
         Query(cid): Query<Option<String>>,
     ) -> GetRecordResponse {
         let bad_at_uri = || {
@@ -354,12 +356,14 @@ impl Xrpc {
     /// Resolves an atproto [`handle`](https://atproto.com/guides/glossary#handle)
     /// (hostname) to a [`DID`](https://atproto.com/guides/glossary#did-decentralized-id).
     ///
-    /// Compatibility note: **Slingshot will _always_ bi-directionally verify
-    /// against the DID document**, which is optional according to the
-    /// authoritative lexicon.
+    /// > [!tip]
+    /// > Compatibility note: Slingshot will **always bi-directionally verify
+    /// > against the DID document**, which is optional according to the
+    /// > authoritative lexicon.
     ///
-    /// See the [canonical `com.atproto` XRPC documentation](https://docs.bsky.app/docs/api/com-atproto-identity-resolve-handle)
-    /// that this endpoint aims to be compatible with.
+    /// > [!tip]
+    /// > See the [canonical `com.atproto` XRPC documentation](https://docs.bsky.app/docs/api/com-atproto-identity-resolve-handle)
+    /// > that this endpoint aims to be compatible with.
     #[oai(
         path = "/com.atproto.identity.resolveHandle",
         method = "get",
@@ -662,13 +666,13 @@ struct AppViewDoc {
 ///
 /// - PDS proxying offers a level of client IP anonymity from slingshot
 /// - slingshot *may* implement more generous per-user rate-limits for proxied requests in the future
-fn get_did_doc(host: &str) -> impl Endpoint + use<> {
+fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
     let doc = poem::web::Json(AppViewDoc {
-        id: format!("did:web:{host}"),
+        id: format!("did:web:{domain}"),
         service: [AppViewService {
             id: "#slingshot".to_string(),
             r#type: "SlingshotRecordProxy".to_string(),
-            service_endpoint: format!("https://{host}"),
+            service_endpoint: format!("https://{domain}"),
         }],
     });
     make_sync(move |_| doc.clone())
@@ -678,7 +682,7 @@ pub async fn serve(
     cache: HybridCache<String, CachedRecord>,
     identity: Identity,
     repo: Repo,
-    host: Option<String>,
+    domain: Option<String>,
     acme_contact: Option<String>,
     certs: Option<PathBuf>,
     shutdown: CancellationToken,
@@ -693,7 +697,7 @@ pub async fn serve(
         "Slingshot",
         env!("CARGO_PKG_VERSION"),
     )
-    .server(if let Some(ref h) = host {
+    .server(if let Some(ref h) = domain {
         format!("https://{h}")
     } else {
         "http://localhost:3000".to_string()
@@ -714,16 +718,16 @@ pub async fn serve(
         .nest("/openapi", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
 
-    if let Some(host) = host {
+    if let Some(domain) = domain {
         rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .expect("alskfjalksdjf");
 
-        app = app.at("/.well-known/did.json", get_did_doc(&host));
+        app = app.at("/.well-known/did.json", get_did_doc(&domain));
 
         let mut auto_cert = AutoCert::builder()
             .directory_url(LETS_ENCRYPT_PRODUCTION)
-            .domain(&host);
+            .domain(&domain);
         if let Some(contact) = acme_contact {
             auto_cert = auto_cert.contact(contact);
         }
