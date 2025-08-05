@@ -355,12 +355,10 @@ impl Xrpc {
     /// (hostname) to a [`DID`](https://atproto.com/guides/glossary#did-decentralized-id).
     ///
     /// Compatibility note: **Slingshot will _always_ bi-directionally verify
-    /// against the DID document**, which is optional by the authoritative
-    /// lexicon. You can trust the `DID` returned from this endpoint without
-    /// further checks, but this may not hold if you switch from Slingshot to a
-    /// different service offering this query.
+    /// against the DID document**, which is optional according to the
+    /// authoritative lexicon.
     ///
-    /// See also the [canonical `com.atproto` XRPC documentation](https://docs.bsky.app/docs/api/com-atproto-identity-resolve-handle)
+    /// See the [canonical `com.atproto` XRPC documentation](https://docs.bsky.app/docs/api/com-atproto-identity-resolve-handle)
     /// that this endpoint aims to be compatible with.
     #[oai(
         path = "/com.atproto.identity.resolveHandle",
