@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use poem::{
     Endpoint, EndpointExt, Route, Server,
-    endpoint::make_sync,
+    endpoint::{StaticFileEndpoint, make_sync},
     http::Method,
     listener::{
         Listener, TcpListener,
@@ -712,8 +712,8 @@ pub async fn serve(
     ));
 
     let mut app = Route::new()
-        .nest("/", api_service.scalar())
-        .nest("/openapi.json", api_service.spec_endpoint())
+        .at("/", StaticFileEndpoint::new("./static/index.html"))
+        .nest("/openapi", api_service.spec_endpoint())
         .nest("/xrpc/", api_service);
 
     if let Some(host) = host {
