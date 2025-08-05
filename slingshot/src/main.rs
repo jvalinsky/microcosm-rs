@@ -1,7 +1,9 @@
 // use foyer::HybridCache;
 // use foyer::{Engine, DirectFsDeviceOptions, HybridCacheBuilder};
 use metrics_exporter_prometheus::PrometheusBuilder;
-use slingshot::{Identity, Repo, consume, error::MainTaskError, firehose_cache, serve};
+use slingshot::{
+    Identity, Repo, consume, error::MainTaskError, firehose_cache, healthcheck, serve,
+};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -44,6 +46,9 @@ struct Args {
     /// recommended in production, but mind the file permissions.
     #[arg(long)]
     certs: Option<PathBuf>,
+    /// an web address to send healtcheck pings to every ~51s or so
+    #[arg(long)]
+    healthcheck: Option<String>,
 }
 
 #[tokio::main]
@@ -126,6 +131,14 @@ async fn main() -> Result<(), String> {
         .await?;
         Ok(())
     });
+
+    if let Some(hc) = args.healthcheck {
+        let healthcheck_shutdown = shutdown.clone();
+        tasks.spawn(async move {
+            healthcheck(hc, healthcheck_shutdown).await?;
+            Ok(())
+        });
+    }
 
     tokio::select! {
         _ = shutdown.cancelled() => log::warn!("shutdown requested"),

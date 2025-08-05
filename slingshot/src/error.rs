@@ -47,6 +47,12 @@ pub enum IdentityError {
 }
 
 #[derive(Debug, Error)]
+pub enum HealthCheckError {
+    #[error("failed to send checkin: {0}")]
+    HealthCheckError(#[from] reqwest::Error),
+}
+
+#[derive(Debug, Error)]
 pub enum MainTaskError {
     #[error(transparent)]
     ConsumerTaskError(#[from] ConsumerError),
@@ -54,6 +60,8 @@ pub enum MainTaskError {
     ServerTaskError(#[from] ServerError),
     #[error(transparent)]
     IdentityTaskError(#[from] IdentityError),
+    #[error(transparent)]
+    HealthCheckError(#[from] HealthCheckError),
     #[error("firehose cache failed to close: {0}")]
     FirehoseCacheCloseError(foyer::Error),
 }

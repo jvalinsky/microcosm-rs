@@ -19,7 +19,7 @@ use poem::{
         Listener, TcpListener,
         acme::{AutoCert, LETS_ENCRYPT_PRODUCTION},
     },
-    middleware::{Cors, Tracing},
+    middleware::{CatchPanic, Cors, Tracing},
 };
 use poem_openapi::{
     ApiResponse, ContactObject, ExternalDocumentObject, Object, OpenApi, OpenApiService, Tags,
@@ -758,6 +758,7 @@ where
                 .allow_methods([Method::GET])
                 .allow_credentials(false),
         )
+        .with(CatchPanic::new())
         .with(Tracing);
     Server::new(listener)
         .name("slingshot")
