@@ -1,20 +1,19 @@
 microcosm
 =========
 
-HTTP APIs and rust libraries for [atproto](https://atproto.com/) services from [microcosm](https://microcosm.blue).
-
 [![@microcosm.blue: bluesky](https://img.shields.io/badge/@microcosm.blue-bluesky-blue)](https://bsky.app/profile/microcosm.blue)
 [![microcosm discord: join](https://img.shields.io/badge/microcosm_discord-join-purple)](https://discord.gg/tcDfe4PGVB)
 [![github sponsors: support](https://img.shields.io/badge/github_sponsors-support-pink)](https://github.com/sponsors/uniphil/)
 [![ko-fi: support](https://img.shields.io/badge/ko--fi-support-pink)](https://ko-fi.com/bad_example)
 
-Welcome!
+Welcome! Here you'll find HTTP APIs and rust libraries for [atproto](https://atproto.com/) services from [microcosm](https://microcosm.blue).
 
-The documentation for microcosm services is under active development. If you like reading API docs, you'll probably hit the ground running!
+Documentation is under active development. If you like reading API docs, you'll probably hit the ground running!
 
-Tutorials, how-to guides, and client SDK libraries are all in the works for gentler on-ramps, but are not quite ready yet. But don't let that stop you! Hop in the [microcosm discord](https://img.shields.io/badge/microcosm_discord-join-purple), or post questions and tag [@bad-example.com](https://bsky.app/profile/bad-example.com) on Bluesky if you get stuck anywhere!
+Tutorials, how-to guides, and client SDK libraries are all in the works for gentler on-ramps, but are not quite ready yet. But don't let that stop you! Hop in the [microcosm discord](https://discord.gg/tcDfe4PGVB), or post questions and tag [@bad-example.com](https://bsky.app/profile/bad-example.com) on Bluesky if you get stuck anywhere.
 
-This repository's primary home is moving to tangled: [@microcosm.blue/microcosm-rs](https://tangled.sh/@microcosm.blue/microcosm-rs). It will continue to be mirrored on [github](https://github.com/at-microcosm/microcosm-rs) for the forseeable future, and it's fine to open issues or pulls in either place!
+> [!tip]
+> This repository's primary home is moving to tangled: [@microcosm.blue/microcosm-rs](https://tangled.sh/@microcosm.blue/microcosm-rs). It will continue to be mirrored on [github](https://github.com/at-microcosm/microcosm-rs) for the forseeable future, and it's fine to open issues or pulls in either place!
 
 
 🌌 [Constellation](./constellation/)
@@ -61,7 +60,7 @@ Timeseries stats and sample records for every [collection](https://atproto.com/g
 - [Public instance/API docs](https://ufos-api.microcosm.blue/)
 - Status: Used in production. It has APIs and they work! Needs improvement on indexing; needs more indexes and some more APIs to the data exposed.
 
-> [!info]
+> [!tip]
 >  See also: [UFOs atproto explorer](https://ufos.microcosm.blue/) built on UFOs API. ([source](github.com/at-microcosm/spacedust-utils))
 
 
@@ -82,7 +81,7 @@ A low-overhead jetstream client with cursor handling and automatic reconnect.
 - Source: [./links/](./links/)
 - Status: used in multiple apps in production, but not yet published to crates.io; some rework planned
 
-> [!info]
+> [!tip]
 > See also: [Rocketman](https://github.com/teal-fm/cadet/tree/main/rocketman), another excellent rust jetstream client which shares some lineage and _is_ published on crates.io.
 
 
@@ -96,4 +95,4 @@ An identity bridge for microcosm demos, that kinda worked. Fixing its problems i
 - Status: ready for retirement.
 
 > [!warning]
-> Still in use for the Spacedust Notifications demo, but that will hopefully be migrated to use atproto oauth directly instead.
+> `who-am-i` is still in use for the Spacedust Notifications demo, but that will hopefully be migrated to use atproto oauth directly instead.
