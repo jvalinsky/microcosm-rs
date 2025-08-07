@@ -1,14 +1,11 @@
-microcosm
-=========
-
+microcosm HTTP APIs + rust crates
+=================================
 [![@microcosm.blue: bluesky](https://img.shields.io/badge/@microcosm.blue-bluesky-blue)](https://bsky.app/profile/microcosm.blue)
 [![microcosm discord: join](https://img.shields.io/badge/microcosm_discord-join-purple)](https://discord.gg/tcDfe4PGVB)
 [![github sponsors: support](https://img.shields.io/badge/github_sponsors-support-pink)](https://github.com/sponsors/uniphil/)
 [![ko-fi: support](https://img.shields.io/badge/ko--fi-support-pink)](https://ko-fi.com/bad_example)
 
-Welcome! Here you'll find HTTP APIs and rust libraries for [atproto](https://atproto.com/) services from [microcosm](https://microcosm.blue).
-
-Documentation is under active development. If you like reading API docs, you'll probably hit the ground running!
+Welcome! Documentation is under active development. If you like reading API docs, you'll probably hit the ground running!
 
 Tutorials, how-to guides, and client SDK libraries are all in the works for gentler on-ramps, but are not quite ready yet. But don't let that stop you! Hop in the [microcosm discord](https://discord.gg/tcDfe4PGVB), or post questions and tag [@bad-example.com](https://bsky.app/profile/bad-example.com) on Bluesky if you get stuck anywhere.
 
