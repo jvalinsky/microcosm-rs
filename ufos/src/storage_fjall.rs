@@ -1619,7 +1619,12 @@ impl StoreBackground for FjallBackground {
                     histogram!("storage_trim_dirty_nsids").record(completed.len() as f64);
                     histogram!("storage_trim_duration").record(dt.as_micros() as f64);
                     counter!("storage_trim_removed", "dangling" => "true").increment(total_danglers as u64);
-                    counter!("storage_trim_removed", "dangling" => "false").increment((total_deleted - total_danglers) as u64);
+                    if total_deleted >= total_danglers {
+                        counter!("storage_trim_removed", "dangling" => "false").increment((total_deleted - total_danglers) as u64);
+                    } else {
+                        // TODO: probably think through what's happening here
+                        log::warn!("weird trim case: more danglers than deleted? metric will be missing for dangling=false. deleted={total_deleted} danglers={total_danglers}");
+                    }
                     for c in completed {
                         dirty_nsids.remove(&c);
                     }
