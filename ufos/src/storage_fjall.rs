@@ -1222,7 +1222,8 @@ impl FjallWriter {
                         AllTimeRecordsKey::new(new_creates_count.into(), &nsid).to_db_bytes()?,
                     ),
                 };
-                batch.remove(&self.rollups, &old_k); // TODO: when fjall gets weak delete, this will hopefully work way better
+                // remove_weak is allowed here because the secondary ranking index only ever inserts once at a key
+                batch.remove_weak(&self.rollups, &old_k);
                 batch.insert(&self.rollups, &new_k, "");
             }
 
@@ -1246,7 +1247,8 @@ impl FjallWriter {
                         AllTimeDidsKey::new(new_dids_estimate.into(), &nsid).to_db_bytes()?,
                     ),
                 };
-                batch.remove(&self.rollups, &old_k); // TODO: when fjall gets weak delete, this will hopefully work way better
+                // remove_weak is allowed here because the secondary ranking index only ever inserts once at a key
+                batch.remove_weak(&self.rollups, &old_k);
                 batch.insert(&self.rollups, &new_k, "");
             }
 
