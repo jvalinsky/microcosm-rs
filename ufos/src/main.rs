@@ -4,6 +4,7 @@ use metrics::{describe_gauge, gauge, Unit};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
+use tokio::task::JoinSet;
 use ufos::consumer;
 use ufos::file_consumer;
 use ufos::server;
@@ -72,19 +73,31 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn go<B: StoreBackground>(
+async fn go<B: StoreBackground + 'static>(
     args: Args,
     read_store: impl StoreReader + 'static + Clone,
     mut write_store: impl StoreWriter<B> + 'static,
     cursor: Option<Cursor>,
     sketch_secret: SketchSecretPrefix,
 ) -> anyhow::Result<()> {
+    let mut tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
     println!("starting server with storage...");
     let serving = server::serve(read_store.clone());
+    tasks.spawn(async move {
+        serving.await.map_err(|e| {
+            log::warn!("server ended: {e}");
+            anyhow::anyhow!(e)
+        })
+    });
 
     if args.pause_writer {
         log::info!("not starting jetstream or the write loop.");
-        serving.await.map_err(|e| anyhow::anyhow!(e))?;
+        for t in tasks.join_all().await {
+            if let Err(e) = t {
+                return Err(anyhow::anyhow!(e));
+            }
+        }
         return Ok(());
     }
 
@@ -102,18 +115,32 @@ async fn go<B: StoreBackground>(
     let rolling = write_store
         .background_tasks(args.reroll)?
         .run(args.backfill);
-    let consuming = write_store.receive_batches(batches);
+    tasks.spawn(async move {
+        rolling
+            .await
+            .inspect_err(|e| log::warn!("rollup ended: {e}"))?;
+        Ok(())
+    });
 
-    let stating = do_update_stuff(read_store);
+    tasks.spawn(async move {
+        write_store
+            .receive_batches(batches)
+            .await
+            .inspect_err(|e| log::warn!("consumer ended: {e}"))?;
+        Ok(())
+    });
+
+    tasks.spawn(async move {
+        do_update_stuff(read_store).await;
+        log::warn!("status task ended");
+        Ok(())
+    });
 
     install_metrics_server()?;
 
-    tokio::select! {
-        z = serving => log::warn!("serve task ended: {z:?}"),
-        z = rolling => log::warn!("rollup task ended: {z:?}"),
-        z = consuming => log::warn!("consuming task ended: {z:?}"),
-        z = stating => log::warn!("status task ended: {z:?}"),
-    };
+    for (i, t) in tasks.join_all().await.iter().enumerate() {
+        log::warn!("task {i} done: {t:?}");
+    }
 
     println!("bye!");
 
