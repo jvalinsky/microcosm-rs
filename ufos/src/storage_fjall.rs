@@ -1143,19 +1143,9 @@ impl FjallWriter {
             "how many items are in the fjall batch for batched inserts"
         );
         describe_histogram!(
-            "storage_insert_batch_db_batch_size",
-            Unit::Count,
-            "in-memory size of the fjall batch for batched inserts"
-        );
-        describe_histogram!(
             "storage_rollup_counts_db_batch_items",
             Unit::Count,
             "how many items are in the fjall batch for a timlies rollup"
-        );
-        describe_histogram!(
-            "storage_rollup_counts_db_batch_size",
-            Unit::Count,
-            "in-memory size of the fjall batch for a timelies rollup"
         );
         describe_counter!(
             "storage_delete_account_partial_commits",
@@ -1356,8 +1346,6 @@ impl FjallWriter {
         insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, last_cursor)?;
 
         histogram!("storage_rollup_counts_db_batch_items").record(batch.len() as f64);
-        histogram!("storage_rollup_counts_db_batch_size")
-            .record(std::mem::size_of_val(&batch) as f64);
         batch.commit()?;
         Ok((cursors_advanced, dirty_nsids))
     }
@@ -1463,8 +1451,6 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         );
 
         histogram!("storage_insert_batch_db_batch_items").record(batch.len() as f64);
-        histogram!("storage_insert_batch_db_batch_size")
-            .record(std::mem::size_of_val(&batch) as f64);
         batch.commit()?;
         Ok(())
     }
