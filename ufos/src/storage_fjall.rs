@@ -23,7 +23,10 @@ use fjall::{
     Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Snapshot,
 };
 use jetstream::events::Cursor;
-use metrics::{counter, describe_counter, describe_histogram, histogram, Unit};
+use lsm_tree::AbstractTree;
+use metrics::{
+    counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
+};
 use std::collections::{HashMap, HashSet};
 use std::iter::Peekable;
 use std::ops::Bound;
@@ -227,7 +230,9 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
             feeds: feeds.clone(),
             records: records.clone(),
             rollups: rollups.clone(),
+            queues: queues.clone(),
         };
+        reader.describe_metrics();
         let writer = FjallWriter {
             bg_taken: Arc::new(AtomicBool::new(false)),
             keyspace,
@@ -250,6 +255,7 @@ pub struct FjallReader {
     feeds: PartitionHandle,
     records: PartitionHandle,
     rollups: PartitionHandle,
+    queues: PartitionHandle,
 }
 
 /// An iterator that knows how to skip over deleted/invalidated records
@@ -381,6 +387,14 @@ fn get_lookup_iter<T: WithCollection + WithRank + DbBytes + 'static>(
 type CollectionSerieses = HashMap<Nsid, Vec<CountsValue>>;
 
 impl FjallReader {
+    fn describe_metrics(&self) {
+        describe_gauge!(
+            "storage_fjall_l0_run_count",
+            Unit::Count,
+            "number of L0 runs in a partition"
+        );
+    }
+
     fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let rollup_cursor =
             get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?
@@ -999,6 +1013,18 @@ impl FjallReader {
 impl StoreReader for FjallReader {
     fn name(&self) -> String {
         "fjall storage v2".into()
+    }
+    fn update_metrics(&self) {
+        gauge!("storage_fjall_l0_run_count", "partition" => "global")
+            .set(self.global.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_l0_run_count", "partition" => "feeds")
+            .set(self.feeds.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_l0_run_count", "partition" => "records")
+            .set(self.records.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_l0_run_count", "partition" => "rollups")
+            .set(self.rollups.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_l0_run_count", "partition" => "queues")
+            .set(self.queues.tree.l0_run_count() as f64);
     }
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let s = self.clone();

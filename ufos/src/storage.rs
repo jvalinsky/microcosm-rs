@@ -104,6 +104,8 @@ pub trait StoreBackground: Send + Sync {
 pub trait StoreReader: Send + Sync {
     fn name(&self) -> String;
 
+    fn update_metrics(&self) {}
+
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value>;
 
     async fn get_consumer_info(&self) -> StorageResult<ConsumerInfo>;

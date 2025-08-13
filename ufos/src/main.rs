@@ -162,6 +162,7 @@ async fn do_update_stuff(read_store: impl StoreReader) {
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
+        read_store.update_metrics();
         match read_store.get_consumer_info().await {
             Err(e) => log::warn!("failed to get jetstream consumer info: {e:?}"),
             Ok(ConsumerInfo::Jetstream {
