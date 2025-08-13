@@ -242,6 +242,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
             rollups,
             queues,
         };
+        writer.describe_metrics();
         Ok((reader, writer, js_cursor, sketch_secret))
     }
 }
@@ -392,6 +393,21 @@ impl FjallReader {
             "storage_fjall_l0_run_count",
             Unit::Count,
             "number of L0 runs in a partition"
+        );
+        describe_gauge!(
+            "storage_fjall_keyspace_disk_space",
+            Unit::Bytes,
+            "total storage used according to fjall"
+        );
+        describe_gauge!(
+            "storage_fjall_journal_count",
+            Unit::Count,
+            "total keyspace journals according to fjall"
+        );
+        describe_gauge!(
+            "storage_fjall_keyspace_sequence",
+            Unit::Count,
+            "fjall keyspace sequence"
         );
     }
 
@@ -1025,6 +1041,9 @@ impl StoreReader for FjallReader {
             .set(self.rollups.tree.l0_run_count() as f64);
         gauge!("storage_fjall_l0_run_count", "partition" => "queues")
             .set(self.queues.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_keyspace_disk_space").set(self.keyspace.disk_space() as f64);
+        gauge!("storage_fjall_journal_count").set(self.keyspace.journal_count() as f64);
+        gauge!("storage_fjall_keyspace_sequence").set(self.keyspace.instant() as f64);
     }
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let s = self.clone();
@@ -1117,6 +1136,58 @@ pub struct FjallWriter {
 }
 
 impl FjallWriter {
+    fn describe_metrics(&self) {
+        describe_histogram!(
+            "storage_insert_batch_db_batch_items",
+            Unit::Count,
+            "how many items are in the fjall batch for batched inserts"
+        );
+        describe_histogram!(
+            "storage_insert_batch_db_batch_size",
+            Unit::Count,
+            "in-memory size of the fjall batch for batched inserts"
+        );
+        describe_histogram!(
+            "storage_rollup_counts_db_batch_items",
+            Unit::Count,
+            "how many items are in the fjall batch for a timlies rollup"
+        );
+        describe_histogram!(
+            "storage_rollup_counts_db_batch_size",
+            Unit::Count,
+            "in-memory size of the fjall batch for a timelies rollup"
+        );
+        describe_counter!(
+            "storage_delete_account_partial_commits",
+            Unit::Count,
+            "fjall checkpoint commits for cleaning up accounts with too many records"
+        );
+        describe_counter!(
+            "storage_delete_account_completions",
+            Unit::Count,
+            "total count of account deletes handled"
+        );
+        describe_counter!(
+            "storage_delete_account_records_deleted",
+            Unit::Count,
+            "total records deleted when handling account deletes"
+        );
+        describe_histogram!(
+            "storage_trim_dirty_nsids",
+            Unit::Count,
+            "number of NSIDs trimmed"
+        );
+        describe_histogram!(
+            "storage_trim_duration",
+            Unit::Microseconds,
+            "how long it took to trim the dirty NSIDs"
+        );
+        describe_counter!(
+            "storage_trim_removed",
+            Unit::Count,
+            "how many records were removed during trim"
+        );
+    }
     fn rollup_delete_account(
         &mut self,
         cursor: Cursor,
@@ -1284,6 +1355,9 @@ impl FjallWriter {
 
         insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, last_cursor)?;
 
+        histogram!("storage_rollup_counts_db_batch_items").record(batch.len() as f64);
+        histogram!("storage_rollup_counts_db_batch_size")
+            .record(std::mem::size_of_val(&batch) as f64);
         batch.commit()?;
         Ok((cursors_advanced, dirty_nsids))
     }
@@ -1294,21 +1368,6 @@ impl StoreWriter<FjallBackground> for FjallWriter {
         if self.bg_taken.swap(true, Ordering::SeqCst) {
             return Err(StorageError::BackgroundAlreadyStarted);
         }
-        describe_histogram!(
-            "storage_trim_dirty_nsids",
-            Unit::Count,
-            "number of NSIDs trimmed"
-        );
-        describe_histogram!(
-            "storage_trim_duration",
-            Unit::Microseconds,
-            "how long it took to trim the dirty NSIDs"
-        );
-        describe_counter!(
-            "storage_trim_removed",
-            Unit::Count,
-            "how many records were removed during trim"
-        );
         if reroll {
             log::info!("reroll: resetting rollup cursor...");
             insert_static_neu::<NewRollupCursorKey>(&self.global, Cursor::from_start())?;
@@ -1403,6 +1462,9 @@ impl StoreWriter<FjallBackground> for FjallWriter {
             latest.to_db_bytes()?,
         );
 
+        histogram!("storage_insert_batch_db_batch_items").record(batch.len() as f64);
+        histogram!("storage_insert_batch_db_batch_size")
+            .record(std::mem::size_of_val(&batch) as f64);
         batch.commit()?;
         Ok(())
     }
@@ -1584,10 +1646,13 @@ impl StoreWriter<FjallBackground> for FjallWriter {
             batch.remove(&self.records, key_bytes);
             records_deleted += 1;
             if batch.len() >= MAX_BATCHED_ACCOUNT_DELETE_RECORDS {
+                counter!("storage_delete_account_partial_commits").increment(1);
                 batch.commit()?;
                 batch = self.keyspace.batch();
             }
         }
+        counter!("storage_delete_account_completions").increment(1);
+        counter!("storage_delete_account_records_deleted").increment(records_deleted as u64);
         batch.commit()?;
         Ok(records_deleted)
     }
