@@ -116,7 +116,7 @@ async fn go<B: StoreBackground + 'static>(
     let rolling = write_store
         .background_tasks(args.reroll)?
         .run(args.backfill);
-    consumer_tasks.spawn(async move {
+    whatever_tasks.spawn(async move {
         rolling
             .await
             .inspect_err(|e| log::warn!("rollup ended: {e}"))?;
