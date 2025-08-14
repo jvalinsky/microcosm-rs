@@ -80,11 +80,12 @@ async fn go<B: StoreBackground + 'static>(
     cursor: Option<Cursor>,
     sketch_secret: SketchSecretPrefix,
 ) -> anyhow::Result<()> {
-    let mut tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
+    let mut whatever_tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
+    let mut consumer_tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
 
     println!("starting server with storage...");
     let serving = server::serve(read_store.clone());
-    tasks.spawn(async move {
+    whatever_tasks.spawn(async move {
         serving.await.map_err(|e| {
             log::warn!("server ended: {e}");
             anyhow::anyhow!(e)
@@ -93,7 +94,7 @@ async fn go<B: StoreBackground + 'static>(
 
     if args.pause_writer {
         log::info!("not starting jetstream or the write loop.");
-        for t in tasks.join_all().await {
+        for t in whatever_tasks.join_all().await {
             if let Err(e) = t {
                 return Err(anyhow::anyhow!(e));
             }
@@ -115,14 +116,14 @@ async fn go<B: StoreBackground + 'static>(
     let rolling = write_store
         .background_tasks(args.reroll)?
         .run(args.backfill);
-    tasks.spawn(async move {
+    consumer_tasks.spawn(async move {
         rolling
             .await
             .inspect_err(|e| log::warn!("rollup ended: {e}"))?;
         Ok(())
     });
 
-    tasks.spawn(async move {
+    consumer_tasks.spawn(async move {
         write_store
             .receive_batches(batches)
             .await
@@ -130,7 +131,7 @@ async fn go<B: StoreBackground + 'static>(
         Ok(())
     });
 
-    tasks.spawn(async move {
+    whatever_tasks.spawn(async move {
         do_update_stuff(read_store).await;
         log::warn!("status task ended");
         Ok(())
@@ -138,9 +139,12 @@ async fn go<B: StoreBackground + 'static>(
 
     install_metrics_server()?;
 
-    for (i, t) in tasks.join_all().await.iter().enumerate() {
+    for (i, t) in consumer_tasks.join_all().await.iter().enumerate() {
         log::warn!("task {i} done: {t:?}");
     }
+
+    println!("consumer tasks all completed, killing the others");
+    whatever_tasks.shutdown().await;
 
     println!("bye!");
 
