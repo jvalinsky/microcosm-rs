@@ -240,9 +240,10 @@ impl Identity {
                         Err(atrium_identity::Error::NotFound) => {
                             Ok(IdentityVal(UtcDateTime::now(), IdentityData::NotFound))
                         }
-                        Err(other) => Err(foyer::Error::Other(Box::new(
-                            IdentityError::ResolutionFailed(other),
-                        ))),
+                        Err(other) => Err(foyer::Error::Other(Box::new({
+                            log::debug!("other error resolving handle: {other:?}");
+                            IdentityError::ResolutionFailed(other)
+                        }))),
                     }
                 }
             })

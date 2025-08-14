@@ -439,17 +439,22 @@ impl Xrpc {
                 let Ok(alleged_handle) = Handle::new(identifier) else {
                     return invalid("identifier was not a valid DID or handle");
                 };
-                if let Ok(res) = self.identity.handle_to_did(alleged_handle.clone()).await {
-                    if let Some(did) = res {
-                        // we did it joe
-                        unverified_handle = Some(alleged_handle);
-                        did
-                    } else {
-                        return invalid("Could not resolve handle identifier to a DID");
+
+                match self.identity.handle_to_did(alleged_handle.clone()).await {
+                    Ok(res) => {
+                        if let Some(did) = res {
+                            // we did it joe
+                            unverified_handle = Some(alleged_handle);
+                            did
+                        } else {
+                            return invalid("Could not resolve handle identifier to a DID");
+                        }
                     }
-                } else {
-                    // TODO: ServerError not BadRequest
-                    return invalid("errored while trying to resolve handle to DID");
+                    Err(e) => {
+                        log::debug!("failed to resolve handle: {e}");
+                        // TODO: ServerError not BadRequest
+                        return invalid("errored while trying to resolve handle to DID");
+                    }
                 }
             }
         };
@@ -514,20 +519,24 @@ impl Xrpc {
                         "repo was not a valid DID or handle",
                     ));
                 };
-                if let Ok(res) = self.identity.handle_to_did(handle).await {
-                    if let Some(did) = res {
-                        did
-                    } else {
-                        return GetRecordResponse::BadRequest(xrpc_error(
-                            "InvalidRequest",
-                            "Could not resolve handle repo to a DID",
+                match self.identity.handle_to_did(handle).await {
+                    Ok(res) => {
+                        if let Some(did) = res {
+                            did
+                        } else {
+                            return GetRecordResponse::BadRequest(xrpc_error(
+                                "InvalidRequest",
+                                "Could not resolve handle repo to a DID",
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        log::debug!("handle resolution failed: {e}");
+                        return GetRecordResponse::ServerError(xrpc_error(
+                            "ResolutionFailed",
+                            "errored while trying to resolve handle to DID",
                         ));
                     }
-                } else {
-                    return GetRecordResponse::ServerError(xrpc_error(
-                        "ResolutionFailed",
-                        "errored while trying to resolve handle to DID",
-                    ));
                 }
             }
         };
