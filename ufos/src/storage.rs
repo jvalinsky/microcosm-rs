@@ -41,6 +41,11 @@ where
             Unit::Microseconds,
             "batches that took more than 3s to insert"
         );
+        describe_histogram!(
+            "storage_batch_insert_time",
+            Unit::Microseconds,
+            "total time to insert one commit batch"
+        );
         while let Some(event_batch) = batches.recv().await {
             let token = CancellationToken::new();
             let cancelled = token.clone();
@@ -69,7 +74,10 @@ where
                 let mut me = self.clone();
                 move || {
                     let _guard = token.drop_guard();
-                    me.insert_batch(event_batch)
+                    let t0 = Instant::now();
+                    let r = me.insert_batch(event_batch);
+                    histogram!("storage_batch_insert_time").record(t0.elapsed().as_micros() as f64);
+                    r
                 }
             })
             .await??;
