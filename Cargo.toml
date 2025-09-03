@@ -10,4 +10,5 @@ members = [
     "who-am-i",
     "slingshot",
     "quasar",
+    "pocket",
 ]
