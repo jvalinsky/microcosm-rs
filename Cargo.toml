@@ -9,4 +9,5 @@ members = [
     "spacedust",
     "who-am-i",
     "slingshot",
+    "quasar",
 ]
