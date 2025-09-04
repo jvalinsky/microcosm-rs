@@ -6,4 +6,3 @@ async fn main() {
     println!("Hello, world!");
     serve("mac.cinnebar-tet.ts.net").await
 }
-

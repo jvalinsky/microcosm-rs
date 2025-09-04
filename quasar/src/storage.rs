@@ -1,4 +1,4 @@
 
-trait Storage {
+pub trait Storage {
     
 }

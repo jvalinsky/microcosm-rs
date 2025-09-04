@@ -1,41 +1,30 @@
+use crate::TokenVerifier;
 use poem::{
-    endpoint::make_sync,
-    Endpoint,
-    Route,
-    Server,
-    EndpointExt,
-    http::{Method, HeaderMap},
-    middleware::{CatchPanic, Cors, Tracing},
+    Endpoint, EndpointExt, Route, Server,
+    endpoint::{StaticFileEndpoint, make_sync},
+    http::Method,
     listener::TcpListener,
+    middleware::{CatchPanic, Cors, Tracing},
 };
 use poem_openapi::{
-    ContactObject,
-    ExternalDocumentObject,
-    OpenApi,
-    OpenApiService,
-    Tags,
-    Object,
-    ApiResponse,
-    types::Example,
+    ApiResponse, ContactObject, ExternalDocumentObject, Object, OpenApi, OpenApiService,
+    SecurityScheme, Tags,
     auth::Bearer,
-    payload::Json,
-    SecurityScheme,
+    payload::{Json, PlainText},
+    types::Example,
 };
-use crate::verify;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-
 #[derive(Debug, SecurityScheme)]
 #[oai(ty = "bearer")]
-struct BlahAuth(Bearer);
-
+struct XrpcAuth(Bearer);
 
 #[derive(Tags)]
 enum ApiTags {
-    /// Bluesky-compatible APIs.
-    #[oai(rename = "app.bsky.* queries")]
-    AppBsky,
+    /// Custom pocket APIs
+    #[oai(rename = "Pocket APIs")]
+    Pocket,
 }
 
 #[derive(Object)]
@@ -86,57 +75,74 @@ enum GetBskyPrefsResponse {
     /// Bad request or no preferences to return
     #[oai(status = 400)]
     BadRequest(XrpcError),
+}
+
+#[derive(ApiResponse)]
+enum PutBskyPrefsResponse {
+    /// Record found
+    #[oai(status = 200)]
+    Ok(PlainText<String>),
+    /// Bad request or no preferences to return
+    #[oai(status = 400)]
+    BadRequest(XrpcError),
     // /// Server errors
     // #[oai(status = 500)]
     // ServerError(XrpcError),
 }
 
 struct Xrpc {
-    domain: String,
+    verifier: TokenVerifier,
 }
 
 #[OpenApi]
 impl Xrpc {
-    /// app.bsky.actor.getPreferences
+    /// com.bad-example.pocket.getPreferences
     ///
     /// get stored bluesky prefs
     #[oai(
-        path = "/app.bsky.actor.getPreferences",
+        path = "/com.bad-example.pocket.getPreferences",
         method = "get",
-        tag = "ApiTags::AppBsky"
+        tag = "ApiTags::Pocket"
     )]
-    async fn app_bsky_get_prefs(
-        &self,
-        BlahAuth(auth): BlahAuth,
-        m: &HeaderMap,
-    ) -> GetBskyPrefsResponse {
-        log::warn!("hm: {m:?}");
-        match verify(
-            &format!("did:web:{}#bsky_appview", self.domain),
-            "app.bsky.actor.getPreferences",
-            &auth.token,
-        ).await {
-            Ok(did) => log::info!("wooo! {did}"),
-            Err(err) => return GetBskyPrefsResponse::BadRequest(xrpc_error("booo", err)),
+    async fn app_bsky_get_prefs(&self, XrpcAuth(auth): XrpcAuth) -> GetBskyPrefsResponse {
+        let did = match self
+            .verifier
+            .verify("app.bsky.actor.getPreferences", &auth.token)
+            .await
+        {
+            Ok(d) => d,
+            Err(e) => return GetBskyPrefsResponse::BadRequest(xrpc_error("boooo", e.to_string())),
         };
-        log::warn!("got bearer: {:?}", auth.token);
+        log::info!("verified did: {did}");
+        // TODO: fetch from storage
         GetBskyPrefsResponse::Ok(Json(GetBskyPrefsResponseObject::example()))
     }
 
-    /// app.bsky.actor.putPreferences
+    /// com.bad-example.pocket.putPreferences
     ///
     /// store bluesky prefs
     #[oai(
-        path = "/app.bsky.actor.putPreferences",
+        path = "/com.bad-example.pocket.putPreferences",
         method = "post",
-        tag = "ApiTags::AppBsky"
+        tag = "ApiTags::Pocket"
     )]
     async fn app_bsky_put_prefs(
         &self,
+        XrpcAuth(auth): XrpcAuth,
         Json(prefs): Json<Value>,
-    ) -> () {
+    ) -> PutBskyPrefsResponse {
+        let did = match self
+            .verifier
+            .verify("app.bsky.actor.getPreferences", &auth.token)
+            .await
+        {
+            Ok(d) => d,
+            Err(e) => return PutBskyPrefsResponse::BadRequest(xrpc_error("boooo", e.to_string())),
+        };
+        log::info!("verified did: {did}");
         log::warn!("received prefs: {prefs:?}");
-        ()
+        // TODO: put prefs into storage
+        PutBskyPrefsResponse::Ok(PlainText("hiiiiii".to_string()))
     }
 }
 
@@ -157,52 +163,40 @@ fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
     let doc = poem::web::Json(AppViewDoc {
         id: format!("did:web:{domain}"),
         service: [AppViewService {
-            id: "#bsky_appview".to_string(),
-            r#type: "PocketBlueskyPreferences".to_string(),
+            id: "#pocket_prefs".to_string(),
+            r#type: "PocketPreferences".to_string(),
             service_endpoint: format!("https://{domain}"),
         }],
     });
     make_sync(move |_| doc.clone())
 }
 
-pub async fn serve(
-    domain: &str,
-) -> () {
-    let api_service = OpenApiService::new(
-        Xrpc { domain: domain.to_string() },
-        "Pocket",
-        env!("CARGO_PKG_VERSION"),
-    )
-    .server(domain)
-    .url_prefix("/xrpc")
-    .contact(
-        ContactObject::new()
-            .name("@microcosm.blue")
-            .url("https://bsky.app/profile/microcosm.blue"),
-    )
-    // .description(include_str!("../api-description.md"))
-    .external_document(ExternalDocumentObject::new(
-        "https://microcosm.blue/pocket",
-    ));
+pub async fn serve(domain: &str) -> () {
+    let verifier = TokenVerifier::new(domain);
+    let api_service = OpenApiService::new(Xrpc { verifier }, "Pocket", env!("CARGO_PKG_VERSION"))
+        .server(domain)
+        .url_prefix("/xrpc")
+        .contact(
+            ContactObject::new()
+                .name("@microcosm.blue")
+                .url("https://bsky.app/profile/microcosm.blue"),
+        )
+        .description(include_str!("../api-description.md"))
+        .external_document(ExternalDocumentObject::new("https://microcosm.blue/pocket"));
 
     let app = Route::new()
-        .at("/.well-known/did.json", get_did_doc(&domain))
+        .nest("/openapi", api_service.spec_endpoint())
         .nest("/xrpc/", api_service)
-        // .at("/", StaticFileEndpoint::new("./static/index.html"))
-        // .nest("/openapi", api_service.spec_endpoint())
+        .at("/.well-known/did.json", get_did_doc(domain))
+        .at("/", StaticFileEndpoint::new("./static/index.html"))
         .with(
             Cors::new()
                 .allow_method(Method::GET)
-                .allow_method(Method::POST)
+                .allow_method(Method::POST),
         )
         .with(CatchPanic::new())
         .with(Tracing);
 
     let listener = TcpListener::bind("127.0.0.1:3000");
-    Server::new(listener)
-        .name("pocket")
-        .run(app)
-        .await
-        .unwrap();
-
+    Server::new(listener).name("pocket").run(app).await.unwrap();
 }
