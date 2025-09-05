@@ -20,6 +20,7 @@ struct DidDoc {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DidService {
     id: String,
     r#type: String,

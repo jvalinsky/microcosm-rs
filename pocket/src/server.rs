@@ -94,13 +94,16 @@ struct Xrpc {
     verifier: TokenVerifier,
 }
 
+// app.bsky.actor.getPreferences
+// com.bad-example.pocket.getPreferences
+
 #[OpenApi]
 impl Xrpc {
     /// com.bad-example.pocket.getPreferences
     ///
     /// get stored bluesky prefs
     #[oai(
-        path = "/com.bad-example.pocket.getPreferences",
+        path = "/app.bsky.actor.getPreferences",
         method = "get",
         tag = "ApiTags::Pocket"
     )]
@@ -156,17 +159,26 @@ struct AppViewService {
 #[derive(Debug, Clone, Serialize)]
 struct AppViewDoc {
     id: String,
-    service: [AppViewService; 1],
+    service: [AppViewService; 2],
 }
 /// Serve a did document for did:web for this to be an xrpc appview
 fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
     let doc = poem::web::Json(AppViewDoc {
         id: format!("did:web:{domain}"),
-        service: [AppViewService {
-            id: "#pocket_prefs".to_string(),
-            r#type: "PocketPreferences".to_string(),
-            service_endpoint: format!("https://{domain}"),
-        }],
+        service: [
+            AppViewService {
+                id: "#pocket_prefs".to_string(),
+                // id: "#bsky_appview".to_string(),
+                r#type: "PocketPreferences".to_string(),
+                service_endpoint: format!("https://{domain}"),
+            },
+            AppViewService {
+                id: "#bsky_appview".to_string(),
+                // id: "#bsky_appview".to_string(),
+                r#type: "BlueskyAppview".to_string(),
+                service_endpoint: format!("https://{domain}"),
+            },
+        ],
     });
     make_sync(move |_| doc.clone())
 }
