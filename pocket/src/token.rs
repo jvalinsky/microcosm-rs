@@ -21,12 +21,11 @@ pub enum VerifyError {
 }
 
 pub struct TokenVerifier {
-    domain: String,
     client: reqwest::Client,
 }
 
 impl TokenVerifier {
-    pub fn new(domain: &str) -> Self {
+    pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .user_agent(format!(
                 "microcosm pocket v{} (dev: @bad-example.com)",
@@ -36,13 +35,14 @@ impl TokenVerifier {
             .timeout(Duration::from_secs(12)) // slingshot timeout is 10s
             .build()
             .unwrap();
-        Self {
-            client,
-            domain: domain.to_string(),
-        }
+        Self { client }
     }
 
-    pub async fn verify(&self, expected_lxm: &str, token: &str) -> Result<String, VerifyError> {
+    pub async fn verify(
+        &self,
+        expected_lxm: &str,
+        token: &str,
+    ) -> Result<(String, String), VerifyError> {
         let untrusted = UntrustedToken::new(token).unwrap();
 
         // danger! unfortunately we need to decode the DID from the jwt body before we have a public key to verify the jwt with
@@ -118,9 +118,12 @@ impl TokenVerifier {
         let Some(aud) = claims.custom.get("aud") else {
             return Err(VerifyError::VerificationFailed("missing aud"));
         };
-        if *aud != format!("did:web:{}#bsky_appview", self.domain) {
-            return Err(VerifyError::VerificationFailed("wrong aud"));
-        }
+        let Some(aud) = aud.strip_prefix("did:web:") else {
+            return Err(VerifyError::VerificationFailed("expected a did:web aud"));
+        };
+        let Some((aud, _)) = aud.split_once("#") else {
+            return Err(VerifyError::VerificationFailed("aud missing #fragment"));
+        };
         let Some(lxm) = claims.custom.get("lxm") else {
             return Err(VerifyError::VerificationFailed("missing lxm"));
         };
@@ -128,6 +131,12 @@ impl TokenVerifier {
             return Err(VerifyError::VerificationFailed("wrong lxm"));
         }
 
-        Ok(did.to_string())
+        Ok((did.to_string(), aud.to_string()))
+    }
+}
+
+impl Default for TokenVerifier {
+    fn default() -> Self {
+        Self::new()
     }
 }

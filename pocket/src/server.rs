@@ -108,7 +108,7 @@ impl Xrpc {
         tag = "ApiTags::Pocket"
     )]
     async fn app_bsky_get_prefs(&self, XrpcAuth(auth): XrpcAuth) -> GetBskyPrefsResponse {
-        let did = match self
+        let (did, aud) = match self
             .verifier
             .verify("app.bsky.actor.getPreferences", &auth.token)
             .await
@@ -116,7 +116,7 @@ impl Xrpc {
             Ok(d) => d,
             Err(e) => return GetBskyPrefsResponse::BadRequest(xrpc_error("boooo", e.to_string())),
         };
-        log::info!("verified did: {did}");
+        log::info!("verified did: {did}/{aud}");
         // TODO: fetch from storage
         GetBskyPrefsResponse::Ok(Json(GetBskyPrefsResponseObject::example()))
     }
@@ -134,7 +134,7 @@ impl Xrpc {
         XrpcAuth(auth): XrpcAuth,
         Json(prefs): Json<Value>,
     ) -> PutBskyPrefsResponse {
-        let did = match self
+        let (did, aud) = match self
             .verifier
             .verify("app.bsky.actor.getPreferences", &auth.token)
             .await
@@ -142,7 +142,7 @@ impl Xrpc {
             Ok(d) => d,
             Err(e) => return PutBskyPrefsResponse::BadRequest(xrpc_error("boooo", e.to_string())),
         };
-        log::info!("verified did: {did}");
+        log::info!("verified did: {did}/{aud}");
         log::warn!("received prefs: {prefs:?}");
         // TODO: put prefs into storage
         PutBskyPrefsResponse::Ok(PlainText("hiiiiii".to_string()))
@@ -184,7 +184,7 @@ fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
 }
 
 pub async fn serve(domain: &str) -> () {
-    let verifier = TokenVerifier::new(domain);
+    let verifier = TokenVerifier::default();
     let api_service = OpenApiService::new(Xrpc { verifier }, "Pocket", env!("CARGO_PKG_VERSION"))
         .server(domain)
         .url_prefix("/xrpc")
