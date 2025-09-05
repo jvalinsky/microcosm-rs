@@ -4,7 +4,7 @@ use poem::{
     endpoint::{StaticFileEndpoint, make_sync},
     http::Method,
     listener::TcpListener,
-    middleware::{CatchPanic, Cors, Tracing},
+    middleware::{CatchPanic, Cors, SizeLimit, Tracing},
 };
 use poem_openapi::{
     ApiResponse, ContactObject, ExternalDocumentObject, Object, OpenApi, OpenApiService,
@@ -94,23 +94,20 @@ struct Xrpc {
     verifier: TokenVerifier,
 }
 
-// app.bsky.actor.getPreferences
-// com.bad-example.pocket.getPreferences
-
 #[OpenApi]
 impl Xrpc {
     /// com.bad-example.pocket.getPreferences
     ///
-    /// get stored bluesky prefs
+    /// get stored preferencess
     #[oai(
-        path = "/app.bsky.actor.getPreferences",
+        path = "/com.bad-example.pocket.getPreferences",
         method = "get",
         tag = "ApiTags::Pocket"
     )]
-    async fn app_bsky_get_prefs(&self, XrpcAuth(auth): XrpcAuth) -> GetBskyPrefsResponse {
+    async fn pocket_get_prefs(&self, XrpcAuth(auth): XrpcAuth) -> GetBskyPrefsResponse {
         let (did, aud) = match self
             .verifier
-            .verify("app.bsky.actor.getPreferences", &auth.token)
+            .verify("com.bad-example.pocket.getPreferences", &auth.token)
             .await
         {
             Ok(d) => d,
@@ -129,14 +126,14 @@ impl Xrpc {
         method = "post",
         tag = "ApiTags::Pocket"
     )]
-    async fn app_bsky_put_prefs(
+    async fn pocket_put_prefs(
         &self,
         XrpcAuth(auth): XrpcAuth,
         Json(prefs): Json<Value>,
     ) -> PutBskyPrefsResponse {
         let (did, aud) = match self
             .verifier
-            .verify("app.bsky.actor.getPreferences", &auth.token)
+            .verify("com.bad-example.pocket.putPreferences", &auth.token)
             .await
         {
             Ok(d) => d,
@@ -168,13 +165,11 @@ fn get_did_doc(domain: &str) -> impl Endpoint + use<> {
         service: [
             AppViewService {
                 id: "#pocket_prefs".to_string(),
-                // id: "#bsky_appview".to_string(),
                 r#type: "PocketPreferences".to_string(),
                 service_endpoint: format!("https://{domain}"),
             },
             AppViewService {
                 id: "#bsky_appview".to_string(),
-                // id: "#bsky_appview".to_string(),
                 r#type: "BlueskyAppview".to_string(),
                 service_endpoint: format!("https://{domain}"),
             },
@@ -201,6 +196,7 @@ pub async fn serve(domain: &str) -> () {
         .nest("/xrpc/", api_service)
         .at("/.well-known/did.json", get_did_doc(domain))
         .at("/", StaticFileEndpoint::new("./static/index.html"))
+        .with(SizeLimit::new(100 * 2_usize.pow(10)))
         .with(
             Cors::new()
                 .allow_method(Method::GET)

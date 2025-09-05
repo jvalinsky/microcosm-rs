@@ -118,12 +118,13 @@ impl TokenVerifier {
         let Some(aud) = claims.custom.get("aud") else {
             return Err(VerifyError::VerificationFailed("missing aud"));
         };
-        let Some(aud) = aud.strip_prefix("did:web:") else {
+        let Some(mut aud) = aud.strip_prefix("did:web:") else {
             return Err(VerifyError::VerificationFailed("expected a did:web aud"));
         };
-        let Some((aud, _)) = aud.split_once("#") else {
-            return Err(VerifyError::VerificationFailed("aud missing #fragment"));
-        };
+        if let Some((aud_without_hash, _)) = aud.split_once("#") {
+            log::warn!("aud claim is missing service id fragment: {aud:?}");
+            aud = aud_without_hash;
+        }
         let Some(lxm) = claims.custom.get("lxm") else {
             return Err(VerifyError::VerificationFailed("missing lxm"));
         };
