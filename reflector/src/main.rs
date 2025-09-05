@@ -1,11 +1,12 @@
 use clap::Parser;
 use poem::{
-    EndpointExt, Route, Server, get, handler,
+    EndpointExt, Response, Route, Server, get, handler,
+    http::StatusCode,
     listener::TcpListener,
     middleware::{AddData, Tracing},
-    web::{Data, Json, TypedHeader, headers::Host},
+    web::{Data, Json, Query, TypedHeader, headers::Host},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[handler]
 fn hello() -> String {
@@ -33,6 +34,28 @@ fn did_doc(TypedHeader(host): TypedHeader<Host>, service: Data<&DidService>) -> 
     })
 }
 
+#[derive(Deserialize)]
+struct AskQuery {
+    domain: String,
+}
+#[handler]
+fn ask_caddy(
+    Data(parent): Data<&Option<String>>,
+    Query(AskQuery { domain }): Query<AskQuery>,
+) -> Response {
+    if let Some(parent) = parent {
+        if let Some(prefix) = domain.strip_suffix(&format!(".{parent}")) {
+            if !prefix.contains('.') {
+                // no sub-sub-domains allowed
+                return Response::builder().body("ok");
+            }
+        }
+    };
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .body("nope")
+}
+
 /// Slingshot record edge cache
 #[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
@@ -50,6 +73,9 @@ struct Args {
     /// The HTTPS endpoint for the service
     #[arg(long)]
     service_endpoint: String,
+    /// The parent domain; requests should come from subdomains of this
+    #[arg(long)]
+    domain: Option<String>,
 }
 
 impl From<Args> for DidService {
@@ -68,6 +94,7 @@ async fn main() {
     log::info!("ɹoʇɔǝʅⅎǝɹ");
 
     let args = Args::parse();
+    let domain = args.domain.clone();
     let service: DidService = args.into();
 
     Server::new(TcpListener::bind("0.0.0.0:3001"))
@@ -75,7 +102,9 @@ async fn main() {
             Route::new()
                 .at("/", get(hello))
                 .at("/.well-known/did.json", get(did_doc))
+                .at("/ask", get(ask_caddy))
                 .with(AddData::new(service))
+                .with(AddData::new(domain))
                 .with(Tracing),
         )
         .await
