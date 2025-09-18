@@ -15,11 +15,14 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-        rustVersion = pkgs.rust-bin.stable."1.79.0".default;
+        # Switch to the nightly toolchain
+        rustVersion = pkgs.rust-bin.nightly."2024-07-29".default;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustVersion;
         src = pkgs.lib.cleanSource ./.;
         cargoArtifacts = craneLib.buildDepsOnly {
           inherit src;
+          # Add a pname to silence the crane warning
+          pname = "microcosm-rs-deps";
           nativeBuildInputs = with pkgs; [
             pkg-config
             openssl
@@ -32,7 +35,7 @@
           "constellation"
           "jetstream"
           "ufos"
-          "ufos/fuzz"
+          "ufos/fuzz" # This is the member causing the issue
           "spacedust"
           "who-am-i"
           "slingshot"
@@ -41,18 +44,23 @@
           "reflector"
         ];
         buildPackage = member:
+          let
+            # Cargo needs the package *name*, not the path.
+            # We'll assume the package name for "ufos/fuzz" is "ufos-fuzz".
+            packageName = if member == "ufos/fuzz" then "ufos-fuzz" else member;
+          in
           craneLib.buildPackage {
             inherit src cargoArtifacts;
-            pname = member;
-            cargoExtraArgs = "--package ${member}";
+            # Use the corrected package name for the derivation name and package argument
+            pname = packageName;
+            version = "0.1.0";
+            cargoExtraArgs = "--package ${packageName}";
             nativeBuildInputs = with pkgs; [
               pkg-config
               openssl
               protobuf # for slingshot
             ];
             buildInputs = with pkgs; [
-              # Add member-specific dependencies here.
-              # For example, if a member needs a C library.
               zstd # for jetstream, constellation
               lz4 # for ufos
               rocksdb # for constellation
