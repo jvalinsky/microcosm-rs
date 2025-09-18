@@ -30,7 +30,13 @@
             llvmPackages.libclang
           ];
           # Set the environment variable that bindgen needs to find libclang.
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib"; # <-- THE FIX IS HERE
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
+          # Pass include paths for standard C headers to Clang.
+          BINDGEN_EXTRA_CLANG_ARGS = [ # <-- THE FIX IS HERE
+            "-I${pkgs.glibc.dev}/include"
+            "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"
+          ];
         };
         members = [
           "links"
@@ -95,8 +101,12 @@
             llvmPackages.libclang
           ];
           RUST_SRC_PATH = "${rustVersion}/lib/rustlib/src/rust/library";
-          # Also set the variable in the dev shell
+          # Also set the variables in the dev shell
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          BINDGEN_EXTRA_CLANG_ARGS = [
+            "-I${pkgs.glibc.dev}/include"
+            "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"
+          ];
         };
       });
 }
