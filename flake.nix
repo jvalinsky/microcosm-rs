@@ -27,8 +27,10 @@
             openssl
             protobuf
             perl
-            llvmPackages.libclang # <-- THE FIX IS HERE
+            llvmPackages.libclang
           ];
+          # Set the environment variable that bindgen needs to find libclang.
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib"; # <-- THE FIX IS HERE
         };
         members = [
           "links"
@@ -90,9 +92,11 @@
             rocksdb
             sqlite
             perl
-            llvmPackages.libclang # Also add to the dev shell for convenience
+            llvmPackages.libclang
           ];
           RUST_SRC_PATH = "${rustVersion}/lib/rustlib/src/rust/library";
+          # Also set the variable in the dev shell
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
         };
       });
 }
