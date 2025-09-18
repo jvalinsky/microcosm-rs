@@ -16,17 +16,19 @@
           inherit system overlays;
         };
 
-        # Use the latest stable toolchain
+        # Latest stable Rust toolchain
         rustVersion = pkgs.rust-bin.stable.latest.default;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustVersion;
 
         src = pkgs.lib.cleanSource ./.;
 
+        # Common environment variables for bindgen
         commonEnv = {
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           BINDGEN_EXTRA_CLANG_ARGS = "-I${pkgs.glibc.dev}/include -I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include";
         };
 
+        # Native build dependencies
         nativeInputs = with pkgs; [
           pkg-config
           openssl
@@ -37,6 +39,7 @@
           glibc.dev
         ];
 
+        # Prebuild cargo dependencies
         cargoArtifacts = craneLib.buildDepsOnly {
           inherit src;
           pname = "microcosm-rs-deps";
@@ -44,6 +47,7 @@
           env = commonEnv;
         };
 
+        # Workspace members
         members = [
           "links"
           "constellation"
@@ -58,6 +62,7 @@
           "reflector"
         ];
 
+        # Function to build each member
         buildPackage = member:
           let
             packageName = if member == "ufos/fuzz" then "ufos-fuzz" else member;
@@ -76,9 +81,10 @@
             env = commonEnv;
           };
 
+        # Build all members into packages
         packages = pkgs.lib.genAttrs members (member: buildPackage member);
-      in
-      {
+
+      in {
         packages = packages // {
           default = pkgs.linkFarm "microcosm-rs" (pkgs.lib.mapAttrsToList (name: value:
             let
@@ -88,13 +94,13 @@
           ) packages);
         };
 
+        # Development shell with Rust + tools
         devShell = pkgs.mkShell {
           inputsFrom = builtins.attrValues self.packages.${system};
           nativeBuildInputs = nativeInputs ++ [
             (rustVersion.override {
               extensions = [ "rust-src" "rust-analyzer" ];
             })
-            cargo
             zstd
             lz4
             rocksdb
