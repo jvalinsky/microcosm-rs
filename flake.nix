@@ -15,30 +15,35 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
+
         # Use the latest stable toolchain
         rustVersion = pkgs.rust-bin.stable.latest.default;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustVersion;
+
         src = pkgs.lib.cleanSource ./.;
+
+        commonEnv = {
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          BINDGEN_EXTRA_CLANG_ARGS = "-I${pkgs.glibc.dev}/include -I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include";
+        };
+
+        nativeInputs = with pkgs; [
+          pkg-config
+          openssl
+          protobuf
+          perl
+          llvmPackages.libclang
+          clang
+          glibc.dev
+        ];
+
         cargoArtifacts = craneLib.buildDepsOnly {
           inherit src;
           pname = "microcosm-rs-deps";
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            openssl
-            protobuf
-            perl
-            llvmPackages.libclang
-          ];
-          # Set the environment variable that bindgen needs to find libclang.
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-
-          # Pass include paths for standard C headers to Clang.
-          # This is the crucial fix for the "'stddef.h' not found" error.
-          BINDGEN_EXTRA_CLANG_ARGS = [
-            "-I${pkgs.glibc.dev}/include"
-            "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"
-          ];
+          nativeBuildInputs = nativeInputs;
+          env = commonEnv;
         };
+
         members = [
           "links"
           "constellation"
@@ -52,6 +57,7 @@
           "pocket"
           "reflector"
         ];
+
         buildPackage = member:
           let
             packageName = if member == "ufos/fuzz" then "ufos-fuzz" else member;
@@ -61,16 +67,13 @@
             pname = packageName;
             version = "0.1.0";
             cargoExtraArgs = "--package ${packageName}";
-            nativeBuildInputs = with pkgs; [
-              pkg-config
-              openssl
-              protobuf # for slingshot
-            ];
+            nativeBuildInputs = nativeInputs;
             buildInputs = with pkgs; [
-              zstd # for jetstream, constellation
-              lz4 # for ufos
-              rocksdb # for constellation
+              zstd
+              lz4
+              rocksdb
             ] ++ (pkgs.lib.optional (member == "pocket") sqlite);
+            env = commonEnv;
           };
 
         packages = pkgs.lib.genAttrs members (member: buildPackage member);
@@ -84,30 +87,21 @@
             { name = linkName; path = value; }
           ) packages);
         };
+
         devShell = pkgs.mkShell {
           inputsFrom = builtins.attrValues self.packages.${system};
-          nativeBuildInputs = with pkgs; [
+          nativeBuildInputs = nativeInputs ++ [
             (rustVersion.override {
               extensions = [ "rust-src" "rust-analyzer" ];
             })
             cargo
-            pkg-config
-            openssl
-            protobuf
             zstd
             lz4
             rocksdb
             sqlite
-            perl
-            llvmPackages.libclang
           ];
           RUST_SRC_PATH = "${rustVersion}/lib/rustlib/src/rust/library";
-          # Also set the variables in the dev shell
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          BINDGEN_EXTRA_CLANG_ARGS = [
-            "-I${pkgs.glibc.dev}/include"
-            "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"
-          ];
+          env = commonEnv;
         };
       });
 }
