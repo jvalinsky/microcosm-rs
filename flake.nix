@@ -33,7 +33,8 @@
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
           # Pass include paths for standard C headers to Clang.
-          BINDGEN_EXTRA_CLANG_ARGS = [ # <-- THE FIX IS HERE
+          # This is the crucial fix for the "'stddef.h' not found" error.
+          BINDGEN_EXTRA_CLANG_ARGS = [
             "-I${pkgs.glibc.dev}/include"
             "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"
           ];
