@@ -24,10 +24,12 @@
 
         # Common environment variables for bindgen + zstd-sys fix
         commonEnv = {
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          BINDGEN_EXTRA_CLANG_ARGS =
-            "-I${pkgs.glibc.dev}/include -I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include";
-          ZSTD_SYS_USE_PKG_CONFIG = "1";
+  LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+  BINDGEN_EXTRA_CLANG_ARGS = [
+    "-I${pkgs.glibc.dev}/include"
+    "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"
+  ];
+  ZSTD_SYS_USE_PKG_CONFIG = "1";
         };
 
         # Native build dependencies
