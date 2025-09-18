@@ -28,7 +28,14 @@
           # Additional environment variables for C/C++ compilation
           CC = "${pkgs.gcc}/bin/gcc";
           CXX = "${pkgs.gcc}/bin/g++";
-          # Set C/C++ include paths for direct compiler invocation
+          # Set compiler flags directly - this should be picked up by cc-rs
+          CFLAGS = "-I${pkgs.glibc.dev}/include";
+          CXXFLAGS = builtins.concatStringsSep " " [
+            "-I${pkgs.glibc.dev}/include"
+            "-I${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}"
+            "-I${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/${pkgs.stdenv.targetPlatform.config}"
+          ];
+          # Alternative: Set include paths for direct compiler invocation
           CPATH = "${pkgs.glibc.dev}/include";
           CPLUS_INCLUDE_PATH = builtins.concatStringsSep ":" [
             "${pkgs.glibc.dev}/include"
