@@ -25,9 +25,18 @@
             "-I${pkgs.gcc.cc}/lib/gcc/${pkgs.stdenv.targetPlatform.config}/${pkgs.gcc.cc.version}/include"
           ];
           ZSTD_SYS_USE_PKG_CONFIG = "1";
-          # Additional environment variables for C compilation
+          # Additional environment variables for C/C++ compilation
           CC = "${pkgs.gcc}/bin/gcc";
           CXX = "${pkgs.gcc}/bin/g++";
+          # Set C/C++ include paths for direct compiler invocation
+          CPATH = "${pkgs.glibc.dev}/include";
+          CPLUS_INCLUDE_PATH = builtins.concatStringsSep ":" [
+            "${pkgs.glibc.dev}/include"
+            "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}"
+            "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/${pkgs.stdenv.targetPlatform.config}"
+          ];
+          # Library paths
+          LIBRARY_PATH = "${pkgs.glibc}/lib:${pkgs.gcc.cc.lib}/lib";
           # Make sure pkg-config can find zstd
           PKG_CONFIG_PATH = "${pkgs.zstd.dev}/lib/pkgconfig:${pkgs.lz4.dev}/lib/pkgconfig";
         };
