@@ -26,7 +26,8 @@
             pkg-config
             openssl
             protobuf
-            perl # <-- THE FIX IS HERE
+            perl
+            llvmPackages.libclang # <-- THE FIX IS HERE
           ];
         };
         members = [
@@ -88,7 +89,8 @@
             lz4
             rocksdb
             sqlite
-            perl # Also add to the dev shell for convenience
+            perl
+            llvmPackages.libclang # Also add to the dev shell for convenience
           ];
           RUST_SRC_PATH = "${rustVersion}/lib/rustlib/src/rust/library";
         };
