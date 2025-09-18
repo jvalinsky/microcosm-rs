@@ -26,6 +26,7 @@
             pkg-config
             openssl
             protobuf
+            perl # <-- THE FIX IS HERE
           ];
         };
         members = [
@@ -66,14 +67,12 @@
       in
       {
         packages = packages // {
-          # Use the corrected package names for the link farm to avoid slashes in names
           default = pkgs.linkFarm "microcosm-rs" (pkgs.lib.mapAttrsToList (name: value:
             let
-              # Correct the link name here just like we did for the package name
               linkName = if name == "ufos/fuzz" then "ufos-fuzz" else name;
             in
             { name = linkName; path = value; }
-          ) packages); # <-- THE FIX IS HERE
+          ) packages);
         };
         devShell = pkgs.mkShell {
           inputsFrom = builtins.attrValues self.packages.${system};
@@ -89,6 +88,7 @@
             lz4
             rocksdb
             sqlite
+            perl # Also add to the dev shell for convenience
           ];
           RUST_SRC_PATH = "${rustVersion}/lib/rustlib/src/rust/library";
         };
