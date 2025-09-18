@@ -30,14 +30,14 @@
         };
 
         # Native build dependencies
-        nativeInputs = with pkgs; [
-          pkg-config
-          openssl
-          protobuf
-          perl
-          llvmPackages.libclang
-          clang
-          glibc.dev
+        nativeInputs = [
+          pkgs.pkg-config
+          pkgs.openssl
+          pkgs.protobuf
+          pkgs.perl
+          pkgs.llvmPackages.libclang
+          pkgs.clang
+          pkgs.glibc.dev
         ];
 
         # Prebuild cargo dependencies
@@ -74,11 +74,11 @@
             version = "0.1.0";
             cargoExtraArgs = "--package ${packageName}";
             nativeBuildInputs = nativeInputs;
-            buildInputs = with pkgs; [
-              zstd.dev
-              lz4.dev
-              rocksdb
-            ] ++ (pkgs.lib.optional (member == "pocket") sqlite);
+            buildInputs = [
+              pkgs.zstd.dev
+              pkgs.lz4.dev
+              pkgs.rocksdb
+            ] ++ (pkgs.lib.optional (member == "pocket") pkgs.sqlite);
             env = commonEnv;
           };
 
@@ -102,10 +102,10 @@
             (rustVersion.override {
               extensions = [ "rust-src" "rust-analyzer" ];
             })
-            zstd
-            lz4
-            rocksdb
-            sqlite
+            pkgs.zstd
+            pkgs.lz4
+            pkgs.rocksdb
+            pkgs.sqlite
           ];
           RUST_SRC_PATH = "${rustVersion}/lib/rustlib/src/rust/library";
           env = commonEnv;
