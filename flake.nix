@@ -18,55 +18,23 @@
         src = pkgs.lib.cleanSource ./.;
         # Enhanced environment variables for bindgen + zstd-sys fix
         commonEnv = {
-  LIBCLANG_PATH = lib.makeLibraryPath [ pkgs.llvmPackages.libclang.lib ];
-  OPENSSL_NO_VENDOR = "1";
-  OPENSSL_LIB_DIR = "${lib.getLib pkgs.openssl}/lib";
-  OPENSSL_INCLUDE_DIR = "${lib.getDev pkgs.openssl}/include";
-
-  BINDGEN_EXTRA_CLANG_ARGS = lib.concatStringsSep " " (
-    (map (a: ''-I"${a}/include"'') [
-      pkgs.glibc.dev
-    ])
-    ++ [
-      ''-I"${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"''
-    ]
-  );
-
+          LIBCLANG_PATH = pkgs.lib.makeLibraryPath [ pkgs.llvmPackages.libclang.lib ];
+          OPENSSL_NO_VENDOR = "1";
+          OPENSSL_LIB_DIR = "${pkgs.lib.getLib pkgs.openssl}/lib";
+          OPENSSL_INCLUDE_DIR = "${pkgs.lib.getDev pkgs.openssl}/include";
+          BINDGEN_EXTRA_CLANG_ARGS = pkgs.lib.concatStringsSep " " [
+              "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.lib.versions.major pkgs.llvmPackages.libclang.version}/include"
+              "-I${pkgs.glibc.dev}"
+          ];
           ZSTD_SYS_USE_PKG_CONFIG = "1";
-          # Additional environment variables for C/C++ compilation
-
-          CC = "${pkgs.gcc}/bin/gcc";
-          CXX = "${pkgs.gcc}/bin/g++";
-          # Set compiler flags directly - this should be picked up by cc-rs
-          CFLAGS = "-I${pkgs.glibc.dev}/include";
-          CXXFLAGS = builtins.concatStringsSep " " [
-            "-I${pkgs.glibc.dev}/include"
-            "-I${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}"
-            "-I${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/${pkgs.stdenv.targetPlatform.config}"
-          ];
-          # Alternative: Set include paths for direct compiler invocation
-          CPATH = "${pkgs.glibc.dev}/include";
-          CPLUS_INCLUDE_PATH = builtins.concatStringsSep ":" [
-            "${pkgs.glibc.dev}/include"
-            "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}"
-            "${pkgs.gcc.cc}/include/c++/${pkgs.gcc.version}/${pkgs.stdenv.targetPlatform.config}"
-          ];
-          # Library paths
-          LIBRARY_PATH = "${pkgs.glibc}/lib:${pkgs.gcc.cc.lib}/lib";
+          CC = "${pkgs.llvmPackages.clang}/bin/clang";
+          CXX = "${pkgs.llvmPackages.clang}/bin/clang++";
           # Make sure pkg-config can find zstd
           PKG_CONFIG_PATH = "${pkgs.zstd.dev}/lib/pkgconfig:${pkgs.lz4.dev}/lib/pkgconfig";
         };
         nativeInputs = [
           pkgs.pkg-config
-          pkgs.openssl.dev
-          pkgs.protobuf
           pkgs.perl
-          pkgs.llvmPackages.libclang
-          pkgs.clang
-          pkgs.gcc
-          pkgs.glibc.dev
-          pkgs.zstd.dev
-          pkgs.lz4.dev
         ];
         buildInputs = [
           pkgs.zstd
