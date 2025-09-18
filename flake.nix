@@ -15,13 +15,12 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-        # Switch to the nightly toolchain
-        rustVersion = pkgs.rust-bin.nightly."2024-07-29".default;
+        # Switch back to the latest stable toolchain
+        rustVersion = pkgs.rust-bin.stable.latest.default;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustVersion;
         src = pkgs.lib.cleanSource ./.;
         cargoArtifacts = craneLib.buildDepsOnly {
           inherit src;
-          # Add a pname to silence the crane warning
           pname = "microcosm-rs-deps";
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -29,13 +28,12 @@
             protobuf
           ];
         };
-        # List of workspace members from the root Cargo.toml
         members = [
           "links"
           "constellation"
           "jetstream"
           "ufos"
-          "ufos/fuzz" # This is the member causing the issue
+          "ufos/fuzz"
           "spacedust"
           "who-am-i"
           "slingshot"
@@ -45,13 +43,10 @@
         ];
         buildPackage = member:
           let
-            # Cargo needs the package *name*, not the path.
-            # We'll assume the package name for "ufos/fuzz" is "ufos-fuzz".
             packageName = if member == "ufos/fuzz" then "ufos-fuzz" else member;
           in
           craneLib.buildPackage {
             inherit src cargoArtifacts;
-            # Use the corrected package name for the derivation name and package argument
             pname = packageName;
             version = "0.1.0";
             cargoExtraArgs = "--package ${packageName}";
@@ -67,7 +62,6 @@
             ];
           };
 
-        # Build each member of the workspace
         packages = pkgs.lib.genAttrs members (member: buildPackage member);
       in
       {
@@ -88,7 +82,6 @@
             lz4
             rocksdb
           ];
-          # Environment variables might be needed for some build scripts
           RUST_SRC_PATH = "${rustVersion}/lib/rustlib/src/rust/library";
         };
       });
