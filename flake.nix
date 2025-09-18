@@ -44,8 +44,6 @@
           craneLib.buildPackage {
             inherit src cargoArtifacts;
             pname = member;
-            # The source for each member is a subdirectory of the workspace root
-            src = ./.;
             cargoExtraArgs = "--package ${member}";
             nativeBuildInputs = with pkgs; [
               pkg-config
