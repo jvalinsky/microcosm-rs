@@ -25,7 +25,8 @@
         # Common environment variables for bindgen
         commonEnv = {
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          BINDGEN_EXTRA_CLANG_ARGS = "-I${pkgs.glibc.dev}/include -I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include";
+          BINDGEN_EXTRA_CLANG_ARGS =
+            "-I${pkgs.glibc.dev}/include -I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include";
         };
 
         # Native build dependencies
@@ -74,8 +75,8 @@
             cargoExtraArgs = "--package ${packageName}";
             nativeBuildInputs = nativeInputs;
             buildInputs = with pkgs; [
-              zstd
-              lz4
+              zstd.dev
+              lz4.dev
               rocksdb
             ] ++ (pkgs.lib.optional (member == "pocket") sqlite);
             env = commonEnv;
