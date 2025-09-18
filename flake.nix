@@ -15,7 +15,7 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-        # Switch back to the latest stable toolchain
+        # Use the latest stable toolchain
         rustVersion = pkgs.rust-bin.stable.latest.default;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustVersion;
         src = pkgs.lib.cleanSource ./.;
@@ -55,11 +55,12 @@
               openssl
               protobuf # for slingshot
             ];
+            # Add member-specific dependencies here
             buildInputs = with pkgs; [
               zstd # for jetstream, constellation
               lz4 # for ufos
               rocksdb # for constellation
-            ];
+            ] ++ (pkgs.lib.optional (member == "pocket") sqlite); # <-- THE FIX IS HERE
           };
 
         packages = pkgs.lib.genAttrs members (member: buildPackage member);
@@ -81,6 +82,7 @@
             zstd
             lz4
             rocksdb
+            sqlite # Also add to the dev shell for convenience
           ];
           RUST_SRC_PATH = "${rustVersion}/lib/rustlib/src/rust/library";
         };
