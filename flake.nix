@@ -18,14 +18,23 @@
         src = pkgs.lib.cleanSource ./.;
         # Enhanced environment variables for bindgen + zstd-sys fix
         commonEnv = {
-          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          BINDGEN_EXTRA_CLANG_ARGS = builtins.concatStringsSep " " [
-            "-I${pkgs.glibc.dev}/include"
-            "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"
-            "-I${pkgs.gcc.cc}/lib/gcc/${pkgs.stdenv.targetPlatform.config}/${pkgs.gcc.cc.version}/include"
-          ];
+  LIBCLANG_PATH = lib.makeLibraryPath [ pkgs.llvmPackages.libclang.lib ];
+  OPENSSL_NO_VENDOR = "1";
+  OPENSSL_LIB_DIR = "${lib.getLib pkgs.openssl}/lib";
+  OPENSSL_INCLUDE_DIR = "${lib.getDev pkgs.openssl}/include";
+
+  BINDGEN_EXTRA_CLANG_ARGS = lib.concatStringsSep " " (
+    (map (a: ''-I"${a}/include"'') [
+      pkgs.glibc.dev
+    ])
+    ++ [
+      ''-I"${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"''
+    ]
+  );
+
           ZSTD_SYS_USE_PKG_CONFIG = "1";
           # Additional environment variables for C/C++ compilation
+
           CC = "${pkgs.gcc}/bin/gcc";
           CXX = "${pkgs.gcc}/bin/g++";
           # Set compiler flags directly - this should be picked up by cc-rs
