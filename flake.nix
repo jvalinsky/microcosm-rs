@@ -55,19 +55,25 @@
               openssl
               protobuf # for slingshot
             ];
-            # Add member-specific dependencies here
             buildInputs = with pkgs; [
               zstd # for jetstream, constellation
               lz4 # for ufos
               rocksdb # for constellation
-            ] ++ (pkgs.lib.optional (member == "pocket") sqlite); # <-- THE FIX IS HERE
+            ] ++ (pkgs.lib.optional (member == "pocket") sqlite);
           };
 
         packages = pkgs.lib.genAttrs members (member: buildPackage member);
       in
       {
         packages = packages // {
-          default = pkgs.linkFarm "microcosm-rs" (pkgs.lib.mapAttrsToList (name: value: { inherit name; path = value; }) packages);
+          # Use the corrected package names for the link farm to avoid slashes in names
+          default = pkgs.linkFarm "microcosm-rs" (pkgs.lib.mapAttrsToList (name: value:
+            let
+              # Correct the link name here just like we did for the package name
+              linkName = if name == "ufos/fuzz" then "ufos-fuzz" else name;
+            in
+            { name = linkName; path = value; }
+          ) packages); # <-- THE FIX IS HERE
         };
         devShell = pkgs.mkShell {
           inputsFrom = builtins.attrValues self.packages.${system};
@@ -82,7 +88,7 @@
             zstd
             lz4
             rocksdb
-            sqlite # Also add to the dev shell for convenience
+            sqlite
           ];
           RUST_SRC_PATH = "${rustVersion}/lib/rustlib/src/rust/library";
         };
