@@ -16,23 +16,19 @@
           inherit system overlays;
         };
 
-        # Latest stable Rust toolchain
         rustVersion = pkgs.rust-bin.stable.latest.default;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustVersion;
-
         src = pkgs.lib.cleanSource ./.;
 
         # Common environment variables for bindgen + zstd-sys fix
         commonEnv = {
-  LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-  BINDGEN_EXTRA_CLANG_ARGS = [
-    "-I${pkgs.glibc.dev}/include"
-    "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include"
-  ];
-  ZSTD_SYS_USE_PKG_CONFIG = "1";
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          BINDGEN_EXTRA_CLANG_ARGS =
+            "-I${pkgs.glibc.dev}/include "
+            + "-I${pkgs.llvmPackages.libclang.lib}/lib/clang/${pkgs.llvmPackages.libclang.version}/include";
+          ZSTD_SYS_USE_PKG_CONFIG = "1";
         };
 
-        # Native build dependencies
         nativeInputs = [
           pkgs.pkg-config
           pkgs.openssl
@@ -43,7 +39,6 @@
           pkgs.glibc.dev
         ];
 
-        # Prebuild cargo dependencies
         cargoArtifacts = craneLib.buildDepsOnly {
           inherit src;
           pname = "microcosm-rs-deps";
@@ -51,7 +46,6 @@
           env = commonEnv;
         };
 
-        # Workspace members
         members = [
           "links"
           "constellation"
@@ -66,7 +60,6 @@
           "reflector"
         ];
 
-        # Function to build each member
         buildPackage = member:
           let
             packageName = if member == "ufos/fuzz" then "ufos-fuzz" else member;
@@ -85,7 +78,6 @@
             env = commonEnv;
           };
 
-        # Build all members into packages
         packages = pkgs.lib.genAttrs members (member: buildPackage member);
 
       in {
@@ -98,7 +90,6 @@
           ) packages);
         };
 
-        # Development shell with Rust + tools
         devShell = pkgs.mkShell {
           inputsFrom = builtins.attrValues self.packages.${system};
           nativeBuildInputs = nativeInputs ++ [
