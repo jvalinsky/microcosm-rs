@@ -251,8 +251,12 @@ struct GetLinkItemsQuery {
     ///
     /// deprecated: use `did`, which can be repeated multiple times
     from_dids: Option<String>, // comma separated: gross
-    limit: Option<u64>,
+    #[serde(default = "get_default_limit")]
+    limit: u64,
     // TODO: allow reverse (er, forward) order as well
+}
+fn get_default_limit() -> u64 {
+    DEFAULT_CURSOR_LIMIT
 }
 #[derive(Template, Serialize)]
 #[template(path = "links.html.j2")]
@@ -278,12 +282,19 @@ fn get_links(
         .transpose()?
         .map(|c| c.next);
 
-    let limit = query.limit.unwrap_or(DEFAULT_CURSOR_LIMIT);
+    let limit = query.limit;
     if limit > DEFAULT_CURSOR_LIMIT_MAX {
         return Err(http::StatusCode::BAD_REQUEST);
     }
 
-    let mut filter_dids: HashSet<Did> = HashSet::from_iter(query.did.iter().map(|d| Did(d.to_string())));
+    let mut filter_dids: HashSet<Did> = HashSet::from_iter(
+        query
+            .did
+            .iter()
+            .map(|d| d.trim())
+            .filter(|d| !d.is_empty())
+            .map(|d| Did(d.to_string())),
+    );
 
     if let Some(comma_joined) = &query.from_dids {
         if !filter_dids.is_empty() {
