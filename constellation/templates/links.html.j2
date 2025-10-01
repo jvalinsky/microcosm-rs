@@ -6,7 +6,7 @@
 
 {% block content %}
 
-  {% call try_it::links(query.target, query.collection, query.path) %}
+  {% call try_it::links(query.target, query.collection, query.path, query.did, query.limit) %}
 
   <h2>
     Links to <code>{{ query.target }}</code>

@@ -1,10 +1,28 @@
-{% macro links(target, collection, path) %}
+{% macro links(target, collection, path, dids, limit) %}
   <form method="get" action="/links">
     <pre class="code"><strong>GET</strong> /links
   ?target=     <input type="text" name="target" value="{{ target }}" placeholder="target" />
   &collection= <input type="text" name="collection" value="{{ collection }}" placeholder="collection" />
-  &path=       <input type="text" name="path" value="{{ path }}" placeholder="path" /> <button type="submit">get links</button></pre>
+  &path=       <input type="text" name="path" value="{{ path }}" placeholder="path" />
+  {%- for did in dids %}{% if !did.is_empty() %}
+  &did=        <input type="text" name="did" value="{{ did }}" placeholder="did:plc:..." />{% endif %}{% endfor %}
+  <span id="did-placeholder"></span>             <button id="add-did">+ did filter</button>
+  &limit=      <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" /> <button type="submit">get links</button></pre>
   </form>
+  <script>
+    const addDidButton = document.getElementById('add-did');
+    const didPlaceholder = document.getElementById('did-placeholder');
+    addDidButton.addEventListener('click', e => {
+      e.preventDefault();
+      const i = document.createElement('input');
+      i.placeholder = 'did:plc:...';
+      i.name = "did"
+      const p = addDidButton.parentNode;
+      p.insertBefore(document.createTextNode('&did=        '), didPlaceholder);
+      p.insertBefore(i, didPlaceholder);
+      p.insertBefore(document.createTextNode('\n  '), didPlaceholder);
+    });
+  </script>
 {% endmacro %}
 
 

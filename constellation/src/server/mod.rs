@@ -11,7 +11,7 @@ use axum_metrics::{ExtraMetricLabels, MetricLayer};
 use bincode::Options;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::task::block_in_place;
@@ -238,8 +238,25 @@ struct GetLinkItemsQuery {
     collection: String,
     path: String,
     cursor: Option<OpaqueApiCursor>,
-    limit: Option<u64>,
+    /// Filter links only from these DIDs
+    ///
+    /// include multiple times to filter by multiple source DIDs
+    #[serde(default)]
+    did: Vec<String>,
+    /// [deprecated] Filter links only from these DIDs
+    ///
+    /// format: comma-separated sequence of DIDs
+    ///
+    /// errors: if `did` parameter is also present
+    ///
+    /// deprecated: use `did`, which can be repeated multiple times
+    from_dids: Option<String>, // comma separated: gross
+    #[serde(default = "get_default_limit")]
+    limit: u64,
     // TODO: allow reverse (er, forward) order as well
+}
+fn get_default_limit() -> u64 {
+    DEFAULT_CURSOR_LIMIT
 }
 #[derive(Template, Serialize)]
 #[template(path = "links.html.j2")]
@@ -255,7 +272,7 @@ struct GetLinkItemsResponse {
 }
 fn get_links(
     accept: ExtractAccept,
-    query: Query<GetLinkItemsQuery>,
+    query: axum_extra::extract::Query<GetLinkItemsQuery>, // supports multiple param occurrences
     store: impl LinkReader,
 ) -> Result<impl IntoResponse, http::StatusCode> {
     let until = query
@@ -265,13 +282,38 @@ fn get_links(
         .transpose()?
         .map(|c| c.next);
 
-    let limit = query.limit.unwrap_or(DEFAULT_CURSOR_LIMIT);
+    let limit = query.limit;
     if limit > DEFAULT_CURSOR_LIMIT_MAX {
         return Err(http::StatusCode::BAD_REQUEST);
     }
 
+    let mut filter_dids: HashSet<Did> = HashSet::from_iter(
+        query
+            .did
+            .iter()
+            .map(|d| d.trim())
+            .filter(|d| !d.is_empty())
+            .map(|d| Did(d.to_string())),
+    );
+
+    if let Some(comma_joined) = &query.from_dids {
+        if !filter_dids.is_empty() {
+            return Err(http::StatusCode::BAD_REQUEST);
+        }
+        for did in comma_joined.split(',') {
+            filter_dids.insert(Did(did.to_string()));
+        }
+    }
+
     let paged = store
-        .get_links(&query.target, &query.collection, &query.path, limit, until)
+        .get_links(
+            &query.target,
+            &query.collection,
+            &query.path,
+            limit,
+            until,
+            &filter_dids,
+        )
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let cursor = paged.next.map(|next| {
