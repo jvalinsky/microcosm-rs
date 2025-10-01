@@ -35,7 +35,7 @@ fn get_default_cursor_limit() -> u64 {
 const INDEX_BEGAN_AT_TS: u64 = 1738083600; // TODO: not this
 
 fn to500(e: tokio::task::JoinError) -> http::StatusCode {
-    eprintln!("handler join error: {e}");
+    eprintln!("handler error: {e}");
     http::StatusCode::INTERNAL_SERVER_ERROR
 }
 
@@ -56,6 +56,17 @@ where
                         .map_err(to500)?
                 }
             }),
+        )
+        .route(
+            "/xrpc/blue.microcosm.links.getManyToManyCounts",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    spawn_blocking(|| get_many_to_many_counts(accept, query, store))
+                        .await
+                        .map_err(to500)?
+                }
+            })
         )
         .route(
             "/links/count",
@@ -211,6 +222,123 @@ fn hello(
         stats,
     }))
 }
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetManyToManyCountsQuery {
+    subject: String,
+    source: String,
+    /// path to the secondary link in the linking record
+    path_to_other: String,
+    /// filter to linking records (join of the m2m) by these DIDs
+    #[serde(default)]
+    did: Vec<String>,
+    /// filter to specific secondary records
+    #[serde(default)]
+    other_subject: Vec<String>,
+    cursor: Option<OpaqueApiCursor>,
+    /// Set the max number of links to return per page of results
+    #[serde(default = "get_default_cursor_limit")]
+    limit: u64,
+}
+#[derive(Serialize)]
+struct OtherSubjectCount {
+    subject: String,
+    total: u64,
+    distinct: u64,
+}
+#[derive(Template, Serialize)]
+#[template(path = "get-many-to-many-counts.html.j2")]
+struct GetManyToManyCountsResponse {
+    counts_by_other_subject: Vec<OtherSubjectCount>,
+    total_other_subjects: u64,
+    cursor: Option<OpaqueApiCursor>,
+    #[serde(skip_serializing)]
+    query: GetManyToManyCountsQuery,
+}
+fn get_many_to_many_counts(
+    accept: ExtractAccept,
+    query: axum_extra::extract::Query<GetManyToManyCountsQuery>,
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let cursor_key = query
+        .cursor
+        .clone()
+        .map(|oc| ApiKeyedCursor::try_from(oc).map_err(|_| http::StatusCode::BAD_REQUEST))
+        .transpose()?
+        .map(|c| c.next);
+
+    let limit = query.limit;
+    if limit > DEFAULT_CURSOR_LIMIT_MAX {
+        return Err(http::StatusCode::BAD_REQUEST);
+    }
+
+    let filter_dids: HashSet<Did> = HashSet::from_iter(
+        query
+            .did
+            .iter()
+            .map(|d| d.trim())
+            .filter(|d| !d.is_empty())
+            .map(|d| Did(d.to_string())),
+    );
+
+    let filter_other_subjects: HashSet<String> = HashSet::from_iter(
+        query
+            .other_subject
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    );
+
+    let Some((collection, path)) = query.source.split_once(':') else {
+        return Err(http::StatusCode::BAD_REQUEST);
+    };
+    let path = format!(".{path}");
+
+    let paged = store
+        .get_many_to_many_counts(
+            &query.subject,
+            collection,
+            &path,
+            &query.path_to_other,
+            limit,
+            cursor_key,
+            &filter_dids,
+            &filter_other_subjects,
+        )
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let cursor = paged.next.map(|next| {
+        ApiKeyedCursor {
+            version: paged.total,
+            next,
+        }
+        .into()
+    });
+
+    let items = paged
+        .items
+        .into_iter()
+        .map(|(subject, total, distinct)|
+            OtherSubjectCount {
+                subject,
+                total,
+                distinct,
+            })
+        .collect();
+
+    Ok(acceptable(
+        accept,
+        GetManyToManyCountsResponse {
+            counts_by_other_subject: items,
+            total_other_subjects: paged.total,
+            cursor,
+            query: (*query).clone(),
+        },
+    ))
+}
+
+
 
 #[derive(Clone, Deserialize)]
 struct GetLinksCountQuery {
@@ -606,6 +734,26 @@ impl TryFrom<OpaqueApiCursor> for ApiCursor {
 
 impl From<ApiCursor> for OpaqueApiCursor {
     fn from(item: ApiCursor) -> Self {
+        OpaqueApiCursor(bincode::DefaultOptions::new().serialize(&item).unwrap())
+    }
+}
+
+#[derive(Serialize, Deserialize)] // for bincode
+struct ApiKeyedCursor {
+    version: u64, // total length (dirty check)
+    next: String, // the key
+}
+
+impl TryFrom<OpaqueApiCursor> for ApiKeyedCursor {
+    type Error = bincode::Error;
+
+    fn try_from(item: OpaqueApiCursor) -> Result<Self, Self::Error> {
+        bincode::DefaultOptions::new().deserialize(&item.0)
+    }
+}
+
+impl From<ApiKeyedCursor> for OpaqueApiCursor {
+    fn from(item: ApiKeyedCursor) -> Self {
         OpaqueApiCursor(bincode::DefaultOptions::new().serialize(&item).unwrap())
     }
 }

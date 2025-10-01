@@ -19,6 +19,18 @@ pub struct PagedAppendingCollection<T> {
     pub total: u64,
 }
 
+/// A paged collection whose keys are sorted instead of indexed
+///
+/// this has weaker guarantees than PagedAppendingCollection: it might
+/// return a totally consistent snapshot. but it should avoid duplicates
+/// and each page should at least be internally consistent.
+#[derive(Debug, PartialEq)]
+pub struct PagedOrderedCollection<T, K: Ord> {
+    pub items: Vec<T>,
+    pub next: Option<K>,
+    pub total: u64,
+}
+
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct StorageStats {
     /// estimate of how many accounts we've seen create links. the _subjects_ of any links are not represented here.
@@ -48,6 +60,18 @@ pub trait LinkStorage: Send + Sync {
 }
 
 pub trait LinkReader: Clone + Send + Sync + 'static {
+    fn get_many_to_many_counts(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<(String, u64, u64), String>>;
+
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
 
     fn get_distinct_did_count(&self, target: &str, collection: &str, path: &str) -> Result<u64>;
@@ -1326,5 +1350,197 @@ mod tests {
             counts
         });
         assert_stats(storage.get_stats()?, 1..=1, 2..=2, 1..=1);
+    });
+
+    //////// many-to-many /////////
+
+    test_each_storage!(get_m2m_counts_empty, |storage| {
+        assert_eq!(storage.get_many_to_many_counts(
+            "a.com",
+            "a.b.c",
+            ".d.e",
+            ".f.g",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?, PagedOrderedCollection {
+            items: vec![],
+            next: None,
+            total: 0,
+        });
+    });
+
+    test_each_storage!(get_m2m_counts_single, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".ghi.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        assert_eq!(storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?, PagedOrderedCollection {
+            items: vec![("b.com".to_string(), 1, 1)],
+            next: None,
+            total: 1,
+        });
+    });
+
+    test_each_storage!(get_m2m_counts_filters, |storage| {
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:asdfasdf".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("b.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            1,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            2,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:fdsa".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf2".into(),
+                },
+                links: vec![
+                    CollectedLink {
+                        target: Link::Uri("a.com".into()),
+                        path: ".abc.uri".into(),
+                    },
+                    CollectedLink {
+                        target: Link::Uri("c.com".into()),
+                        path: ".def.uri".into(),
+                    },
+                ],
+            },
+            3,
+        )?;
+        assert_eq!(storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?, PagedOrderedCollection {
+            items: vec![
+                ("b.com".to_string(), 2, 2),
+                ("c.com".to_string(), 2, 1),
+            ],
+            next: None,
+            total: 2,
+        });
+        assert_eq!(storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::from_iter([Did("did:plc:fdsa".to_string())]),
+            &HashSet::new(),
+        )?, PagedOrderedCollection {
+            items: vec![
+                ("c.com".to_string(), 2, 1),
+            ],
+            next: None,
+            total: 1,
+        });
+        assert_eq!(storage.get_many_to_many_counts(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            ".def.uri",
+            10,
+            None,
+            &HashSet::new(),
+            &HashSet::from_iter(["b.com".to_string()]),
+        )?, PagedOrderedCollection {
+            items: vec![
+                ("b.com".to_string(), 2, 2),
+            ],
+            next: None,
+            total: 1,
+        });
     });
 }

@@ -1,4 +1,4 @@
-use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
+use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, PagedOrderedCollection, StorageStats};
 use crate::{CountsByCount, Did, RecordId};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
@@ -826,6 +826,20 @@ impl LinkStorage for RocksStorage {
 }
 
 impl LinkReader for RocksStorage {
+    fn get_many_to_many_counts(
+        &self,
+        _target: &str,
+        _collection: &str,
+        _path: &str,
+        _path_to_other: &str,
+        _limit: u64,
+        _after: Option<String>,
+        _filter_dids: &HashSet<Did>,
+        _filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<(String, u64, u64), String>> {
+        todo!();
+    }
+
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let target_key = TargetKey(
             Target(target.to_string()),
