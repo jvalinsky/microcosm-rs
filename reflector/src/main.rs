@@ -44,13 +44,12 @@ fn ask_caddy(
     Data(parent): Data<&Option<String>>,
     Query(AskQuery { domain }): Query<AskQuery>,
 ) -> Response {
-    if let Some(parent) = parent {
-        if let Some(prefix) = domain.strip_suffix(&format!(".{parent}")) {
-            if !prefix.contains('.') {
-                // no sub-sub-domains allowed
-                return Response::builder().body("ok");
-            }
-        }
+    if let Some(parent) = parent
+        && let Some(prefix) = domain.strip_suffix(&format!(".{parent}"))
+        && !prefix.contains('.')
+    {
+        // no sub-sub-domains allowed
+        return Response::builder().body("ok");
     };
     Response::builder()
         .status(StatusCode::FORBIDDEN)
