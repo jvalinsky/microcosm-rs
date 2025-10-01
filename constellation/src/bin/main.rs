@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use clap::{Parser, ValueEnum};
 use metrics_exporter_prometheus::PrometheusBuilder;
+use std::net::SocketAddr;
 use std::num::NonZero;
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicU32, Arc};
@@ -21,7 +22,14 @@ const MONITOR_INTERVAL: time::Duration = time::Duration::from_secs(15);
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
+    /// constellation server's listen address
+    #[arg(long)]
+    #[clap(default_value = "0.0.0.0:6789")]
+    bind: SocketAddr,
+    /// metrics server's listen address
+    #[arg(long)]
+    #[clap(default_value = "0.0.0.0:8765")]
+    bind_metrics: SocketAddr,
     /// Jetstream server to connect to (exclusive with --fixture). Provide either a wss:// URL, or a shorhand value:
     /// 'us-east-1', 'us-east-2', 'us-west-1', or 'us-west-2'
     #[arg(short, long)]
@@ -78,10 +86,21 @@ fn main() -> Result<()> {
     let stream = jetstream_url(&args.jetstream);
     println!("using jetstream server {stream:?}...",);
 
+    let bind = args.bind;
+    let metrics_bind = args.bind_metrics;
+
     let stay_alive = CancellationToken::new();
 
     match args.backend {
-        StorageBackend::Memory => run(MemStorage::new(), fixture, None, stream, stay_alive),
+        StorageBackend::Memory => run(
+            MemStorage::new(),
+            fixture,
+            None,
+            stream,
+            bind,
+            metrics_bind,
+            stay_alive,
+        ),
         #[cfg(feature = "rocks")]
         StorageBackend::Rocks => {
             let storage_dir = args.data.clone().unwrap_or("rocks.test".into());
@@ -96,7 +115,15 @@ fn main() -> Result<()> {
                 rocks.start_backup(backup_dir, auto_backup, stay_alive.clone())?;
             }
             println!("rocks ready.");
-            run(rocks, fixture, args.data, stream, stay_alive)
+            run(
+                rocks,
+                fixture,
+                args.data,
+                stream,
+                bind,
+                metrics_bind,
+                stay_alive,
+            )
         }
     }
 }
@@ -106,6 +133,8 @@ fn run(
     fixture: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     stream: String,
+    bind: SocketAddr,
+    metrics_bind: SocketAddr,
     stay_alive: CancellationToken,
 ) -> Result<()> {
     ctrlc::set_handler({
@@ -150,8 +179,8 @@ fn run(
                     .build()
                     .expect("axum startup")
                     .block_on(async {
-                        install_metrics_server()?;
-                        serve(readable, "0.0.0.0:6789", staying_alive).await
+                        install_metrics_server(metrics_bind)?;
+                        serve(readable, bind, staying_alive).await
                     })
                     .unwrap();
                 stay_alive.drop_guard();
@@ -218,21 +247,16 @@ fn run(
     Ok(())
 }
 
-fn install_metrics_server() -> Result<()> {
+fn install_metrics_server(metrics_bind: SocketAddr) -> Result<()> {
     println!("installing metrics server...");
-    let host = [0, 0, 0, 0];
-    let port = 8765;
     PrometheusBuilder::new()
         .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
         .set_bucket_duration(time::Duration::from_secs(30))?
         .set_bucket_count(NonZero::new(10).unwrap()) // count * duration = 5 mins. stuff doesn't happen that fast here.
         .set_enable_unit_suffix(true)
-        .with_http_listener((host, port))
+        .with_http_listener(metrics_bind)
         .install()?;
-    println!(
-        "metrics server installed! listening on http://{}.{}.{}.{}:{port}",
-        host[0], host[1], host[2], host[3]
-    );
+    println!("metrics server installed! listening at {metrics_bind:?}");
     Ok(())
 }
 
