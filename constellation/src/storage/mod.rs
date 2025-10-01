@@ -816,6 +816,7 @@ mod tests {
                 version: (0, 0),
                 items: vec![],
                 next: None,
+                total: 0,
             }
         );
 
@@ -852,6 +853,7 @@ mod tests {
                     rkey: "asdf".into(),
                 },],
                 next: None,
+                total: 1,
             }
         );
 
@@ -869,6 +871,7 @@ mod tests {
                 version: (0, 0),
                 items: vec![],
                 next: None,
+                total: 0,
             }
         );
 
@@ -926,6 +929,7 @@ mod tests {
                     },
                 ],
                 next: None,
+                total: 2,
             }
         );
 
@@ -957,6 +961,7 @@ mod tests {
                     },
                 ],
                 next: Some(1),
+                total: 3,
             }
         );
 
@@ -974,6 +979,7 @@ mod tests {
                 version: (0, 0),
                 items: vec![],
                 next: None,
+                total: 0,
             }
         );
     });
