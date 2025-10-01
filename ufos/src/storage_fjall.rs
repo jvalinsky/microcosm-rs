@@ -23,6 +23,10 @@ use fjall::{
     Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Snapshot,
 };
 use jetstream::events::Cursor;
+use lsm_tree::AbstractTree;
+use metrics::{
+    counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
+};
 use std::collections::{HashMap, HashSet};
 use std::iter::Peekable;
 use std::ops::Bound;
@@ -39,7 +43,7 @@ const MAX_BATCHED_ROLLUP_COUNTS: usize = 256;
 ///
 /// new data format, roughly:
 ///
-/// Partion: 'global'
+/// Partition: 'global'
 ///
 ///  - Global sequence counter (is the jetstream cursor -- monotonic with many gaps)
 ///      - key: "js_cursor" (literal)
@@ -226,7 +230,9 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
             feeds: feeds.clone(),
             records: records.clone(),
             rollups: rollups.clone(),
+            queues: queues.clone(),
         };
+        reader.describe_metrics();
         let writer = FjallWriter {
             bg_taken: Arc::new(AtomicBool::new(false)),
             keyspace,
@@ -236,6 +242,7 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
             rollups,
             queues,
         };
+        writer.describe_metrics();
         Ok((reader, writer, js_cursor, sketch_secret))
     }
 }
@@ -249,6 +256,7 @@ pub struct FjallReader {
     feeds: PartitionHandle,
     records: PartitionHandle,
     rollups: PartitionHandle,
+    queues: PartitionHandle,
 }
 
 /// An iterator that knows how to skip over deleted/invalidated records
@@ -380,6 +388,29 @@ fn get_lookup_iter<T: WithCollection + WithRank + DbBytes + 'static>(
 type CollectionSerieses = HashMap<Nsid, Vec<CountsValue>>;
 
 impl FjallReader {
+    fn describe_metrics(&self) {
+        describe_gauge!(
+            "storage_fjall_l0_run_count",
+            Unit::Count,
+            "number of L0 runs in a partition"
+        );
+        describe_gauge!(
+            "storage_fjall_keyspace_disk_space",
+            Unit::Bytes,
+            "total storage used according to fjall"
+        );
+        describe_gauge!(
+            "storage_fjall_journal_count",
+            Unit::Count,
+            "total keyspace journals according to fjall"
+        );
+        describe_gauge!(
+            "storage_fjall_keyspace_sequence",
+            Unit::Count,
+            "fjall keyspace sequence"
+        );
+    }
+
     fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let rollup_cursor =
             get_static_neu::<NewRollupCursorKey, NewRollupCursorValue>(&self.global)?
@@ -507,11 +538,7 @@ impl FjallReader {
                     merged.merge(&counts);
                 }
             }
-            out.push(NsidCount {
-                nsid: nsid.to_string(),
-                creates: merged.counts().creates,
-                dids_estimate: merged.dids().estimate() as u64,
-            });
+            out.push(NsidCount::new(&nsid, &merged));
         }
 
         let next_cursor = current_nsid.map(|s| s.to_db_bytes()).transpose()?;
@@ -617,11 +644,7 @@ impl FjallReader {
             .into_iter()
             .rev()
             .take(limit)
-            .map(|(nsid, cv)| NsidCount {
-                nsid: nsid.to_string(),
-                creates: cv.counts().creates,
-                dids_estimate: cv.dids().estimate() as u64,
-            })
+            .map(|(nsid, cv)| NsidCount::new(&nsid, &cv))
             .collect();
         Ok(counts)
     }
@@ -727,13 +750,13 @@ impl FjallReader {
         let mut prefix_count = CountsValue::default();
         #[derive(Debug, Clone, PartialEq)]
         enum Child {
-            FullNsid(String),
+            FullNsid(Nsid),
             ChildPrefix(String),
         }
         impl Child {
             fn from_prefix(nsid: &Nsid, prefix: &NsidPrefix) -> Option<Self> {
                 if prefix.is_group_of(nsid) {
-                    return Some(Child::FullNsid(nsid.to_string()));
+                    return Some(Child::FullNsid(nsid.clone()));
                 }
                 let suffix = nsid.as_str().strip_prefix(&format!("{}.", prefix.0))?;
                 let (segment, _) = suffix.split_once('.').unwrap();
@@ -742,17 +765,17 @@ impl FjallReader {
             }
             fn is_before(&self, other: &Child) -> bool {
                 match (self, other) {
-                    (Child::FullNsid(s), Child::ChildPrefix(o)) if s == o => true,
-                    (Child::ChildPrefix(s), Child::FullNsid(o)) if s == o => false,
-                    (Child::FullNsid(s), Child::FullNsid(o)) => s < o,
+                    (Child::FullNsid(s), Child::ChildPrefix(o)) if s.as_str() == o => true,
+                    (Child::ChildPrefix(s), Child::FullNsid(o)) if s == o.as_str() => false,
+                    (Child::FullNsid(s), Child::FullNsid(o)) => s.as_str() < o.as_str(),
                     (Child::ChildPrefix(s), Child::ChildPrefix(o)) => s < o,
-                    (Child::FullNsid(s), Child::ChildPrefix(o)) => s < o,
-                    (Child::ChildPrefix(s), Child::FullNsid(o)) => s < o,
+                    (Child::FullNsid(s), Child::ChildPrefix(o)) => s.to_string() < *o,
+                    (Child::ChildPrefix(s), Child::FullNsid(o)) => *s < o.to_string(),
                 }
             }
             fn into_inner(self) -> String {
                 match self {
-                    Child::FullNsid(s) => s,
+                    Child::FullNsid(s) => s.to_string(),
                     Child::ChildPrefix(s) => s,
                 }
             }
@@ -791,16 +814,10 @@ impl FjallReader {
                 }
             }
             items.push(match child {
-                Child::FullNsid(nsid) => PrefixChild::Collection(NsidCount {
-                    nsid,
-                    creates: merged.counts().creates,
-                    dids_estimate: merged.dids().estimate() as u64,
-                }),
-                Child::ChildPrefix(prefix) => PrefixChild::Prefix(PrefixCount {
-                    prefix,
-                    creates: merged.counts().creates,
-                    dids_estimate: merged.dids().estimate() as u64,
-                }),
+                Child::FullNsid(nsid) => PrefixChild::Collection(NsidCount::new(&nsid, &merged)),
+                Child::ChildPrefix(prefix) => {
+                    PrefixChild::Prefix(PrefixCount::new(&prefix, &merged))
+                }
             });
         }
 
@@ -982,12 +999,51 @@ impl FjallReader {
         }
         Ok(merged)
     }
+
+    fn search_collections(&self, terms: Vec<String>) -> StorageResult<Vec<NsidCount>> {
+        let start = AllTimeRollupKey::start()?;
+        let end = AllTimeRollupKey::end()?;
+        let mut matches = Vec::new();
+        let limit = 16; // TODO: param
+        for kv in self.rollups.range((start, end)) {
+            let (key_bytes, val_bytes) = kv?;
+            let key = db_complete::<AllTimeRollupKey>(&key_bytes)?;
+            let nsid = key.collection();
+            for term in &terms {
+                if nsid.contains(term) {
+                    let counts = db_complete::<CountsValue>(&val_bytes)?;
+                    matches.push(NsidCount::new(nsid, &counts));
+                    break;
+                }
+            }
+            if matches.len() >= limit {
+                break;
+            }
+        }
+        // TODO: indicate incomplete results
+        Ok(matches)
+    }
 }
 
 #[async_trait]
 impl StoreReader for FjallReader {
     fn name(&self) -> String {
         "fjall storage v2".into()
+    }
+    fn update_metrics(&self) {
+        gauge!("storage_fjall_l0_run_count", "partition" => "global")
+            .set(self.global.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_l0_run_count", "partition" => "feeds")
+            .set(self.feeds.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_l0_run_count", "partition" => "records")
+            .set(self.records.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_l0_run_count", "partition" => "rollups")
+            .set(self.rollups.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_l0_run_count", "partition" => "queues")
+            .set(self.queues.tree.l0_run_count() as f64);
+        gauge!("storage_fjall_keyspace_disk_space").set(self.keyspace.disk_space() as f64);
+        gauge!("storage_fjall_journal_count").set(self.keyspace.journal_count() as f64);
+        gauge!("storage_fjall_keyspace_sequence").set(self.keyspace.instant() as f64);
     }
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value> {
         let s = self.clone();
@@ -1062,6 +1118,10 @@ impl StoreReader for FjallReader {
         })
         .await?
     }
+    async fn search_collections(&self, terms: Vec<String>) -> StorageResult<Vec<NsidCount>> {
+        let s = self.clone();
+        tokio::task::spawn_blocking(move || FjallReader::search_collections(&s, terms)).await?
+    }
 }
 
 #[derive(Clone)]
@@ -1076,6 +1136,48 @@ pub struct FjallWriter {
 }
 
 impl FjallWriter {
+    fn describe_metrics(&self) {
+        describe_histogram!(
+            "storage_insert_batch_db_batch_items",
+            Unit::Count,
+            "how many items are in the fjall batch for batched inserts"
+        );
+        describe_histogram!(
+            "storage_rollup_counts_db_batch_items",
+            Unit::Count,
+            "how many items are in the fjall batch for a timlies rollup"
+        );
+        describe_counter!(
+            "storage_delete_account_partial_commits",
+            Unit::Count,
+            "fjall checkpoint commits for cleaning up accounts with too many records"
+        );
+        describe_counter!(
+            "storage_delete_account_completions",
+            Unit::Count,
+            "total count of account deletes handled"
+        );
+        describe_counter!(
+            "storage_delete_account_records_deleted",
+            Unit::Count,
+            "total records deleted when handling account deletes"
+        );
+        describe_histogram!(
+            "storage_trim_dirty_nsids",
+            Unit::Count,
+            "number of NSIDs trimmed"
+        );
+        describe_histogram!(
+            "storage_trim_duration",
+            Unit::Microseconds,
+            "how long it took to trim the dirty NSIDs"
+        );
+        describe_counter!(
+            "storage_trim_removed",
+            Unit::Count,
+            "how many records were removed during trim"
+        );
+    }
     fn rollup_delete_account(
         &mut self,
         cursor: Cursor,
@@ -1207,7 +1309,8 @@ impl FjallWriter {
                         AllTimeRecordsKey::new(new_creates_count.into(), &nsid).to_db_bytes()?,
                     ),
                 };
-                batch.remove(&self.rollups, &old_k); // TODO: when fjall gets weak delete, this will hopefully work way better
+                // remove_weak is allowed here because the secondary ranking index only ever inserts once at a key
+                batch.remove_weak(&self.rollups, &old_k);
                 batch.insert(&self.rollups, &new_k, "");
             }
 
@@ -1231,7 +1334,8 @@ impl FjallWriter {
                         AllTimeDidsKey::new(new_dids_estimate.into(), &nsid).to_db_bytes()?,
                     ),
                 };
-                batch.remove(&self.rollups, &old_k); // TODO: when fjall gets weak delete, this will hopefully work way better
+                // remove_weak is allowed here because the secondary ranking index only ever inserts once at a key
+                batch.remove_weak(&self.rollups, &old_k);
                 batch.insert(&self.rollups, &new_k, "");
             }
 
@@ -1241,6 +1345,7 @@ impl FjallWriter {
 
         insert_batch_static_neu::<NewRollupCursorKey>(&mut batch, &self.global, last_cursor)?;
 
+        histogram!("storage_rollup_counts_db_batch_items").record(batch.len() as f64);
         batch.commit()?;
         Ok((cursors_advanced, dirty_nsids))
     }
@@ -1249,28 +1354,27 @@ impl FjallWriter {
 impl StoreWriter<FjallBackground> for FjallWriter {
     fn background_tasks(&mut self, reroll: bool) -> StorageResult<FjallBackground> {
         if self.bg_taken.swap(true, Ordering::SeqCst) {
-            Err(StorageError::BackgroundAlreadyStarted)
-        } else {
-            if reroll {
-                log::info!("reroll: resetting rollup cursor...");
-                insert_static_neu::<NewRollupCursorKey>(&self.global, Cursor::from_start())?;
-                log::info!("reroll: clearing trim cursors...");
-                let mut batch = self.keyspace.batch();
-                for kv in self
-                    .global
-                    .prefix(TrimCollectionCursorKey::from_prefix_to_db_bytes(
-                        &Default::default(),
-                    )?)
-                {
-                    let (k, _) = kv?;
-                    batch.remove(&self.global, k);
-                }
-                let n = batch.len();
-                batch.commit()?;
-                log::info!("reroll: cleared {n} trim cursors.");
-            }
-            Ok(FjallBackground(self.clone()))
+            return Err(StorageError::BackgroundAlreadyStarted);
         }
+        if reroll {
+            log::info!("reroll: resetting rollup cursor...");
+            insert_static_neu::<NewRollupCursorKey>(&self.global, Cursor::from_start())?;
+            log::info!("reroll: clearing trim cursors...");
+            let mut batch = self.keyspace.batch();
+            for kv in self
+                .global
+                .prefix(TrimCollectionCursorKey::from_prefix_to_db_bytes(
+                    &Default::default(),
+                )?)
+            {
+                let (k, _) = kv?;
+                batch.remove(&self.global, k);
+            }
+            let n = batch.len();
+            batch.commit()?;
+            log::info!("reroll: cleared {n} trim cursors.");
+        }
+        Ok(FjallBackground(self.clone()))
     }
 
     fn insert_batch<const LIMIT: usize>(
@@ -1346,6 +1450,7 @@ impl StoreWriter<FjallBackground> for FjallWriter {
             latest.to_db_bytes()?,
         );
 
+        histogram!("storage_insert_batch_db_batch_items").record(batch.len() as f64);
         batch.commit()?;
         Ok(())
     }
@@ -1500,7 +1605,7 @@ impl StoreWriter<FjallBackground> for FjallWriter {
                 candidate_new_feed_lower_cursor = Some(feed_key.cursor());
             }
 
-            self.feeds.remove(&location_key_bytes)?;
+            self.records.remove(&location_key_bytes)?;
             self.feeds.remove(key_bytes)?;
             records_deleted += 1;
         }
@@ -1527,10 +1632,13 @@ impl StoreWriter<FjallBackground> for FjallWriter {
             batch.remove(&self.records, key_bytes);
             records_deleted += 1;
             if batch.len() >= MAX_BATCHED_ACCOUNT_DELETE_RECORDS {
+                counter!("storage_delete_account_partial_commits").increment(1);
                 batch.commit()?;
                 batch = self.keyspace.batch();
             }
         }
+        counter!("storage_delete_account_completions").increment(1);
+        counter!("storage_delete_account_records_deleted").increment(records_deleted as u64);
         batch.commit()?;
         Ok(records_deleted)
     }
@@ -1585,10 +1693,20 @@ impl StoreBackground for FjallBackground {
                             break;
                         }
                     }
+                    let dt = t0.elapsed();
+                    log::trace!("finished trimming {n} nsids in {dt:?}: {total_danglers} dangling and {total_deleted} total removed.");
+                    histogram!("storage_trim_dirty_nsids").record(completed.len() as f64);
+                    histogram!("storage_trim_duration").record(dt.as_micros() as f64);
+                    counter!("storage_trim_removed", "dangling" => "true").increment(total_danglers as u64);
+                    if total_deleted >= total_danglers {
+                        counter!("storage_trim_removed", "dangling" => "false").increment((total_deleted - total_danglers) as u64);
+                    } else {
+                        // TODO: probably think through what's happening here
+                        log::warn!("weird trim case: more danglers than deleted? metric will be missing for dangling=false. deleted={total_deleted} danglers={total_danglers}");
+                    }
                     for c in completed {
                         dirty_nsids.remove(&c);
                     }
-                    log::info!("finished trimming {n} nsids in {:?}: {total_danglers} dangling and {total_deleted} total removed.", t0.elapsed());
                 },
             };
         }
@@ -2617,6 +2735,8 @@ mod tests {
             vec![PrefixChild::Collection(NsidCount {
                 nsid: "a.a.a".to_string(),
                 creates: 1,
+                updates: 0,
+                deletes: 0,
                 dids_estimate: 1
             }),]
         );
@@ -2663,7 +2783,9 @@ mod tests {
             vec![PrefixChild::Prefix(PrefixCount {
                 prefix: "a.a.a".to_string(),
                 creates: 1,
-                dids_estimate: 1
+                updates: 0,
+                deletes: 0,
+                dids_estimate: 1,
             }),]
         );
         assert_eq!(cursor, None);
@@ -2718,6 +2840,8 @@ mod tests {
             vec![PrefixChild::Prefix(PrefixCount {
                 prefix: "a.a.a".to_string(),
                 creates: 2,
+                updates: 0,
+                deletes: 0,
                 dids_estimate: 1
             }),]
         );
@@ -2786,11 +2910,15 @@ mod tests {
                 PrefixChild::Collection(NsidCount {
                     nsid: "a.a.a.a".to_string(),
                     creates: 1,
+                    updates: 0,
+                    deletes: 0,
                     dids_estimate: 1
                 }),
                 PrefixChild::Prefix(PrefixCount {
                     prefix: "a.a.a.a".to_string(),
                     creates: 1,
+                    updates: 0,
+                    deletes: 0,
                     dids_estimate: 1
                 }),
             ]

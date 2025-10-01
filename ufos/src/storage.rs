@@ -5,9 +5,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use jetstream::exports::{Did, Nsid};
+use metrics::{describe_histogram, histogram, Unit};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
 
@@ -35,21 +36,34 @@ where
         self,
         mut batches: Receiver<EventBatch<LIMIT>>,
     ) -> StorageResult<()> {
+        describe_histogram!(
+            "storage_slow_batches",
+            Unit::Microseconds,
+            "batches that took more than 3s to insert"
+        );
+        describe_histogram!(
+            "storage_batch_insert_time",
+            Unit::Microseconds,
+            "total time to insert one commit batch"
+        );
         while let Some(event_batch) = batches.recv().await {
             let token = CancellationToken::new();
             let cancelled = token.clone();
             tokio::spawn(async move {
-                let started = SystemTime::now();
+                let started = Instant::now();
                 let mut concerned = false;
                 loop {
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs_f64(3.)) => {
-                            log::warn!("taking a long time to insert an event batch ({:?})...", started.elapsed());
+                        _ = tokio::time::sleep(Duration::from_secs(3)) => {
+                            if !concerned {
+                                log::warn!("taking a long time to insert an event batch...");
+                            }
                             concerned = true;
                         }
                         _ = cancelled.cancelled() => {
                             if concerned {
                                 log::warn!("finally inserted slow event batch (or failed) after {:?}", started.elapsed());
+                                histogram!("storage_slow_batches").record(started.elapsed().as_micros() as f64);
                             }
                             break
                         }
@@ -60,7 +74,10 @@ where
                 let mut me = self.clone();
                 move || {
                     let _guard = token.drop_guard();
-                    me.insert_batch(event_batch)
+                    let t0 = Instant::now();
+                    let r = me.insert_batch(event_batch);
+                    histogram!("storage_batch_insert_time").record(t0.elapsed().as_micros() as f64);
+                    r
                 }
             })
             .await??;
@@ -94,6 +111,8 @@ pub trait StoreBackground: Send + Sync {
 #[async_trait]
 pub trait StoreReader: Send + Sync {
     fn name(&self) -> String;
+
+    fn update_metrics(&self) {}
 
     async fn get_storage_stats(&self) -> StorageResult<serde_json::Value>;
 
@@ -137,4 +156,6 @@ pub trait StoreReader: Send + Sync {
         limit: usize,
         expand_each_collection: bool,
     ) -> StorageResult<Vec<UFOsRecord>>;
+
+    async fn search_collections(&self, terms: Vec<String>) -> StorageResult<Vec<NsidCount>>;
 }

@@ -5,6 +5,9 @@ use jetstream::{
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
     JetstreamReceiver,
 };
+use metrics::{
+    counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram, Unit,
+};
 use std::mem;
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -79,6 +82,26 @@ impl Batcher {
         batch_sender: Sender<LimitedBatch>,
         sketch_secret: SketchSecretPrefix,
     ) -> Self {
+        describe_counter!(
+            "batcher_batches_sent",
+            Unit::Count,
+            "how many batches of events were sent from Batcher to storage"
+        );
+        describe_gauge!(
+            "batcher_batch_age",
+            Unit::Microseconds,
+            "how old the last-sent batch was"
+        );
+        describe_gauge!(
+            "batcher_send_queue_capacity",
+            Unit::Count,
+            "how many spaces are available for batches in the send queue"
+        );
+        describe_histogram!(
+            "batcher_total_collections",
+            Unit::Count,
+            "how many collections are in this batch"
+        );
         let mut rate_limit = tokio::time::interval(std::time::Duration::from_millis(3));
         rate_limit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         Self {
@@ -188,21 +211,31 @@ impl Batcher {
     // holds up all consumer progress until it can send to the channel
     // use this when the current batch is too full to add more to it
     async fn send_current_batch_now(&mut self, small: bool, referrer: &str) -> anyhow::Result<()> {
+        let size_label = if small { "small" } else { "full" };
+        let queue_cap = self.batch_sender.capacity();
+
+        if let Some(cursor) = self.current_batch.initial_cursor {
+            gauge!("batcher_batch_age", "size" => size_label).set(cursor.elapsed_micros_f64());
+        }
+        histogram!("batcher_total_collections", "size" => size_label)
+            .record(self.current_batch.batch.total_collections() as f64);
+        gauge!("batcher_send_queue_capacity").set(queue_cap as f64);
+
         let beginning = match self.current_batch.initial_cursor.map(|c| c.elapsed()) {
             None => "unknown".to_string(),
-            Some(Ok(t)) => format!("{:?}", t),
+            Some(Ok(t)) => format!("{t:?}"),
             Some(Err(e)) => format!("+{:?}", e.duration()),
         };
-        log::info!(
-            "sending batch now from {beginning}, {}, queue capacity: {}, referrer: {referrer}",
-            if small { "small" } else { "full" },
-            self.batch_sender.capacity(),
+        log::trace!(
+            "sending batch now from {beginning}, {size_label}, queue capacity: {queue_cap}, referrer: {referrer}",
         );
         let current = mem::take(&mut self.current_batch);
         self.rate_limit.tick().await;
         self.batch_sender
             .send_timeout(current.batch, Duration::from_secs_f64(SEND_TIMEOUT_S))
             .await?;
+        counter!("batcher_batches_sent", "size" => size_label, "referrer" => referrer.to_string())
+            .increment(1);
         Ok(())
     }
 }

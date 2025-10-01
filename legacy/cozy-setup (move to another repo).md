@@ -339,7 +339,7 @@ etc
 
 - systemd unit for running: `sudo nano /etc/systemd/system/constellation.service`
 
-    ```toml
+    ```ini
     [Unit]
     Description=Constellation backlinks index
     After=network.target

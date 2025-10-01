@@ -2,13 +2,13 @@ pub const INDEX_HTML: &str = r#"<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>UFOs API Documentation</title>
+    <title>UFOs API documentation</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="API Documentation for UFOs: Samples and stats for all atproto lexicons." />
     <style>
       .custom-header {
         height: 42px;
-        background-color: var(--scalar-background-1);
+        background-color: #221828;
         box-shadow: inset 0 -1px 0 var(--scalar-border-color);
         color: var(--scalar-color-1);
         font-size: var(--scalar-font-size-3);
@@ -29,8 +29,11 @@ pub const INDEX_HTML: &str = r#"<!doctype html>
   </head>
   <body>
     <header class="custom-header scalar-app">
-      <b>a <a href="https://microcosm.blue">microcosm</a> project</b>
+      <p>
+        <a href="https://ufos.microcosm.blue">Launch 🛸 UFOs app</a>: Explore lexicons
+      </p>
       <nav>
+        <b>a <a href="https://microcosm.blue">microcosm</a> project</b>
         <a href="https://bsky.app/profile/microcosm.blue">@microcosm.blue</a>
         <a href="https://github.com/at-microcosm">github</a>
       </nav>

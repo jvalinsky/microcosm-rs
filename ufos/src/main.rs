@@ -1,7 +1,10 @@
 use clap::Parser;
 use jetstream::events::Cursor;
+use metrics::{describe_gauge, gauge, Unit};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
+use tokio::task::JoinSet;
 use ufos::consumer;
 use ufos::file_consumer;
 use ufos::server;
@@ -70,19 +73,32 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn go<B: StoreBackground>(
+async fn go<B: StoreBackground + 'static>(
     args: Args,
     read_store: impl StoreReader + 'static + Clone,
     mut write_store: impl StoreWriter<B> + 'static,
     cursor: Option<Cursor>,
     sketch_secret: SketchSecretPrefix,
 ) -> anyhow::Result<()> {
+    let mut whatever_tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
+    let mut consumer_tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
+
     println!("starting server with storage...");
     let serving = server::serve(read_store.clone());
+    whatever_tasks.spawn(async move {
+        serving.await.map_err(|e| {
+            log::warn!("server ended: {e}");
+            anyhow::anyhow!(e)
+        })
+    });
 
     if args.pause_writer {
         log::info!("not starting jetstream or the write loop.");
-        serving.await.map_err(|e| anyhow::anyhow!(e))?;
+        for t in whatever_tasks.join_all().await {
+            if let Err(e) = t {
+                return Err(anyhow::anyhow!(e));
+            }
+        }
         return Ok(());
     }
 
@@ -100,23 +116,73 @@ async fn go<B: StoreBackground>(
     let rolling = write_store
         .background_tasks(args.reroll)?
         .run(args.backfill);
-    let consuming = write_store.receive_batches(batches);
+    whatever_tasks.spawn(async move {
+        rolling
+            .await
+            .inspect_err(|e| log::warn!("rollup ended: {e}"))?;
+        Ok(())
+    });
 
-    let stating = do_update_stuff(read_store);
+    consumer_tasks.spawn(async move {
+        write_store
+            .receive_batches(batches)
+            .await
+            .inspect_err(|e| log::warn!("consumer ended: {e}"))?;
+        Ok(())
+    });
 
-    tokio::select! {
-        z = serving => log::warn!("serve task ended: {z:?}"),
-        z = rolling => log::warn!("rollup task ended: {z:?}"),
-        z = consuming => log::warn!("consuming task ended: {z:?}"),
-        z = stating => log::warn!("status task ended: {z:?}"),
-    };
+    whatever_tasks.spawn(async move {
+        do_update_stuff(read_store).await;
+        log::warn!("status task ended");
+        Ok(())
+    });
+
+    install_metrics_server()?;
+
+    for (i, t) in consumer_tasks.join_all().await.iter().enumerate() {
+        log::warn!("task {i} done: {t:?}");
+    }
+
+    println!("consumer tasks all completed, killing the others");
+    whatever_tasks.shutdown().await;
 
     println!("bye!");
 
     Ok(())
 }
 
+fn install_metrics_server() -> anyhow::Result<()> {
+    log::info!("installing metrics server...");
+    let host = [0, 0, 0, 0];
+    let port = 8765;
+    PrometheusBuilder::new()
+        .set_quantiles(&[0.5, 0.9, 0.99, 1.0])?
+        .set_bucket_duration(Duration::from_secs(60))?
+        .set_bucket_count(std::num::NonZero::new(10).unwrap()) // count * duration = 10 mins. stuff doesn't happen that fast here.
+        .set_enable_unit_suffix(false) // this seemed buggy for constellation (sometimes wouldn't engage)
+        .with_http_listener((host, port))
+        .install()?;
+    log::info!(
+        "metrics server installed! listening on http://{}.{}.{}.{}:{port}",
+        host[0],
+        host[1],
+        host[2],
+        host[3]
+    );
+    Ok(())
+}
+
 async fn do_update_stuff(read_store: impl StoreReader) {
+    describe_gauge!(
+        "persisted_cursor_age",
+        Unit::Microseconds,
+        "microseconds between our clock and the latest persisted event's cursor"
+    );
+    describe_gauge!(
+        "rollup_cursor_age",
+        Unit::Microseconds,
+        "microseconds between our clock and the latest rollup cursor"
+    );
     let started_at = std::time::SystemTime::now();
     let mut first_cursor = None;
     let mut first_rollup = None;
@@ -127,6 +193,7 @@ async fn do_update_stuff(read_store: impl StoreReader) {
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
+        read_store.update_metrics();
         match read_store.get_consumer_info().await {
             Err(e) => log::warn!("failed to get jetstream consumer info: {e:?}"),
             Ok(ConsumerInfo::Jetstream {
@@ -170,6 +237,13 @@ fn backfill_info(
     started_at: SystemTime,
     now: SystemTime,
 ) {
+    if let Some(cursor) = latest_cursor {
+        gauge!("persisted_cursor_age").set(cursor.elapsed_micros_f64());
+    }
+    if let Some(cursor) = rollup_cursor {
+        gauge!("rollup_cursor_age").set(cursor.elapsed_micros_f64());
+    }
+
     let nice_dt_two_maybes = |earlier: Option<Cursor>, later: Option<Cursor>| match (earlier, later)
     {
         (Some(earlier), Some(later)) => match later.duration_since(&earlier) {
@@ -208,7 +282,7 @@ fn backfill_info(
     let rollup_rate = rate(rollup_cursor, last_rollup, dt_real);
     let rollup_avg = rate(rollup_cursor, first_rollup, dt_real_total);
 
-    log::info!(
+    log::trace!(
         "cursor: {} behind (→{}, {cursor_rate}x, {cursor_avg}x avg). rollup: {} behind (→{}, {rollup_rate}x, {rollup_avg}x avg).",
         latest_cursor.map(|c| c.elapsed().map(nice_duration).unwrap_or("++".to_string())).unwrap_or("?".to_string()),
         nice_dt_two_maybes(last_cursor, latest_cursor),

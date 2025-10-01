@@ -10,7 +10,7 @@ pub mod store_types;
 
 use crate::db_types::{EncodingError, EncodingResult};
 use crate::error::BatchInsertError;
-use crate::store_types::SketchSecretPrefix;
+use crate::store_types::{CountsValue, SketchSecretPrefix};
 use cardinality_estimator_safe::{Element, Sketch};
 use error::FirehoseEventError;
 use jetstream::events::{CommitEvent, CommitOp, Cursor};
@@ -281,16 +281,42 @@ pub enum ConsumerInfo {
 pub struct NsidCount {
     nsid: String,
     creates: u64,
-    // TODO: add updates and deletes
+    updates: u64,
+    deletes: u64,
     dids_estimate: u64,
+}
+impl NsidCount {
+    pub fn new(nsid: &Nsid, counts: &CountsValue) -> Self {
+        let crud = counts.counts();
+        Self {
+            nsid: nsid.to_string(),
+            creates: crud.creates,
+            updates: crud.updates,
+            deletes: crud.deletes,
+            dids_estimate: counts.dids().estimate() as u64,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
 pub struct PrefixCount {
     prefix: String,
     creates: u64,
-    // TODO: add updates and deletes
+    updates: u64,
+    deletes: u64,
     dids_estimate: u64,
+}
+impl PrefixCount {
+    pub fn new(prefix: &str, counts: &CountsValue) -> Self {
+        let crud = counts.counts();
+        Self {
+            prefix: prefix.to_string(),
+            creates: crud.creates,
+            updates: crud.updates,
+            deletes: crud.deletes,
+            dids_estimate: counts.dids().estimate() as u64,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]

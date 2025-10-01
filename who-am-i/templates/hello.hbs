@@ -1,0 +1,122 @@
+{{#*inline "description"}}A little identity-verifying auth service for microcosm demos{{/inline}}
+
+{{#*inline "main"}}
+<div class="mini-content">
+  <div class="explain">
+    <p>This is a little identity-verifying service for microcosm demos.</p>
+    <p>Only <strong>read access to your public data</strong> is required to connect: connecting does not grant any ability to modify your account or data.</p>
+  </div>
+
+  {{#if did}}
+    <p id="error-message" class="hidden"></p>
+
+    <p id="prompt" class="detail">
+      Connected identity:
+    </p>
+
+    <div id="loader">
+      <span class="spinner"></span>
+    </div>
+
+    <div id="user-info">
+      <div id="handle-action" class="action">
+        <span id="handle-view" class="handle"></span>
+        <button id="revoke">disconnect</button>
+      </div>
+    </div>
+    <script>
+      const errorEl = document.getElementById('error-message');
+      const loaderEl = document.getElementById('loader');
+      const handleViewEl = document.getElementById('handle-view');
+      const revokeEl = document.getElementById('revoke'); // for known-did
+
+      function err(e, msg) {
+        loaderEl.classList.add('hidden');
+        errorEl.classList.remove('hidden');
+        errorEl.textContent = msg || e;
+        throw new Error(e);
+      }
+
+      // already-known user
+      ({{{json did}}}) && (async () => {
+
+        const handle = await lookUp({{{json fetch_key}}});
+
+        loaderEl.classList.add('hidden');
+        handleViewEl.textContent = `@${handle}`;
+        revokeEl.addEventListener('click', async () => {
+          try {
+            let res = await fetch('/disconnect', { method: 'POST', credentials: 'include' });
+            if (!res.ok) throw res;
+          } catch (e) {
+            err(e, 'failed to clear session, sorry');
+          }
+          window.location.replace(location.pathname);
+          window.location.reload(); // backup, in case there is no query?
+        });
+      })();
+
+      async function lookUp(fetch_key) {
+        let info;
+        try {
+          const resp = await fetch('/user-info', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ fetch_key }),
+          });
+          if (!resp.ok) throw resp;
+          info = await resp.json();
+        } catch (e) {
+          err(e, 'failed to resolve handle from DID')
+        }
+        return info.handle;
+      }
+    </script>
+  {{else}}
+
+    <p class="hello-connect-plz">Connect your handle</p>
+
+    {{#if is_auth_reload}}
+      {{#if no_cookie}}
+        <p id="prompt" class="detail no">
+          No identity connected. Your browser may be blocking access for connecting.
+        </p>
+      {{else}}
+        {{#if auth_failed}}
+          <p id="prompt" class="detail no">
+            No identity connected. Connecting failed or was denied.
+          </p>
+        {{else}}
+          <p id="prompt" class="detail no">
+            No identity connected.
+          </p>
+        {{/if}}
+      {{/if}}
+    {{/if}}
+
+    <div id="user-info">
+      <form id="form-action" action="/auth" target="_blank" method="GET" class="action {{#if did}}hidden{{/if}}">
+        <label>
+          @<input id="handle-input" class="handle" name="handle" placeholder="example.bsky.social" />
+        </label>
+        <button id="connect" type="submit">connect</button>
+      </form>
+    </div>
+  {{/if}}
+
+</div>
+<script>
+window.addEventListener('storage', e => {
+  console.log('eyyy got storage', e);
+  if (e.key !== 'who-am-i') return;
+  if (!e.newValue) return;
+  if (e.newValue.result === 'success') {
+    window.location = '/?auth_reload=1';
+  } else {
+    window.location = '/?auth_reload=1&auth_failed=1';
+  }
+});
+</script>
+{{/inline}}
+
+{{#> base-full}}{{/base-full}}

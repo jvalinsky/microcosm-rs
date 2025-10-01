@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>great job!</title>
+
+<h1>oauth success!</h1>
+<p>this window should automatically close itself (probably a bug if it hasn't)</p>
+
+<script>
+// TODO: tie this back to its source...........
+
+localStorage.setItem("who-am-i", JSON.stringify({
+  result: "success",
+  did: {{{json did}}},
+  token: {{{json token}}},
+  fetch_key: {{{json fetch_key}}},
+}));
+// TODO: probably also wait for a reply from the frame and show an error if not
+window.close();
+</script>

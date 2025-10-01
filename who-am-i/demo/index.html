@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <style>
+    body {
+      background: #333;
+      color: #ccc;
+      font-family: sans-serif;
+    }
+    </style>
+  </head>
+
+  <body>
+    <h1>hey <span id="who"></span></h1>
+    <p><code id="jwt"></code></p>
+
+    <iframe src="http://127.0.0.1:9997/prompt" id="whoami" style="border: none" height="160" width="320"></iframe>
+
+    <script type="text/javascript">
+      (whoami => {
+        const handleMessage = ev => {
+          if (ev.source !== whoami.contentWindow) {
+            // TODO: ALSO CHECK ev.origin!!!!
+            console.log('nah');
+            return;
+          }
+          whoami.remove();
+          window.removeEventListener('message', handleMessage);
+
+          document.getElementById('who').textContent = ev.data.handle;
+          document.getElementById('jwt').textContent = ev.data.token;
+        }
+        window.addEventListener('message', handleMessage);
+      })(document.getElementById('whoami'));
+    </script>
+  </body>
+</html>

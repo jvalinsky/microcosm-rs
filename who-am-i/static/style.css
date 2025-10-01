@@ -1,0 +1,195 @@
+body {
+  color: #434;
+  font-family: 'Iowan Old Style', 'Palatino Linotype', 'URW Palladio L', P052, serif;
+  margin: 0;
+  min-height: 100vh;
+  padding: 0;
+}
+.wrap {
+  border: 2px solid #221828;
+  border-radius: 0.5rem;
+  box-sizing: border-box;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.wrap.unframed {
+  border-radius: 0;
+  border-width: 0.4rem;
+}
+header {
+  background: #221828;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 0.25rem;
+  color: #c9b;
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+header > * {
+  flex-basis: 33%;
+}
+header > .empty {
+  font-size: 0.8rem;
+  opacity: 0.5;
+}
+header > .title {
+  text-align: center;
+}
+header > a.micro {
+  text-decoration: none;
+  font-size: 0.8rem;
+  text-align: right;
+  opacity: 0.5;
+}
+header > a.micro:hover {
+  opacity: 1;
+}
+main {
+  background: #ccc;
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  padding: 0.25rem 0.5rem;
+}
+.mini-content {
+  margin: 1rem auto 0;
+  padding: 1rem 0.5rem;
+  max-width: 21rem;
+}
+
+.explain {
+  border-bottom: 1px dashed #888;
+  margin-bottom: 1rem;
+  padding-bottom: 2rem;
+}
+.explain p {
+  text-align: left;
+}
+
+#error-message {
+  font-size: 0.8rem;
+  color: #a31;
+}
+
+#error-message:not(.hidden) + #prompt {
+  display: none !important;
+}
+
+#error-message,
+p {
+  margin: 1rem 0 0;
+  text-align: center;
+}
+p.detail {
+  font-size: 0.8rem;
+}
+p.detail.no {
+  font-style: italic;
+}
+.parent-host {
+  font-weight: bold;
+  color: #48c;
+  display: inline-block;
+  padding: 0 0.125rem;
+  border-radius: 0.25rem;
+  border: 1px solid #aaa;
+  font-size: 0.8rem;
+}
+
+#loader {
+  display: flex;
+  flex-grow: 1;
+  justify-content: center;
+  align-items: center;
+}
+.spinner {
+  animation: rotation 1.618s ease-in-out infinite;
+  border-radius: 50%;
+  border: 3px dashed #434;
+  box-sizing: border-box;
+  display: inline-block;
+  height: 1.5em;
+  width: 1.5em;
+}
+@keyframes rotation {
+  0% { transform: rotate(0deg) }
+  100% { transform: rotate(360deg) }
+}
+/* loader visibility is mutually exclusive with its immediate sibling */
+#loader:not(.hidden) + * {
+  display: none !important;
+}
+
+#user-info {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.action {
+  background: #eee;
+  display: flex;
+  justify-content: space-between;
+  padding: 0.5rem 0.25rem 0.5rem 0.5rem;
+  font-size: 0.8rem;
+  align-items: baseline;
+  border-radius: 0.5rem;
+  border: 1px solid #bbb;
+  cursor: pointer;
+}
+.action:hover {
+  background: #fff;
+}
+#form-action:not(.hidden) + .action {
+  display: none !important;
+}
+
+#connect,
+#allow,
+#revoke {
+  background: transparent;
+  border: none;
+  border-left: 1px solid #bbb;
+  padding: 0 0.5rem;
+  color: #375;
+  font: inherit;
+  cursor: pointer;
+}
+#revoke {
+  color: #a31;
+}
+#action:hover #allow {
+  color: #285;
+}
+
+#need-storage {
+  font-size: 0.8rem;
+}
+.problem {
+  color: #a31;
+}
+
+#or {
+  font-size: 0.8rem;
+  text-align: center;
+}
+#or p {
+  margin: 0 0 1rem;
+}
+
+input.handle {
+  border: none;
+  border-bottom: 1px dashed #aaa;
+  background: transparent;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.hello-connect-plz {
+  margin: 1.667rem 0 0.667rem;
+}

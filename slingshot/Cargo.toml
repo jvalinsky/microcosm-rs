@@ -1,0 +1,31 @@
+[package]
+name = "slingshot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+atrium-api = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace", default-features = false }
+atrium-common = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
+atrium-identity = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
+atrium-oauth = { git = "https://github.com/uniphil/atrium.git", branch = "fix/resolve-handle-https-accept-whitespace" }
+clap = { version = "4.5.41", features = ["derive"] }
+ctrlc = "3.4.7"
+foyer = { version = "0.18.0", features = ["serde"] }
+hickory-resolver = "0.25.2"
+jetstream = { path = "../jetstream", features = ["metrics"] }
+links = { path = "../links" }
+log = "0.4.27"
+metrics = "0.24.2"
+metrics-exporter-prometheus = { version = "0.17.1", features = ["http-listener"] }
+poem = { version = "3.1.12", features = ["acme", "static-files"] }
+poem-openapi = { version = "5.1.16", features = ["scalar"] }
+reqwest = { version = "0.12.22", features = ["json"] }
+rustls = "0.23.31"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.141", features = ["raw_value"] }
+thiserror = "2.0.12"
+time = { version = "0.3.41", features = ["serde"] }
+tokio = { version = "1.47.0", features = ["full"] }
+tokio-util = "0.7.15"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+url = "2.5.4"

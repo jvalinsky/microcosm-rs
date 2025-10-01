@@ -42,6 +42,21 @@ impl Link {
             None
         }
     }
+    pub fn did(&self) -> Option<String> {
+        let did = match self {
+            Link::AtUri(s) => {
+                let rest = s.strip_prefix("at://")?; // todo: this might be safe to unwrap?
+                if let Some((did, _)) = rest.split_once("/") {
+                    did
+                } else {
+                    rest
+                }
+            }
+            Link::Uri(_) => return None,
+            Link::Did(did) => did,
+        };
+        Some(did.to_string())
+    }
 }
 
 #[derive(Debug, PartialEq)]

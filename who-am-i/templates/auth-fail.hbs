@@ -1,0 +1,20 @@
+{{#*inline "main"}}
+<p>
+  Auth failed: {{ reason }}
+</p>
+
+<div id="user-info">
+    auth failed.
+</div>
+
+<script>
+localStorage.setItem("who-am-i", JSON.stringify({
+  result: {{{json result}}},
+  reason: {{{json reason}}},
+}));
+
+window.close();
+</script>
+{{/inline}}
+
+{{#> base-framed}}{{/base-framed}}
