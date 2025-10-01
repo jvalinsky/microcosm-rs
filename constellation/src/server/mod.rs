@@ -28,6 +28,10 @@ use acceptable::{acceptable, ExtractAccept};
 const DEFAULT_CURSOR_LIMIT: u64 = 16;
 const DEFAULT_CURSOR_LIMIT_MAX: u64 = 100;
 
+fn get_default_cursor_limit() -> u64 {
+    DEFAULT_CURSOR_LIMIT
+}
+
 const INDEX_BEGAN_AT_TS: u64 = 1738083600; // TODO: not this
 
 pub async fn serve<S, A>(store: S, addr: A, stay_alive: CancellationToken) -> anyhow::Result<()>
@@ -57,6 +61,15 @@ where
                 let store = store.clone();
                 move |accept, query| async {
                     block_in_place(|| count_distinct_dids(accept, query, store))
+                }
+            }),
+        )
+        .route(
+            "/xrpc/blue.microcosm.links.getBacklinks",
+            get({
+                let store = store.clone();
+                move |accept, query| async {
+                    block_in_place(|| get_backlinks(accept, query, store))
                 }
             }),
         )
@@ -233,6 +246,103 @@ fn count_distinct_dids(
 }
 
 #[derive(Clone, Deserialize)]
+struct GetBacklinksQuery {
+    /// The link target
+    ///
+    /// can be an AT-URI, plain DID, or regular URI
+    subject: String,
+    /// Filter links only from this link source
+    ///
+    /// eg.: `app.bsky.feed.like:subject.uri`
+    source: String,
+    cursor: Option<OpaqueApiCursor>,
+    /// Filter links only from these DIDs
+    ///
+    /// include multiple times to filter by multiple source DIDs
+    #[serde(default)]
+    did: Vec<String>,
+    /// Set the max number of links to return per page of results
+    #[serde(default = "get_default_cursor_limit")]
+    limit: u64,
+    // TODO: allow reverse (er, forward) order as well
+}
+#[derive(Template, Serialize)]
+#[template(path = "get-backlinks.html.j2")]
+struct GetBacklinksResponse {
+    total: u64,
+    records: Vec<RecordId>,
+    cursor: Option<OpaqueApiCursor>,
+    #[serde(skip_serializing)]
+    query: GetBacklinksQuery,
+    #[serde(skip_serializing)]
+    collection: String,
+    #[serde(skip_serializing)]
+    path: String,
+}
+fn get_backlinks(
+    accept: ExtractAccept,
+    query: axum_extra::extract::Query<GetBacklinksQuery>, // supports multiple param occurrences
+    store: impl LinkReader,
+) -> Result<impl IntoResponse, http::StatusCode> {
+    let until = query
+        .cursor
+        .clone()
+        .map(|oc| ApiCursor::try_from(oc).map_err(|_| http::StatusCode::BAD_REQUEST))
+        .transpose()?
+        .map(|c| c.next);
+
+    let limit = query.limit;
+    if limit > DEFAULT_CURSOR_LIMIT_MAX {
+        return Err(http::StatusCode::BAD_REQUEST);
+    }
+
+    let filter_dids: HashSet<Did> = HashSet::from_iter(
+        query
+            .did
+            .iter()
+            .map(|d| d.trim())
+            .filter(|d| !d.is_empty())
+            .map(|d| Did(d.to_string())),
+    );
+
+    let Some((collection, path)) = query.source.split_once(':') else {
+        return Err(http::StatusCode::BAD_REQUEST);
+    };
+    let path = format!(".{path}");
+
+    let paged = store
+        .get_links(
+            &query.subject,
+            collection,
+            &path,
+            limit,
+            until,
+            &filter_dids,
+        )
+        .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let cursor = paged.next.map(|next| {
+        ApiCursor {
+            version: paged.version,
+            next,
+        }
+        .into()
+    });
+
+    Ok(acceptable(
+        accept,
+        GetBacklinksResponse {
+            total: paged.total,
+            records: paged.items,
+            cursor,
+            query: (*query).clone(),
+            collection: collection.to_string(),
+            path,
+        },
+    ))
+}
+
+#[derive(Clone, Deserialize)]
 struct GetLinkItemsQuery {
     target: String,
     collection: String,
@@ -251,12 +361,9 @@ struct GetLinkItemsQuery {
     ///
     /// deprecated: use `did`, which can be repeated multiple times
     from_dids: Option<String>, // comma separated: gross
-    #[serde(default = "get_default_limit")]
+    #[serde(default = "get_default_cursor_limit")]
     limit: u64,
     // TODO: allow reverse (er, forward) order as well
-}
-fn get_default_limit() -> u64 {
-    DEFAULT_CURSOR_LIMIT
 }
 #[derive(Template, Serialize)]
 #[template(path = "links.html.j2")]

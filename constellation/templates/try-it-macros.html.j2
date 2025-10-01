@@ -1,3 +1,29 @@
+{% macro get_backlinks(subject, source, dids, limit) %}
+  <form method="get" action="/xrpc/blue.microcosm.links.getBacklinks">
+    <pre class="code"><strong>GET</strong> /links
+  ?subject=    <input type="text" name="subject" value="{{ subject }}" placeholder="at-uri, did, uri..." />
+  &source=     <input type="text" name="source" value="{{ source }}" placeholder="app.bsky.feed.like:subject.uri" />
+  {%- for did in dids %}{% if !did.is_empty() %}
+  &did=        <input type="text" name="did" value="{{ did }}" placeholder="did:plc:..." />{% endif %}{% endfor %}
+  <span id="did-placeholder"></span>             <button id="add-did">+ did filter</button>
+  &limit=      <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" /> <button type="submit">get links</button></pre>
+  </form>
+  <script>
+    const addDidButton = document.getElementById('add-did');
+    const didPlaceholder = document.getElementById('did-placeholder');
+    addDidButton.addEventListener('click', e => {
+      e.preventDefault();
+      const i = document.createElement('input');
+      i.placeholder = 'did:plc:...';
+      i.name = "did"
+      const p = addDidButton.parentNode;
+      p.insertBefore(document.createTextNode('&did=        '), didPlaceholder);
+      p.insertBefore(i, didPlaceholder);
+      p.insertBefore(document.createTextNode('\n  '), didPlaceholder);
+    });
+  </script>
+{% endmacro %}
+
 {% macro links(target, collection, path, dids, limit) %}
   <form method="get" action="/links">
     <pre class="code"><strong>GET</strong> /links
@@ -24,7 +50,6 @@
     });
   </script>
 {% endmacro %}
-
 
 {% macro dids(target, collection, path) %}
   <form method="get" action="/links/distinct-dids">

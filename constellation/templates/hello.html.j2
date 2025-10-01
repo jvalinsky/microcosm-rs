@@ -28,9 +28,28 @@
 
   <h2>API Endpoints</h2>
 
+  <h3 class="route"><code>GET /xrpc/blue.microcosm.links.getBacklinks</code></h3>
+
+  <p>A list of records linking to any record, identity, or uri.</p>
+
+  <h4>Query parameters:</h4>
+
+  <ul>
+    <li><p><code>subject</code>: required, must url-encode. Example: <code>at://did:plc:vc7f4oafdgxsihk4cry2xpze/app.bsky.feed.post/3lgwdn7vd722r</code></p></li>
+    <li><p><code>source</code>: required. Example: <code>app.bsky.feed.like:subject.uri</code></p></li>
+    <li><p><code>did</code>: optional, filter links to those from specific users. Include multiple times to filter by multiple users. Example: <code>did=did:plc:vc7f4oafdgxsihk4cry2xpze&did=did:plc:vc7f4oafdgxsihk4cry2xpze</code></p></li>
+    <li><p><code>limit</code>: optional. Default: <code>16</code>. Maximum: <code>100</code></p></li>
+  </ul>
+
+  <p style="margin-bottom: 0"><strong>Try it:</strong></p>
+  {% call try_it::get_backlinks("at://did:plc:a4pqq234yw7fqbddawjo7y35/app.bsky.feed.post/3m237ilwc372e", "app.bsky.feed.like:subject.uri", [""], 16) %}
+
+
   <h3 class="route"><code>GET /links</code></h3>
 
   <p>A list of records linking to a target.</p>
+
+  <p>[DEPRECATED]: use <code>GET /xrpc/blue.microcosm.links.getBacklinks</code>. New apps should avoid it, but this endpoint <strong>will</strong> remain supported for the forseeable future.</p>
 
   <h4>Query parameters:</h4>
 
