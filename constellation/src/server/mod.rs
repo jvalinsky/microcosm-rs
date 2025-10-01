@@ -238,6 +238,18 @@ struct GetLinkItemsQuery {
     collection: String,
     path: String,
     cursor: Option<OpaqueApiCursor>,
+    /// Filter links only from these DIDs
+    ///
+    /// include multiple times to filter by multiple source DIDs
+    #[serde(default)]
+    did: Vec<String>,
+    /// [deprecated] Filter links only from these DIDs
+    ///
+    /// format: comma-separated sequence of DIDs
+    ///
+    /// errors: if `did` parameter is also present
+    ///
+    /// deprecated: use `did`, which can be repeated multiple times
     from_dids: Option<String>, // comma separated: gross
     limit: Option<u64>,
     // TODO: allow reverse (er, forward) order as well
@@ -256,7 +268,7 @@ struct GetLinkItemsResponse {
 }
 fn get_links(
     accept: ExtractAccept,
-    query: Query<GetLinkItemsQuery>,
+    query: axum_extra::extract::Query<GetLinkItemsQuery>, // supports multiple param occurrences
     store: impl LinkReader,
 ) -> Result<impl IntoResponse, http::StatusCode> {
     let until = query
@@ -271,11 +283,16 @@ fn get_links(
         return Err(http::StatusCode::BAD_REQUEST);
     }
 
-    let filter_dids = &query
-        .from_dids
-        .clone()
-        .map(|comma_joined| HashSet::from_iter(comma_joined.split(',').map(|d| Did(d.to_string()))))
-        .unwrap_or_default();
+    let mut filter_dids: HashSet<Did> = HashSet::from_iter(query.did.iter().map(|d| Did(d.to_string())));
+
+    if let Some(comma_joined) = &query.from_dids {
+        if !filter_dids.is_empty() {
+            return Err(http::StatusCode::BAD_REQUEST);
+        }
+        for did in comma_joined.split(',') {
+            filter_dids.insert(Did(did.to_string()));
+        }
+    }
 
     let paged = store
         .get_links(
@@ -284,7 +301,7 @@ fn get_links(
             &query.path,
             limit,
             until,
-            filter_dids,
+            &filter_dids,
         )
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
