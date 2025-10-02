@@ -60,7 +60,7 @@ fn get_db_read_opts() -> Options {
 pub struct RocksStorage {
     pub db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
     did_id_table: IdTable<Did, DidIdValue, true>,
-    target_id_table: IdTable<TargetKey, TargetId, false>,
+    target_id_table: IdTable<TargetKey, TargetId, true>,
     is_writer: bool,
     backup_task: Arc<Option<thread::JoinHandle<Result<()>>>>,
 }
@@ -264,7 +264,7 @@ impl RocksStorage {
 
     fn open_readmode(path: impl AsRef<Path>, readonly: bool) -> Result<Self> {
         let did_id_table = IdTable::<_, _, true>::setup(DID_IDS_CF);
-        let target_id_table = IdTable::<_, _, false>::setup(TARGET_IDS_CF);
+        let target_id_table = IdTable::<_, _, true>::setup(TARGET_IDS_CF);
 
         let cfs = vec![
             // id reference tables
@@ -960,12 +960,12 @@ impl LinkReader for RocksStorage {
         }
 
         let mut items: Vec<(String, u64, u64)> = Vec::with_capacity(grouped_counts.len());
-        for (target_id, (n, dids)) in grouped_counts {
-            let Some(target) = self.target_id_table.get_val_from_id(&self.db, target_id)? else {
+        for (target_id, (n, dids)) in &grouped_counts {
+            let Some(target) = self.target_id_table.get_val_from_id(&self.db, target_id.0)? else {
                 eprintln!("failed to look up target from target_id {target_id:?}");
                 continue;
             };
-            items.push((target, n, dids.len() as u64));
+            items.push((target.0.0, *n, dids.len() as u64));
         }
 
         let next = if grouped_counts.len() as u64 >= limit {
