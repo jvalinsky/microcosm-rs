@@ -59,8 +59,8 @@ fn get_db_read_opts() -> Options {
 #[derive(Debug, Clone)]
 pub struct RocksStorage {
     pub db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
-    did_id_table: IdTable<Did, DidIdValue, true>,
-    target_id_table: IdTable<TargetKey, TargetId, true>,
+    did_id_table: IdTable<Did, DidIdValue>,
+    target_id_table: IdTable<TargetKey, TargetId>,
     is_writer: bool,
     backup_task: Arc<Option<thread::JoinHandle<Result<()>>>>,
 }
@@ -88,10 +88,7 @@ where
     fn cf_descriptor(&self) -> ColumnFamilyDescriptor {
         ColumnFamilyDescriptor::new(&self.name, rocks_opts_base())
     }
-    fn init<const WITH_REVERSE: bool>(
-        self,
-        db: &DBWithThreadMode<MultiThreaded>,
-    ) -> Result<IdTable<Orig, IdVal, WITH_REVERSE>> {
+    fn init(self, db: &DBWithThreadMode<MultiThreaded>) -> Result<IdTable<Orig, IdVal>> {
         if db.cf_handle(&self.name).is_none() {
             bail!("failed to get cf handle from db -- was the db open with our .cf_descriptor()?");
         }
@@ -122,7 +119,7 @@ where
     }
 }
 #[derive(Debug, Clone)]
-struct IdTable<Orig, IdVal: IdTableValue, const WITH_REVERSE: bool>
+struct IdTable<Orig, IdVal: IdTableValue>
 where
     Orig: KeyFromRocks,
     for<'a> &'a Orig: AsRocksKey,
@@ -130,7 +127,7 @@ where
     base: IdTableBase<Orig, IdVal>,
     priv_id_seq: u64,
 }
-impl<Orig: Clone, IdVal: IdTableValue, const WITH_REVERSE: bool> IdTable<Orig, IdVal, WITH_REVERSE>
+impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal>
 where
     Orig: KeyFromRocks,
     for<'v> &'v IdVal: AsRocksValue,
@@ -181,16 +178,11 @@ where
             id_value
         }))
     }
+
     fn estimate_count(&self) -> u64 {
         self.base.id_seq.load(Ordering::SeqCst) - 1 // -1 because seq zero is reserved
     }
-}
-impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal, true>
-where
-    Orig: KeyFromRocks,
-    for<'v> &'v IdVal: AsRocksValue,
-    for<'k> &'k Orig: AsRocksKey,
-{
+
     fn get_or_create_id_val(
         &mut self,
         db: &DBWithThreadMode<MultiThreaded>,
@@ -216,22 +208,6 @@ where
         } else {
             Ok(None)
         }
-    }
-}
-impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal, false>
-where
-    Orig: KeyFromRocks,
-    for<'v> &'v IdVal: AsRocksValue,
-    for<'k> &'k Orig: AsRocksKey,
-{
-    fn get_or_create_id_val(
-        &mut self,
-        db: &DBWithThreadMode<MultiThreaded>,
-        batch: &mut WriteBatch,
-        orig: &Orig,
-    ) -> Result<IdVal> {
-        let cf = db.cf_handle(&self.base.name).unwrap();
-        self.__get_or_create_id_val(&cf, db, batch, orig)
     }
 }
 
@@ -263,8 +239,8 @@ impl RocksStorage {
     }
 
     fn open_readmode(path: impl AsRef<Path>, readonly: bool) -> Result<Self> {
-        let did_id_table = IdTable::<_, _, true>::setup(DID_IDS_CF);
-        let target_id_table = IdTable::<_, _, true>::setup(TARGET_IDS_CF);
+        let did_id_table = IdTable::setup(DID_IDS_CF);
+        let target_id_table = IdTable::setup(TARGET_IDS_CF);
 
         let cfs = vec![
             // id reference tables
@@ -857,24 +833,27 @@ impl LinkReader for RocksStorage {
         };
 
         let filter_did_ids: HashMap<DidId, bool> = filter_dids
-            .into_iter()
+            .iter()
             .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
             .collect::<Result<Vec<DidIdValue>>>()?
             .into_iter()
             .map(|DidIdValue(id, active)| (id, active))
             .collect();
 
-        let filter_to_target_ids = filter_to_targets
-            .into_iter()
-            .filter_map(|target| {
-                self.target_id_table
-                    .get_id_val(
-                        &self.db,
-                        &TargetKey(Target(target.to_string()), collection.clone(), path.clone()),
-                    )
-                    .transpose()
-            })
-            .collect::<Result<HashSet<TargetId>>>()?;
+        // stored targets are keyed by triples of (target, collection, path).
+        // target filtering only consideres the target itself, so we actually
+        // need to do a prefix iteration of all target ids for this target and
+        // keep them all.
+        // i *think* the number of keys at a target prefix should usually be
+        // pretty small, so this is hopefully fine. but if it turns out to be
+        // large, we can push this filtering back into the main links loop and
+        // do forward db queries per backlink to get the raw target back out.
+        let mut filter_to_target_ids: HashSet<TargetId> = HashSet::new();
+        for t in filter_to_targets {
+            for (_, target_id) in self.iter_targets_for_target(&Target(t.to_string())) {
+                filter_to_target_ids.insert(target_id);
+            }
+        }
 
         let linkers = self.get_target_linkers(&target_id)?;
 
@@ -923,7 +902,7 @@ impl LinkReader for RocksStorage {
             // (this check continues after the did-lookup, which we have to do)
             let page_is_full = grouped_counts.len() as u64 >= limit;
             if page_is_full {
-                let current_max = grouped_counts.keys().rev().next().unwrap(); // limit should be non-zero bleh
+                let current_max = grouped_counts.keys().next_back().unwrap(); // limit should be non-zero bleh
                 if fwd_target > *current_max {
                     continue;
                 }
@@ -952,7 +931,7 @@ impl LinkReader for RocksStorage {
                 Default::default()
             });
             entry.0 += 1;
-            entry.1.insert(did_id.clone());
+            entry.1.insert(did_id);
 
             if should_evict {
                 grouped_counts.pop_last();
@@ -961,19 +940,21 @@ impl LinkReader for RocksStorage {
 
         let mut items: Vec<(String, u64, u64)> = Vec::with_capacity(grouped_counts.len());
         for (target_id, (n, dids)) in &grouped_counts {
-            let Some(target) = self.target_id_table.get_val_from_id(&self.db, target_id.0)? else {
+            let Some(target) = self
+                .target_id_table
+                .get_val_from_id(&self.db, target_id.0)?
+            else {
                 eprintln!("failed to look up target from target_id {target_id:?}");
                 continue;
             };
-            items.push((target.0.0, *n, dids.len() as u64));
+            items.push((target.0 .0, *n, dids.len() as u64));
         }
 
         let next = if grouped_counts.len() as u64 >= limit {
             // yeah.... it's a number saved as a string......sorry
             grouped_counts
                 .keys()
-                .rev()
-                .next()
+                .next_back()
                 .map(|k| format!("{}", k.0))
         } else {
             None

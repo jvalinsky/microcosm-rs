@@ -158,7 +158,7 @@ impl LinkReader for MemStorage {
             HashSet::from_iter(filter_to_targets.iter().map(|s| Target::new(s)));
 
         let mut grouped_counts: HashMap<Target, (u64, HashSet<Did>)> = HashMap::new();
-        for (did, rkey) in linkers.into_iter().cloned().filter_map(|l| l) {
+        for (did, rkey) in linkers.iter().flatten().cloned() {
             if !filter_dids.is_empty() && !filter_dids.contains(&did) {
                 continue;
             }
@@ -171,7 +171,7 @@ impl LinkReader for MemStorage {
                     rkey,
                 })
                 .unwrap_or(&Vec::new())
-                .into_iter()
+                .iter()
                 .filter_map(|(path, target)| {
                     if *path == path_to_other
                         && (filter_to_targets.is_empty() || filter_to_targets.contains(target))

@@ -59,6 +59,7 @@ pub trait LinkStorage: Send + Sync {
 }
 
 pub trait LinkReader: Clone + Send + Sync + 'static {
+    #[allow(clippy::too_many_arguments)]
     fn get_many_to_many_counts(
         &self,
         target: &str,
