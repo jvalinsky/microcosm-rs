@@ -123,7 +123,7 @@ fn main() -> Result<()> {
                     let rocks = rocks.clone();
                     let stay_alive = stay_alive.clone();
                     s.spawn(move || {
-                        let rep = rocks.run_repair(time::Duration::from_millis(1), stay_alive);
+                        let rep = rocks.run_repair(time::Duration::from_millis(0), stay_alive);
                         eprintln!("repair finished: {rep:?}");
                         rep
                     });

@@ -358,6 +358,10 @@ impl RocksStorage {
 
         let mut maybe_done = false;
 
+        let mut write_fast = rocksdb::WriteOptions::default();
+        write_fast.set_sync(false);
+        write_fast.disable_wal(true);
+
         while !stay_alive.is_cancelled() && !maybe_done {
             // let mut batch = WriteBatch::default();
 
@@ -386,7 +390,7 @@ impl RocksStorage {
                 let target_id: TargetId = _vr(iter.value().unwrap())?;
 
                 self.db
-                    .put_cf(&cf, target_id.id().to_be_bytes(), _rv(&target))?;
+                    .put_cf_opt(&cf, target_id.id().to_be_bytes(), _rv(&target), &write_fast)?;
                 any_written = true;
                 iter.next();
             }
