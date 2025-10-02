@@ -66,7 +66,7 @@ where
                         .await
                         .map_err(to500)?
                 }
-            })
+            }),
         )
         .route(
             "/links/count",
@@ -251,7 +251,6 @@ struct OtherSubjectCount {
 #[template(path = "get-many-to-many-counts.html.j2")]
 struct GetManyToManyCountsResponse {
     counts_by_other_subject: Vec<OtherSubjectCount>,
-    total_other_subjects: u64,
     cursor: Option<OpaqueApiCursor>,
     #[serde(skip_serializing)]
     query: GetManyToManyCountsQuery,
@@ -308,37 +307,27 @@ fn get_many_to_many_counts(
         )
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let cursor = paged.next.map(|next| {
-        ApiKeyedCursor {
-            version: paged.total,
-            next,
-        }
-        .into()
-    });
+    let cursor = paged.next.map(|next| ApiKeyedCursor { next }.into());
 
     let items = paged
         .items
         .into_iter()
-        .map(|(subject, total, distinct)|
-            OtherSubjectCount {
-                subject,
-                total,
-                distinct,
-            })
+        .map(|(subject, total, distinct)| OtherSubjectCount {
+            subject,
+            total,
+            distinct,
+        })
         .collect();
 
     Ok(acceptable(
         accept,
         GetManyToManyCountsResponse {
             counts_by_other_subject: items,
-            total_other_subjects: paged.total,
             cursor,
             query: (*query).clone(),
         },
     ))
 }
-
-
 
 #[derive(Clone, Deserialize)]
 struct GetLinksCountQuery {
@@ -740,7 +729,6 @@ impl From<ApiCursor> for OpaqueApiCursor {
 
 #[derive(Serialize, Deserialize)] // for bincode
 struct ApiKeyedCursor {
-    version: u64, // total length (dirty check)
     next: String, // the key
 }
 

@@ -1,4 +1,7 @@
-use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, PagedOrderedCollection, StorageStats};
+use super::{
+    ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, PagedOrderedCollection,
+    StorageStats,
+};
 use crate::{CountsByCount, Did, RecordId};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
@@ -11,7 +14,7 @@ use rocksdb::{
     MultiThreaded, Options, PrefixRange, ReadOptions, WriteBatch,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -828,16 +831,155 @@ impl LinkStorage for RocksStorage {
 impl LinkReader for RocksStorage {
     fn get_many_to_many_counts(
         &self,
-        _target: &str,
-        _collection: &str,
-        _path: &str,
-        _path_to_other: &str,
-        _limit: u64,
-        _after: Option<String>,
-        _filter_dids: &HashSet<Did>,
-        _filter_to_targets: &HashSet<String>,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
     ) -> Result<PagedOrderedCollection<(String, u64, u64), String>> {
-        todo!();
+        let collection = Collection(collection.to_string());
+        let path = RPath(path.to_string());
+
+        let target_key = TargetKey(Target(target.to_string()), collection.clone(), path.clone());
+
+        // unfortunately the cursor is a, uh, stringified number.
+        // this was easier for the memstore (plain target, not target id), and
+        // making it generic is a bit awful.
+        // so... parse the number out of a string here :(
+        // TODO: this should bubble up to a BAD_REQUEST response
+        let after = after.map(|s| s.parse::<u64>().map(TargetId)).transpose()?;
+
+        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            return Ok(Default::default());
+        };
+
+        let filter_did_ids: HashMap<DidId, bool> = filter_dids
+            .into_iter()
+            .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
+            .collect::<Result<Vec<DidIdValue>>>()?
+            .into_iter()
+            .map(|DidIdValue(id, active)| (id, active))
+            .collect();
+
+        let filter_to_target_ids = filter_to_targets
+            .into_iter()
+            .filter_map(|target| {
+                self.target_id_table
+                    .get_id_val(
+                        &self.db,
+                        &TargetKey(Target(target.to_string()), collection.clone(), path.clone()),
+                    )
+                    .transpose()
+            })
+            .collect::<Result<HashSet<TargetId>>>()?;
+
+        let linkers = self.get_target_linkers(&target_id)?;
+
+        let mut grouped_counts: BTreeMap<TargetId, (u64, HashSet<DidId>)> = BTreeMap::new();
+
+        for (did_id, rkey) in linkers.0 {
+            if did_id.is_empty() {
+                continue;
+            }
+
+            if !filter_did_ids.is_empty() && filter_did_ids.get(&did_id) != Some(&true) {
+                continue;
+            }
+
+            let record_link_key = RecordLinkKey(did_id, collection.clone(), rkey);
+            let Some(targets) = self.get_record_link_targets(&record_link_key)? else {
+                continue;
+            };
+
+            let Some(fwd_target) = targets
+                .0
+                .into_iter()
+                .filter_map(|RecordLinkTarget(rpath, target_id)| {
+                    if rpath.0 == path_to_other
+                        && (filter_to_target_ids.is_empty()
+                            || filter_to_target_ids.contains(&target_id))
+                    {
+                        Some(target_id)
+                    } else {
+                        None
+                    }
+                })
+                .take(1)
+                .next()
+            else {
+                continue;
+            };
+
+            // small relief: we page over target ids, so we can already bail
+            // reprocessing previous pages here
+            if after.as_ref().map(|a| fwd_target <= *a).unwrap_or(false) {
+                continue;
+            }
+
+            // aand we can skip target ids that must be on future pages
+            // (this check continues after the did-lookup, which we have to do)
+            let page_is_full = grouped_counts.len() as u64 >= limit;
+            if page_is_full {
+                let current_max = grouped_counts.keys().rev().next().unwrap(); // limit should be non-zero bleh
+                if fwd_target > *current_max {
+                    continue;
+                }
+            }
+
+            // bit painful: 2-step lookup to make sure this did is active
+            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? else {
+                eprintln!("failed to look up did from did_id {did_id:?}");
+                continue;
+            };
+            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
+                eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                continue;
+            };
+            if !active {
+                continue;
+            }
+
+            // page-management, continued
+            // if we have a full page, and we're inserting a *new* key less than
+            // the current max, then we can evict the current max
+            let mut should_evict = false;
+            let entry = grouped_counts.entry(fwd_target.clone()).or_insert_with(|| {
+                // this is a *new* key, so kick the max if we're full
+                should_evict = page_is_full;
+                Default::default()
+            });
+            entry.0 += 1;
+            entry.1.insert(did_id.clone());
+
+            if should_evict {
+                grouped_counts.pop_last();
+            }
+        }
+
+        let mut items: Vec<(String, u64, u64)> = Vec::with_capacity(grouped_counts.len());
+        for (target_id, (n, dids)) in grouped_counts {
+            let Some(target) = self.target_id_table.get_val_from_id(&self.db, target_id)? else {
+                eprintln!("failed to look up target from target_id {target_id:?}");
+                continue;
+            };
+            items.push((target, n, dids.len() as u64));
+        }
+
+        let next = if grouped_counts.len() as u64 >= limit {
+            // yeah.... it's a number saved as a string......sorry
+            grouped_counts
+                .keys()
+                .rev()
+                .next()
+                .map(|k| format!("{}", k.0))
+        } else {
+            None
+        };
+
+        Ok(PagedOrderedCollection { items, next })
     }
 
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
@@ -1156,10 +1298,10 @@ impl DidIdValue {
 }
 
 // target ids
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialOrd, Ord, PartialEq, Eq, Hash)]
 struct TargetId(u64); // key
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Target(pub String); // the actual target/uri
 
 // targets (uris, dids, etc.): the reverse index

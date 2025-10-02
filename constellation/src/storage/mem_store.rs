@@ -1,4 +1,6 @@
-use super::{LinkReader, LinkStorage, PagedAppendingCollection, PagedOrderedCollection, StorageStats};
+use super::{
+    LinkReader, LinkStorage, PagedAppendingCollection, PagedOrderedCollection, StorageStats,
+};
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
 use links::CollectedLink;
@@ -143,23 +145,17 @@ impl LinkReader for MemStorage {
         filter_dids: &HashSet<Did>,
         filter_to_targets: &HashSet<String>,
     ) -> Result<PagedOrderedCollection<(String, u64, u64), String>> {
-        let empty = || {
-            PagedOrderedCollection {
-                items: vec![],
-                next: None,
-                total: 0,
-            }
-        };
         let data = self.0.lock().unwrap();
         let Some(paths) = data.targets.get(&Target::new(target)) else {
-            return Ok(empty());
+            return Ok(PagedOrderedCollection::default());
         };
         let Some(linkers) = paths.get(&Source::new(collection, path)) else {
-            return Ok(empty());
+            return Ok(PagedOrderedCollection::default());
         };
 
         let path_to_other = RecordPath::new(path_to_other);
-        let filter_to_targets: HashSet::<Target> = HashSet::from_iter(filter_to_targets.iter().map(|s| Target::new(s)));
+        let filter_to_targets: HashSet<Target> =
+            HashSet::from_iter(filter_to_targets.iter().map(|s| Target::new(s)));
 
         let mut grouped_counts: HashMap<Target, (u64, HashSet<Did>)> = HashMap::new();
         for (did, rkey) in linkers.into_iter().cloned().filter_map(|l| l) {
@@ -170,13 +166,20 @@ impl LinkReader for MemStorage {
                 .links
                 .get(&did)
                 .unwrap_or(&HashMap::new())
-                .get(&RepoId { collection: collection.to_string(), rkey })
+                .get(&RepoId {
+                    collection: collection.to_string(),
+                    rkey,
+                })
                 .unwrap_or(&Vec::new())
                 .into_iter()
                 .filter_map(|(path, target)| {
                     if *path == path_to_other
                         && (filter_to_targets.is_empty() || filter_to_targets.contains(target))
-                    { Some(target) } else { None }
+                    {
+                        Some(target)
+                    } else {
+                        None
+                    }
                 })
                 .take(1)
                 .next()
@@ -186,7 +189,6 @@ impl LinkReader for MemStorage {
                 e.1.insert(did.clone());
             }
         }
-        let total = grouped_counts.len() as u64;
         let mut items: Vec<(String, u64, u64)> = grouped_counts
             .iter()
             .map(|(k, (n, u))| (k.0.clone(), *n, u.len() as u64))
@@ -202,11 +204,7 @@ impl LinkReader for MemStorage {
         } else {
             None
         };
-        Ok(PagedOrderedCollection {
-            items,
-            next,
-            total,
-        })
+        Ok(PagedOrderedCollection { items, next })
     }
 
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {

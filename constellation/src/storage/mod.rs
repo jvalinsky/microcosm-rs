@@ -24,11 +24,10 @@ pub struct PagedAppendingCollection<T> {
 /// this has weaker guarantees than PagedAppendingCollection: it might
 /// return a totally consistent snapshot. but it should avoid duplicates
 /// and each page should at least be internally consistent.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub struct PagedOrderedCollection<T, K: Ord> {
     pub items: Vec<T>,
     pub next: Option<K>,
-    pub total: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -1355,20 +1354,22 @@ mod tests {
     //////// many-to-many /////////
 
     test_each_storage!(get_m2m_counts_empty, |storage| {
-        assert_eq!(storage.get_many_to_many_counts(
-            "a.com",
-            "a.b.c",
-            ".d.e",
-            ".f.g",
-            10,
-            None,
-            &HashSet::new(),
-            &HashSet::new(),
-        )?, PagedOrderedCollection {
-            items: vec![],
-            next: None,
-            total: 0,
-        });
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "a.b.c",
+                ".d.e",
+                ".f.g",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![],
+                next: None,
+            }
+        );
     });
 
     test_each_storage!(get_m2m_counts_single, |storage| {
@@ -1396,20 +1397,22 @@ mod tests {
             },
             0,
         )?;
-        assert_eq!(storage.get_many_to_many_counts(
-            "a.com",
-            "app.t.c",
-            ".abc.uri",
-            ".def.uri",
-            10,
-            None,
-            &HashSet::new(),
-            &HashSet::new(),
-        )?, PagedOrderedCollection {
-            items: vec![("b.com".to_string(), 1, 1)],
-            next: None,
-            total: 1,
-        });
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                ".def.uri",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![("b.com".to_string(), 1, 1)],
+                next: None,
+            }
+        );
     });
 
     test_each_storage!(get_m2m_counts_filters, |storage| {
@@ -1493,54 +1496,53 @@ mod tests {
             },
             3,
         )?;
-        assert_eq!(storage.get_many_to_many_counts(
-            "a.com",
-            "app.t.c",
-            ".abc.uri",
-            ".def.uri",
-            10,
-            None,
-            &HashSet::new(),
-            &HashSet::new(),
-        )?, PagedOrderedCollection {
-            items: vec![
-                ("b.com".to_string(), 2, 2),
-                ("c.com".to_string(), 2, 1),
-            ],
-            next: None,
-            total: 2,
-        });
-        assert_eq!(storage.get_many_to_many_counts(
-            "a.com",
-            "app.t.c",
-            ".abc.uri",
-            ".def.uri",
-            10,
-            None,
-            &HashSet::from_iter([Did("did:plc:fdsa".to_string())]),
-            &HashSet::new(),
-        )?, PagedOrderedCollection {
-            items: vec![
-                ("c.com".to_string(), 2, 1),
-            ],
-            next: None,
-            total: 1,
-        });
-        assert_eq!(storage.get_many_to_many_counts(
-            "a.com",
-            "app.t.c",
-            ".abc.uri",
-            ".def.uri",
-            10,
-            None,
-            &HashSet::new(),
-            &HashSet::from_iter(["b.com".to_string()]),
-        )?, PagedOrderedCollection {
-            items: vec![
-                ("b.com".to_string(), 2, 2),
-            ],
-            next: None,
-            total: 1,
-        });
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                ".def.uri",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![("b.com".to_string(), 2, 2), ("c.com".to_string(), 2, 1),],
+                next: None,
+            }
+        );
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                ".def.uri",
+                10,
+                None,
+                &HashSet::from_iter([Did("did:plc:fdsa".to_string())]),
+                &HashSet::new(),
+            )?,
+            PagedOrderedCollection {
+                items: vec![("c.com".to_string(), 2, 1),],
+                next: None,
+            }
+        );
+        assert_eq!(
+            storage.get_many_to_many_counts(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                ".def.uri",
+                10,
+                None,
+                &HashSet::new(),
+                &HashSet::from_iter(["b.com".to_string()]),
+            )?,
+            PagedOrderedCollection {
+                items: vec![("b.com".to_string(), 2, 2),],
+                next: None,
+            }
+        );
     });
 }
