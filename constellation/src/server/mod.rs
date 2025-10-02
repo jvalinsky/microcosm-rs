@@ -32,8 +32,6 @@ fn get_default_cursor_limit() -> u64 {
     DEFAULT_CURSOR_LIMIT
 }
 
-const INDEX_BEGAN_AT_TS: u64 = 1738083600; // TODO: not this
-
 fn to500(e: tokio::task::JoinError) -> http::StatusCode {
     eprintln!("handler error: {e}");
     http::StatusCode::INTERNAL_SERVER_ERROR
@@ -201,7 +199,7 @@ Disallow: /links/
 #[template(path = "hello.html.j2")]
 struct HelloReponse {
     help: &'static str,
-    days_indexed: u64,
+    days_indexed: Option<u64>,
     stats: StorageStats,
 }
 fn hello(
@@ -211,11 +209,12 @@ fn hello(
     let stats = store
         .get_stats()
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?;
-    let days_indexed = (UNIX_EPOCH + Duration::from_secs(INDEX_BEGAN_AT_TS))
-        .elapsed()
+    let days_indexed = stats
+        .started_at
+        .map(|c| (UNIX_EPOCH + Duration::from_micros(c)).elapsed())
+        .transpose()
         .map_err(|_| http::StatusCode::INTERNAL_SERVER_ERROR)?
-        .as_secs()
-        / 86400;
+        .map(|d| d.as_secs() / 86_400);
     Ok(acceptable(accept, HelloReponse {
         help: "open this URL in a web browser (or request with Accept: text/html) for information about this API.",
         days_indexed,

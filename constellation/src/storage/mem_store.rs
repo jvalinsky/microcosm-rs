@@ -428,6 +428,8 @@ impl LinkReader for MemStorage {
             dids,
             targetables,
             linking_records,
+            started_at: None,
+            other_data: Default::default(),
         })
     }
 }

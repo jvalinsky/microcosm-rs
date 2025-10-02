@@ -54,6 +54,9 @@ struct Args {
     /// Saved jsonl from jetstream to use instead of a live subscription
     #[arg(short, long)]
     fixture: Option<PathBuf>,
+    /// run a scan across the target id table and write all key -> ids to id -> keys
+    #[arg(long, action)]
+    repair_target_ids: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -115,15 +118,31 @@ fn main() -> Result<()> {
                 rocks.start_backup(backup_dir, auto_backup, stay_alive.clone())?;
             }
             println!("rocks ready.");
-            run(
-                rocks,
-                fixture,
-                args.data,
-                stream,
-                bind,
-                metrics_bind,
-                stay_alive,
-            )
+            std::thread::scope(|s| {
+                if args.repair_target_ids {
+                    let rocks = rocks.clone();
+                    let stay_alive = stay_alive.clone();
+                    s.spawn(move || {
+                        let rep = rocks.run_repair(time::Duration::from_millis(1), stay_alive);
+                        eprintln!("repair finished: {rep:?}");
+                        rep
+                    });
+                }
+                s.spawn(|| {
+                    let r = run(
+                        rocks,
+                        fixture,
+                        args.data,
+                        stream,
+                        bind,
+                        metrics_bind,
+                        stay_alive,
+                    );
+                    eprintln!("run finished: {r:?}");
+                    r
+                });
+            });
+            Ok(())
         }
     }
 }
@@ -213,7 +232,7 @@ fn run(
 
             'monitor: loop {
                 match readable.get_stats() {
-                    Ok(StorageStats { dids, targetables, linking_records }) => {
+                    Ok(StorageStats { dids, targetables, linking_records, .. }) => {
                         metrics::gauge!("storage.stats.dids").set(dids as f64);
                         metrics::gauge!("storage.stats.targetables").set(targetables as f64);
                         metrics::gauge!("storage.stats.linking_records").set(linking_records as f64);

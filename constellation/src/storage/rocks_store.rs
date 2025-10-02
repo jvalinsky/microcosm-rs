@@ -23,7 +23,7 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
 static DID_IDS_CF: &str = "did_ids";
@@ -32,6 +32,23 @@ static TARGET_LINKERS_CF: &str = "target_links";
 static LINK_TARGETS_CF: &str = "link_targets";
 
 static JETSTREAM_CURSOR_KEY: &str = "jetstream_cursor";
+static STARTED_AT_KEY: &str = "jetstream_first_cursor";
+// add reverse mappings for targets if this db was running before that was a thing
+static TARGET_ID_REPAIR_STATE_KEY: &str = "target_id_table_repair_state";
+
+static COZY_FIRST_CURSOR: u64 = 1_738_083_600_000_000; // constellation.microcosm.blue started
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TargetIdRepairState {
+    /// start time for repair, microseconds timestamp
+    current_us_started_at: u64,
+    /// id table's latest id when repair started
+    id_when_started: u64,
+    /// id table id
+    latest_repaired_i: u64,
+}
+impl AsRocksValue for TargetIdRepairState {}
+impl ValueFromRocks for TargetIdRepairState {}
 
 // todo: actually understand and set these options probably better
 fn rocks_opts_base() -> Options {
@@ -139,7 +156,7 @@ where
             _key_marker: PhantomData,
             _val_marker: PhantomData,
             name: name.into(),
-            id_seq: Arc::new(AtomicU64::new(0)), // zero is "uninint", first seq num will be 1
+            id_seq: Arc::new(AtomicU64::new(0)), // zero is "uninit", first seq num will be 1
         }
     }
     fn get_id_val(
@@ -228,10 +245,19 @@ impl IdTableValue for TargetId {
     }
 }
 
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64
+}
+
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         Self::describe_metrics();
-        RocksStorage::open_readmode(path, false)
+        let me = RocksStorage::open_readmode(path, false)?;
+        me.global_init()?;
+        Ok(me)
     }
 
     pub fn open_readonly(path: impl AsRef<Path>) -> Result<Self> {
@@ -242,6 +268,8 @@ impl RocksStorage {
         let did_id_table = IdTable::setup(DID_IDS_CF);
         let target_id_table = IdTable::setup(TARGET_IDS_CF);
 
+        // note: global stuff like jetstream cursor goes in the default cf
+        // these are bonus extra cfs
         let cfs = vec![
             // id reference tables
             did_id_table.cf_descriptor(),
@@ -275,6 +303,104 @@ impl RocksStorage {
             is_writer: !readonly,
             backup_task: None.into(),
         })
+    }
+
+    fn global_init(&self) -> Result<()> {
+        let first_run = self.db.get(JETSTREAM_CURSOR_KEY)?.is_some();
+        if first_run {
+            self.db.put(STARTED_AT_KEY, _rv(now()))?;
+
+            // hack / temporary: if we're a new db, put in a completed repair
+            // state so we don't run repairs (repairs are for old-code dbs)
+            let completed = TargetIdRepairState {
+                id_when_started: 0,
+                current_us_started_at: 0,
+                latest_repaired_i: 0,
+            };
+            self.db.put(TARGET_ID_REPAIR_STATE_KEY, _rv(completed))?;
+        }
+        Ok(())
+    }
+
+    pub fn run_repair(&self, breather: Duration, stay_alive: CancellationToken) -> Result<bool> {
+        let mut state = match self
+            .db
+            .get(TARGET_ID_REPAIR_STATE_KEY)?
+            .map(|s| _vr(&s))
+            .transpose()?
+        {
+            Some(s) => s,
+            None => TargetIdRepairState {
+                id_when_started: self.did_id_table.priv_id_seq,
+                current_us_started_at: now(),
+                latest_repaired_i: 0,
+            },
+        };
+
+        eprintln!("initial repair state: {state:?}");
+
+        let cf = self.db.cf_handle(TARGET_IDS_CF).unwrap();
+
+        let mut iter = self.db.raw_iterator_cf(&cf);
+        iter.seek_to_first();
+
+        eprintln!("repair iterator sent to first key");
+
+        // skip ahead if we're done some, or take a single first step
+        for _ in 0..state.latest_repaired_i {
+            iter.next();
+        }
+
+        eprintln!(
+            "repair iterator skipped to {}th key",
+            state.latest_repaired_i
+        );
+
+        let mut maybe_done = false;
+
+        while !stay_alive.is_cancelled() && !maybe_done {
+            // let mut batch = WriteBatch::default();
+
+            let mut any_written = false;
+
+            for _ in 0..1000 {
+                if state.latest_repaired_i % 1_000_000 == 0 {
+                    eprintln!("target iter at {}", state.latest_repaired_i);
+                }
+                state.latest_repaired_i += 1;
+
+                if !iter.valid() {
+                    eprintln!("invalid iter, are we done repairing?");
+                    maybe_done = true;
+                    break;
+                };
+
+                // eprintln!("iterator seems to be valid! getting the key...");
+                let raw_key = iter.key().unwrap();
+                if raw_key.len() == 8 {
+                    // eprintln!("found an 8-byte key, skipping it since it's probably an id...");
+                    iter.next();
+                    continue;
+                }
+                let target: TargetKey = _kr::<TargetKey>(raw_key)?;
+                let target_id: TargetId = _vr(iter.value().unwrap())?;
+
+                self.db
+                    .put_cf(&cf, target_id.id().to_be_bytes(), _rv(&target))?;
+                any_written = true;
+                iter.next();
+            }
+
+            if any_written {
+                self.db
+                    .put(TARGET_ID_REPAIR_STATE_KEY, _rv(state.clone()))?;
+                std::thread::sleep(breather);
+            }
+        }
+
+        eprintln!("repair iterator done.");
+
+        Ok(false)
     }
 
     pub fn start_backup(
@@ -1179,10 +1305,39 @@ impl LinkReader for RocksStorage {
             .map(|s| s.parse::<u64>())
             .transpose()?
             .unwrap_or(0);
+        let started_at = self
+            .db
+            .get(STARTED_AT_KEY)?
+            .map(|c| _vr(&c))
+            .transpose()?
+            .unwrap_or(COZY_FIRST_CURSOR);
+
+        let other_data = self
+            .db
+            .get(TARGET_ID_REPAIR_STATE_KEY)?
+            .map(|s| _vr(&s))
+            .transpose()?
+            .map(
+                |TargetIdRepairState {
+                     current_us_started_at,
+                     id_when_started,
+                     latest_repaired_i,
+                 }| {
+                    HashMap::from([
+                        ("current_us_started_at".to_string(), current_us_started_at),
+                        ("id_when_started".to_string(), id_when_started),
+                        ("latest_repaired_i".to_string(), latest_repaired_i),
+                    ])
+                },
+            )
+            .unwrap_or(HashMap::default());
+
         Ok(StorageStats {
             dids,
             targetables,
             linking_records,
+            started_at: Some(started_at),
+            other_data,
         })
     }
 }
@@ -1208,6 +1363,10 @@ impl AsRocksKeyPrefix<TargetKey> for &TargetIdTargetPrefix {}
 impl AsRocksValue for &TargetId {}
 impl KeyFromRocks for TargetKey {}
 impl ValueFromRocks for TargetId {}
+
+// temp?
+impl KeyFromRocks for TargetId {}
+impl AsRocksValue for &TargetKey {}
 
 // target_links table
 impl AsRocksKey for &TargetId {}

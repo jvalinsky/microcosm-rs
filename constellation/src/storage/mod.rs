@@ -44,6 +44,12 @@ pub struct StorageStats {
     /// records with multiple links are single-counted.
     /// for LSM stores, deleted links don't decrement this, and updated records with any links will likely increment it.
     pub linking_records: u64,
+
+    /// first jetstream cursor when this instance first started
+    pub started_at: Option<u64>,
+
+    /// anything else we want to throw in
+    pub other_data: HashMap<String, u64>,
 }
 
 pub trait LinkStorage: Send + Sync {
