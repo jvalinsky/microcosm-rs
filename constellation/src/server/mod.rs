@@ -293,12 +293,14 @@ fn get_many_to_many_counts(
     };
     let path = format!(".{path}");
 
+    let path_to_other = format!(".{}", query.path_to_other);
+
     let paged = store
         .get_many_to_many_counts(
             &query.subject,
             collection,
             &path,
-            &query.path_to_other,
+            &path_to_other,
             limit,
             cursor_key,
             &filter_dids,

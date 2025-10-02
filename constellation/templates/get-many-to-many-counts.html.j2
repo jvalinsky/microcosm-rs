@@ -1,0 +1,16 @@
+{% extends "base.html.j2" %}
+{% import "try-it-macros.html.j2" as try_it %}
+
+{% block title %}Many to Many counts{% endblock %}
+{% block description %}All {{ query.source }} records with links to {{ query.subject }}{% endblock %}
+
+{% block content %}
+
+  (todo)
+
+  <details>
+    <summary>Raw JSON response</summary>
+    <pre class="code">{{ self|tojson }}</pre>
+  </details>
+
+{% endblock %}

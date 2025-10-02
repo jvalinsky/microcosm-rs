@@ -959,6 +959,7 @@ impl LinkReader for RocksStorage {
         let after = after.map(|s| s.parse::<u64>().map(TargetId)).transpose()?;
 
         let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            eprintln!("nothin doin for this target, {target_key:?}");
             return Ok(Default::default());
         };
 
@@ -1019,6 +1020,7 @@ impl LinkReader for RocksStorage {
                 .take(1)
                 .next()
             else {
+                eprintln!("no forward match");
                 continue;
             };
 
