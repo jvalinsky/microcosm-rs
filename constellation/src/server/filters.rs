@@ -22,3 +22,7 @@ pub fn to_browseable(s: &str) -> askama::Result<Option<String>> {
 pub fn human_number(n: &u64) -> askama::Result<String> {
     Ok(n.to_formatted_string(&Locale::en))
 }
+
+pub fn to_u64(n: usize) -> askama::Result<u64> {
+    Ok(n as u64)
+}
