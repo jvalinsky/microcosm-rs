@@ -1,4 +1,7 @@
-use super::{ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, StorageStats};
+use super::{
+    ActionableEvent, LinkReader, LinkStorage, PagedAppendingCollection, PagedOrderedCollection,
+    StorageStats,
+};
 use crate::{CountsByCount, Did, RecordId};
 use anyhow::{bail, Result};
 use bincode::Options as BincodeOptions;
@@ -11,7 +14,7 @@ use rocksdb::{
     MultiThreaded, Options, PrefixRange, ReadOptions, WriteBatch,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -20,7 +23,7 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
 static DID_IDS_CF: &str = "did_ids";
@@ -29,6 +32,23 @@ static TARGET_LINKERS_CF: &str = "target_links";
 static LINK_TARGETS_CF: &str = "link_targets";
 
 static JETSTREAM_CURSOR_KEY: &str = "jetstream_cursor";
+static STARTED_AT_KEY: &str = "jetstream_first_cursor";
+// add reverse mappings for targets if this db was running before that was a thing
+static TARGET_ID_REPAIR_STATE_KEY: &str = "target_id_table_repair_state";
+
+static COZY_FIRST_CURSOR: u64 = 1_738_083_600_000_000; // constellation.microcosm.blue started
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TargetIdRepairState {
+    /// start time for repair, microseconds timestamp
+    current_us_started_at: u64,
+    /// id table's latest id when repair started
+    id_when_started: u64,
+    /// id table id
+    latest_repaired_i: u64,
+}
+impl AsRocksValue for TargetIdRepairState {}
+impl ValueFromRocks for TargetIdRepairState {}
 
 // todo: actually understand and set these options probably better
 fn rocks_opts_base() -> Options {
@@ -56,8 +76,8 @@ fn get_db_read_opts() -> Options {
 #[derive(Debug, Clone)]
 pub struct RocksStorage {
     pub db: Arc<DBWithThreadMode<MultiThreaded>>, // TODO: mov seqs here (concat merge op will be fun)
-    did_id_table: IdTable<Did, DidIdValue, true>,
-    target_id_table: IdTable<TargetKey, TargetId, false>,
+    did_id_table: IdTable<Did, DidIdValue>,
+    target_id_table: IdTable<TargetKey, TargetId>,
     is_writer: bool,
     backup_task: Arc<Option<thread::JoinHandle<Result<()>>>>,
 }
@@ -85,10 +105,7 @@ where
     fn cf_descriptor(&self) -> ColumnFamilyDescriptor {
         ColumnFamilyDescriptor::new(&self.name, rocks_opts_base())
     }
-    fn init<const WITH_REVERSE: bool>(
-        self,
-        db: &DBWithThreadMode<MultiThreaded>,
-    ) -> Result<IdTable<Orig, IdVal, WITH_REVERSE>> {
+    fn init(self, db: &DBWithThreadMode<MultiThreaded>) -> Result<IdTable<Orig, IdVal>> {
         if db.cf_handle(&self.name).is_none() {
             bail!("failed to get cf handle from db -- was the db open with our .cf_descriptor()?");
         }
@@ -119,7 +136,7 @@ where
     }
 }
 #[derive(Debug, Clone)]
-struct IdTable<Orig, IdVal: IdTableValue, const WITH_REVERSE: bool>
+struct IdTable<Orig, IdVal: IdTableValue>
 where
     Orig: KeyFromRocks,
     for<'a> &'a Orig: AsRocksKey,
@@ -127,7 +144,7 @@ where
     base: IdTableBase<Orig, IdVal>,
     priv_id_seq: u64,
 }
-impl<Orig: Clone, IdVal: IdTableValue, const WITH_REVERSE: bool> IdTable<Orig, IdVal, WITH_REVERSE>
+impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal>
 where
     Orig: KeyFromRocks,
     for<'v> &'v IdVal: AsRocksValue,
@@ -139,7 +156,7 @@ where
             _key_marker: PhantomData,
             _val_marker: PhantomData,
             name: name.into(),
-            id_seq: Arc::new(AtomicU64::new(0)), // zero is "uninint", first seq num will be 1
+            id_seq: Arc::new(AtomicU64::new(0)), // zero is "uninit", first seq num will be 1
         }
     }
     fn get_id_val(
@@ -178,16 +195,11 @@ where
             id_value
         }))
     }
+
     fn estimate_count(&self) -> u64 {
         self.base.id_seq.load(Ordering::SeqCst) - 1 // -1 because seq zero is reserved
     }
-}
-impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal, true>
-where
-    Orig: KeyFromRocks,
-    for<'v> &'v IdVal: AsRocksValue,
-    for<'k> &'k Orig: AsRocksKey,
-{
+
     fn get_or_create_id_val(
         &mut self,
         db: &DBWithThreadMode<MultiThreaded>,
@@ -215,22 +227,6 @@ where
         }
     }
 }
-impl<Orig: Clone, IdVal: IdTableValue> IdTable<Orig, IdVal, false>
-where
-    Orig: KeyFromRocks,
-    for<'v> &'v IdVal: AsRocksValue,
-    for<'k> &'k Orig: AsRocksKey,
-{
-    fn get_or_create_id_val(
-        &mut self,
-        db: &DBWithThreadMode<MultiThreaded>,
-        batch: &mut WriteBatch,
-        orig: &Orig,
-    ) -> Result<IdVal> {
-        let cf = db.cf_handle(&self.base.name).unwrap();
-        self.__get_or_create_id_val(&cf, db, batch, orig)
-    }
-}
 
 impl IdTableValue for DidIdValue {
     fn new(v: u64) -> Self {
@@ -249,10 +245,19 @@ impl IdTableValue for TargetId {
     }
 }
 
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64
+}
+
 impl RocksStorage {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         Self::describe_metrics();
-        RocksStorage::open_readmode(path, false)
+        let me = RocksStorage::open_readmode(path, false)?;
+        me.global_init()?;
+        Ok(me)
     }
 
     pub fn open_readonly(path: impl AsRef<Path>) -> Result<Self> {
@@ -260,9 +265,11 @@ impl RocksStorage {
     }
 
     fn open_readmode(path: impl AsRef<Path>, readonly: bool) -> Result<Self> {
-        let did_id_table = IdTable::<_, _, true>::setup(DID_IDS_CF);
-        let target_id_table = IdTable::<_, _, false>::setup(TARGET_IDS_CF);
+        let did_id_table = IdTable::setup(DID_IDS_CF);
+        let target_id_table = IdTable::setup(TARGET_IDS_CF);
 
+        // note: global stuff like jetstream cursor goes in the default cf
+        // these are bonus extra cfs
         let cfs = vec![
             // id reference tables
             did_id_table.cf_descriptor(),
@@ -296,6 +303,108 @@ impl RocksStorage {
             is_writer: !readonly,
             backup_task: None.into(),
         })
+    }
+
+    fn global_init(&self) -> Result<()> {
+        let first_run = self.db.get(JETSTREAM_CURSOR_KEY)?.is_some();
+        if first_run {
+            self.db.put(STARTED_AT_KEY, _rv(now()))?;
+
+            // hack / temporary: if we're a new db, put in a completed repair
+            // state so we don't run repairs (repairs are for old-code dbs)
+            let completed = TargetIdRepairState {
+                id_when_started: 0,
+                current_us_started_at: 0,
+                latest_repaired_i: 0,
+            };
+            self.db.put(TARGET_ID_REPAIR_STATE_KEY, _rv(completed))?;
+        }
+        Ok(())
+    }
+
+    pub fn run_repair(&self, breather: Duration, stay_alive: CancellationToken) -> Result<bool> {
+        let mut state = match self
+            .db
+            .get(TARGET_ID_REPAIR_STATE_KEY)?
+            .map(|s| _vr(&s))
+            .transpose()?
+        {
+            Some(s) => s,
+            None => TargetIdRepairState {
+                id_when_started: self.did_id_table.priv_id_seq,
+                current_us_started_at: now(),
+                latest_repaired_i: 0,
+            },
+        };
+
+        eprintln!("initial repair state: {state:?}");
+
+        let cf = self.db.cf_handle(TARGET_IDS_CF).unwrap();
+
+        let mut iter = self.db.raw_iterator_cf(&cf);
+        iter.seek_to_first();
+
+        eprintln!("repair iterator sent to first key");
+
+        // skip ahead if we're done some, or take a single first step
+        for _ in 0..state.latest_repaired_i {
+            iter.next();
+        }
+
+        eprintln!(
+            "repair iterator skipped to {}th key",
+            state.latest_repaired_i
+        );
+
+        let mut maybe_done = false;
+
+        let mut write_fast = rocksdb::WriteOptions::default();
+        write_fast.set_sync(false);
+        write_fast.disable_wal(true);
+
+        while !stay_alive.is_cancelled() && !maybe_done {
+            // let mut batch = WriteBatch::default();
+
+            let mut any_written = false;
+
+            for _ in 0..1000 {
+                if state.latest_repaired_i % 1_000_000 == 0 {
+                    eprintln!("target iter at {}", state.latest_repaired_i);
+                }
+                state.latest_repaired_i += 1;
+
+                if !iter.valid() {
+                    eprintln!("invalid iter, are we done repairing?");
+                    maybe_done = true;
+                    break;
+                };
+
+                // eprintln!("iterator seems to be valid! getting the key...");
+                let raw_key = iter.key().unwrap();
+                if raw_key.len() == 8 {
+                    // eprintln!("found an 8-byte key, skipping it since it's probably an id...");
+                    iter.next();
+                    continue;
+                }
+                let target: TargetKey = _kr::<TargetKey>(raw_key)?;
+                let target_id: TargetId = _vr(iter.value().unwrap())?;
+
+                self.db
+                    .put_cf_opt(&cf, target_id.id().to_be_bytes(), _rv(&target), &write_fast)?;
+                any_written = true;
+                iter.next();
+            }
+
+            if any_written {
+                self.db
+                    .put(TARGET_ID_REPAIR_STATE_KEY, _rv(state.clone()))?;
+                std::thread::sleep(breather);
+            }
+        }
+
+        eprintln!("repair iterator done.");
+
+        Ok(false)
     }
 
     pub fn start_backup(
@@ -826,6 +935,166 @@ impl LinkStorage for RocksStorage {
 }
 
 impl LinkReader for RocksStorage {
+    fn get_many_to_many_counts(
+        &self,
+        target: &str,
+        collection: &str,
+        path: &str,
+        path_to_other: &str,
+        limit: u64,
+        after: Option<String>,
+        filter_dids: &HashSet<Did>,
+        filter_to_targets: &HashSet<String>,
+    ) -> Result<PagedOrderedCollection<(String, u64, u64), String>> {
+        let collection = Collection(collection.to_string());
+        let path = RPath(path.to_string());
+
+        let target_key = TargetKey(Target(target.to_string()), collection.clone(), path.clone());
+
+        // unfortunately the cursor is a, uh, stringified number.
+        // this was easier for the memstore (plain target, not target id), and
+        // making it generic is a bit awful.
+        // so... parse the number out of a string here :(
+        // TODO: this should bubble up to a BAD_REQUEST response
+        let after = after.map(|s| s.parse::<u64>().map(TargetId)).transpose()?;
+
+        let Some(target_id) = self.target_id_table.get_id_val(&self.db, &target_key)? else {
+            eprintln!("nothin doin for this target, {target_key:?}");
+            return Ok(Default::default());
+        };
+
+        let filter_did_ids: HashMap<DidId, bool> = filter_dids
+            .iter()
+            .filter_map(|did| self.did_id_table.get_id_val(&self.db, did).transpose())
+            .collect::<Result<Vec<DidIdValue>>>()?
+            .into_iter()
+            .map(|DidIdValue(id, active)| (id, active))
+            .collect();
+
+        // stored targets are keyed by triples of (target, collection, path).
+        // target filtering only consideres the target itself, so we actually
+        // need to do a prefix iteration of all target ids for this target and
+        // keep them all.
+        // i *think* the number of keys at a target prefix should usually be
+        // pretty small, so this is hopefully fine. but if it turns out to be
+        // large, we can push this filtering back into the main links loop and
+        // do forward db queries per backlink to get the raw target back out.
+        let mut filter_to_target_ids: HashSet<TargetId> = HashSet::new();
+        for t in filter_to_targets {
+            for (_, target_id) in self.iter_targets_for_target(&Target(t.to_string())) {
+                filter_to_target_ids.insert(target_id);
+            }
+        }
+
+        let linkers = self.get_target_linkers(&target_id)?;
+
+        let mut grouped_counts: BTreeMap<TargetId, (u64, HashSet<DidId>)> = BTreeMap::new();
+
+        for (did_id, rkey) in linkers.0 {
+            if did_id.is_empty() {
+                continue;
+            }
+
+            if !filter_did_ids.is_empty() && filter_did_ids.get(&did_id) != Some(&true) {
+                continue;
+            }
+
+            let record_link_key = RecordLinkKey(did_id, collection.clone(), rkey);
+            let Some(targets) = self.get_record_link_targets(&record_link_key)? else {
+                continue;
+            };
+
+            let Some(fwd_target) = targets
+                .0
+                .into_iter()
+                .filter_map(|RecordLinkTarget(rpath, target_id)| {
+                    if rpath.0 == path_to_other
+                        && (filter_to_target_ids.is_empty()
+                            || filter_to_target_ids.contains(&target_id))
+                    {
+                        Some(target_id)
+                    } else {
+                        None
+                    }
+                })
+                .take(1)
+                .next()
+            else {
+                eprintln!("no forward match");
+                continue;
+            };
+
+            // small relief: we page over target ids, so we can already bail
+            // reprocessing previous pages here
+            if after.as_ref().map(|a| fwd_target <= *a).unwrap_or(false) {
+                continue;
+            }
+
+            // aand we can skip target ids that must be on future pages
+            // (this check continues after the did-lookup, which we have to do)
+            let page_is_full = grouped_counts.len() as u64 >= limit;
+            if page_is_full {
+                let current_max = grouped_counts.keys().next_back().unwrap(); // limit should be non-zero bleh
+                if fwd_target > *current_max {
+                    continue;
+                }
+            }
+
+            // bit painful: 2-step lookup to make sure this did is active
+            let Some(did) = self.did_id_table.get_val_from_id(&self.db, did_id.0)? else {
+                eprintln!("failed to look up did from did_id {did_id:?}");
+                continue;
+            };
+            let Some(DidIdValue(_, active)) = self.did_id_table.get_id_val(&self.db, &did)? else {
+                eprintln!("failed to look up did_value from did_id {did_id:?}: {did:?}: data consistency bug?");
+                continue;
+            };
+            if !active {
+                continue;
+            }
+
+            // page-management, continued
+            // if we have a full page, and we're inserting a *new* key less than
+            // the current max, then we can evict the current max
+            let mut should_evict = false;
+            let entry = grouped_counts.entry(fwd_target.clone()).or_insert_with(|| {
+                // this is a *new* key, so kick the max if we're full
+                should_evict = page_is_full;
+                Default::default()
+            });
+            entry.0 += 1;
+            entry.1.insert(did_id);
+
+            if should_evict {
+                grouped_counts.pop_last();
+            }
+        }
+
+        let mut items: Vec<(String, u64, u64)> = Vec::with_capacity(grouped_counts.len());
+        for (target_id, (n, dids)) in &grouped_counts {
+            let Some(target) = self
+                .target_id_table
+                .get_val_from_id(&self.db, target_id.0)?
+            else {
+                eprintln!("failed to look up target from target_id {target_id:?}");
+                continue;
+            };
+            items.push((target.0 .0, *n, dids.len() as u64));
+        }
+
+        let next = if grouped_counts.len() as u64 >= limit {
+            // yeah.... it's a number saved as a string......sorry
+            grouped_counts
+                .keys()
+                .next_back()
+                .map(|k| format!("{}", k.0))
+        } else {
+            None
+        };
+
+        Ok(PagedOrderedCollection { items, next })
+    }
+
     fn get_count(&self, target: &str, collection: &str, path: &str) -> Result<u64> {
         let target_key = TargetKey(
             Target(target.to_string()),
@@ -1042,10 +1311,39 @@ impl LinkReader for RocksStorage {
             .map(|s| s.parse::<u64>())
             .transpose()?
             .unwrap_or(0);
+        let started_at = self
+            .db
+            .get(STARTED_AT_KEY)?
+            .map(|c| _vr(&c))
+            .transpose()?
+            .unwrap_or(COZY_FIRST_CURSOR);
+
+        let other_data = self
+            .db
+            .get(TARGET_ID_REPAIR_STATE_KEY)?
+            .map(|s| _vr(&s))
+            .transpose()?
+            .map(
+                |TargetIdRepairState {
+                     current_us_started_at,
+                     id_when_started,
+                     latest_repaired_i,
+                 }| {
+                    HashMap::from([
+                        ("current_us_started_at".to_string(), current_us_started_at),
+                        ("id_when_started".to_string(), id_when_started),
+                        ("latest_repaired_i".to_string(), latest_repaired_i),
+                    ])
+                },
+            )
+            .unwrap_or(HashMap::default());
+
         Ok(StorageStats {
             dids,
             targetables,
             linking_records,
+            started_at: Some(started_at),
+            other_data,
         })
     }
 }
@@ -1071,6 +1369,10 @@ impl AsRocksKeyPrefix<TargetKey> for &TargetIdTargetPrefix {}
 impl AsRocksValue for &TargetId {}
 impl KeyFromRocks for TargetKey {}
 impl ValueFromRocks for TargetId {}
+
+// temp?
+impl KeyFromRocks for TargetId {}
+impl AsRocksValue for &TargetKey {}
 
 // target_links table
 impl AsRocksKey for &TargetId {}
@@ -1142,10 +1444,10 @@ impl DidIdValue {
 }
 
 // target ids
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialOrd, Ord, PartialEq, Eq, Hash)]
 struct TargetId(u64); // key
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Target(pub String); // the actual target/uri
 
 // targets (uris, dids, etc.): the reverse index

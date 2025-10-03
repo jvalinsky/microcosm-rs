@@ -1,6 +1,6 @@
 {% macro get_backlinks(subject, source, dids, limit) %}
   <form method="get" action="/xrpc/blue.microcosm.links.getBacklinks">
-    <pre class="code"><strong>GET</strong> /links
+    <pre class="code"><strong>GET</strong> /xrpc/blue.microcosm.links.getBacklinks
   ?subject=    <input type="text" name="subject" value="{{ subject }}" placeholder="at-uri, did, uri..." />
   &source=     <input type="text" name="source" value="{{ source }}" placeholder="app.bsky.feed.like:subject.uri" />
   {%- for did in dids %}{% if !did.is_empty() %}
@@ -20,6 +20,48 @@
       p.insertBefore(document.createTextNode('&did=        '), didPlaceholder);
       p.insertBefore(i, didPlaceholder);
       p.insertBefore(document.createTextNode('\n  '), didPlaceholder);
+    });
+  </script>
+{% endmacro %}
+
+{% macro get_many_to_many_counts(subject, source, pathToOther, dids, otherSubjects, limit) %}
+  <form method="get" action="/xrpc/blue.microcosm.links.getManyToManyCounts">
+    <pre class="code"><strong>GET</strong> /xrpc/blue.microcosm.links.getManyToManyCounts
+  ?subject=      <input type="text" name="subject" value="{{ subject }}" placeholder="at-uri, did, uri..." />
+  &source=       <input type="text" name="source" value="{{ source }}" placeholder="app.bsky.feed.like:subject.uri" />
+  &pathToOther=  <input type="text" name="pathToOther" value="{{ pathToOther }}" placeholder="otherThing.uri" />
+  {%- for did in dids %}{% if !did.is_empty() %}
+  &did=          <input type="text" name="did" value="{{ did }}" placeholder="did:plc:..." />{% endif %}{% endfor %}
+  <span id="m2m-subject-placeholder"></span>               <button id="m2m-add-subject">+ other subject filter</button>
+  {%- for otherSubject in otherSubjects %}{% if !otherSubject.is_empty() %}
+  &otherSubject= <input type="text" name="did" value="{{ otherSubject }}" placeholder="at-uri, did, uri..." />{% endif %}{% endfor %}
+  <span id="m2m-did-placeholder"></span>               <button id="m2m-add-did">+ did filter</button>
+  &limit=        <input type="number" name="limit" value="{{ limit }}" max="100" placeholder="100" /> <button type="submit">get links</button></pre>
+  </form>
+  <script>
+    const m2mAddDidButton = document.getElementById('m2m-add-did');
+    const m2mDidPlaceholder = document.getElementById('m2m-did-placeholder');
+    m2mAddDidButton.addEventListener('click', e => {
+      e.preventDefault();
+      const i = document.createElement('input');
+      i.placeholder = 'did:plc:...';
+      i.name = "did"
+      const p = m2mAddDidButton.parentNode;
+      p.insertBefore(document.createTextNode('&did=          '), m2mDidPlaceholder);
+      p.insertBefore(i, m2mDidPlaceholder);
+      p.insertBefore(document.createTextNode('\n  '), m2mDidPlaceholder);
+    });
+    const m2mAddSubjectButton = document.getElementById('m2m-add-subject');
+    const m2mSubjectPlaceholder = document.getElementById('m2m-subject-placeholder');
+    m2mAddSubjectButton.addEventListener('click', e => {
+      e.preventDefault();
+      const i = document.createElement('input');
+      i.placeholder = 'at-uri, did, uri...';
+      i.name = "otherSubject"
+      const p = m2mAddSubjectButton.parentNode;
+      p.insertBefore(document.createTextNode('&otherSubject= '), m2mSubjectPlaceholder);
+      p.insertBefore(i, m2mSubjectPlaceholder);
+      p.insertBefore(document.createTextNode('\n  '), m2mSubjectPlaceholder);
     });
   </script>
 {% endmacro %}
