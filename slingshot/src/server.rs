@@ -437,7 +437,7 @@ impl Xrpc {
             Ok(did) => did,
             Err(_) => {
                 let Ok(alleged_handle) = Handle::new(identifier) else {
-                    return invalid("identifier was not a valid DID or handle");
+                    return invalid("Identifier was not a valid DID or handle");
                 };
 
                 match self.identity.handle_to_did(alleged_handle.clone()).await {
@@ -453,16 +453,16 @@ impl Xrpc {
                     Err(e) => {
                         log::debug!("failed to resolve handle: {e}");
                         // TODO: ServerError not BadRequest
-                        return invalid("errored while trying to resolve handle to DID");
+                        return invalid("Errored while trying to resolve handle to DID");
                     }
                 }
             }
         };
         let Ok(partial_doc) = self.identity.did_to_partial_mini_doc(&did).await else {
-            return invalid("failed to get DID doc");
+            return invalid("Failed to get DID doc");
         };
         let Some(partial_doc) = partial_doc else {
-            return invalid("failed to find DID doc");
+            return invalid("Failed to find DID doc");
         };
 
         // ok so here's where we're at:
@@ -483,10 +483,10 @@ impl Xrpc {
                 .handle_to_did(partial_doc.unverified_handle.clone())
                 .await
             else {
-                return invalid("failed to get did doc's handle");
+                return invalid("Failed to get DID doc's handle");
             };
             let Some(handle_did) = handle_did else {
-                return invalid("failed to resolve did doc's handle");
+                return invalid("Failed to resolve DID doc's handle");
             };
             if handle_did == did {
                 partial_doc.unverified_handle.to_string()
@@ -516,7 +516,7 @@ impl Xrpc {
                 let Ok(handle) = Handle::new(repo) else {
                     return GetRecordResponse::BadRequest(xrpc_error(
                         "InvalidRequest",
-                        "repo was not a valid DID or handle",
+                        "Repo was not a valid DID or handle",
                     ));
                 };
                 match self.identity.handle_to_did(handle).await {
@@ -534,7 +534,7 @@ impl Xrpc {
                         log::debug!("handle resolution failed: {e}");
                         return GetRecordResponse::ServerError(xrpc_error(
                             "ResolutionFailed",
-                            "errored while trying to resolve handle to DID",
+                            "Errored while trying to resolve handle to DID",
                         ));
                     }
                 }
@@ -544,17 +544,17 @@ impl Xrpc {
         let Ok(collection) = Nsid::new(collection) else {
             return GetRecordResponse::BadRequest(xrpc_error(
                 "InvalidRequest",
-                "invalid NSID for collection",
+                "Invalid NSID for collection",
             ));
         };
 
         let Ok(rkey) = RecordKey::new(rkey) else {
-            return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "invalid rkey"));
+            return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "Invalid rkey"));
         };
 
         let cid: Option<Cid> = if let Some(cid) = cid {
             let Ok(cid) = Cid::from_str(&cid) else {
-                return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "invalid CID"));
+                return GetRecordResponse::BadRequest(xrpc_error("InvalidRequest", "Invalid CID"));
             };
             Some(cid)
         } else {
